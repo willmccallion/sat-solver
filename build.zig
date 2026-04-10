@@ -10,9 +10,21 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .strip = false,
         }),
     });
     b.installArtifact(exe);
+
+    const bench_exe = b.addExecutable(.{
+        .name = "sat-bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bench.zig"),
+            .target = target,
+            .optimize = optimize,
+            .strip = false,
+        }),
+    });
+    b.installArtifact(bench_exe);
 
     const sat_module = b.addModule("sat", .{
         .root_source_file = b.path("src/root.zig"),
