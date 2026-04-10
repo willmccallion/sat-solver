@@ -136,25 +136,29 @@ pub fn main() !void {
         var argv: std.ArrayList([]const u8) = .empty;
         defer argv.deinit(gpa);
         try argv.appendSlice(gpa, &.{
-            "perf",          "record",
-            "-F",            "999",
-            "--call-graph",  "dwarf",
-            "-o",            perf_data,
-            "--quiet",
-            "--",            sat_bench,
+            "perf",         "record",
+            "-F",           "999",
+            "--call-graph", "dwarf",
+            "-o",           perf_data,
+            "--",           sat_bench,
         });
         try argv.appendSlice(gpa, dirs);
 
-        const result = try std.process.Child.run(.{
-            .allocator = gpa,
-            .argv = argv.items,
-            .max_output_bytes = 1 << 20,
-        });
-        defer gpa.free(result.stdout);
-        defer gpa.free(result.stderr);
-
-        if (result.term != .Exited or result.term.Exited != 0) {
-            try stderr.print("perf record failed:\n{s}\n", .{result.stderr});
+        // `perf record` can produce several hundred MB of data on longer
+        // runs, which Child.run's max_output_bytes doesn't govern (that's
+        // for stdout/stderr). But we do spawn a dedicated Child so we can
+        // inherit stdio for the recorded process while still observing
+        // the exit code. Using Child.run with .Pipe would capture all of
+        // sat-bench's stdout into memory for nothing; spawn manually and
+        // let perf inherit the terminal.
+        var child = std.process.Child.init(argv.items, gpa);
+        child.stdin_behavior = .Ignore;
+        child.stdout_behavior = .Inherit;
+        child.stderr_behavior = .Inherit;
+        try child.spawn();
+        const term = try child.wait();
+        if (term != .Exited or term.Exited != 0) {
+            try stderr.writeAll("perf record exited non-zero\n");
             try stderr.flush();
             std.process.exit(1);
         }

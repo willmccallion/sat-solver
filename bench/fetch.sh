@@ -21,6 +21,12 @@ SETS=(
     "uf100-430   1000  SAT"
     "uuf50-218   1000  UNSAT"
     "uuf100-430  1000  UNSAT"
+    "uf150-645    100  SAT"
+    "uuf150-645   100  UNSAT"
+    "uf200-860    100  SAT"
+    "uuf200-860    99  UNSAT"
+    "uf250-1065   100  SAT"
+    "uuf250-1065  100  UNSAT"
 )
 
 filter_sets() {

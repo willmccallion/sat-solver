@@ -49,13 +49,23 @@ pub fn build(b: *std.Build) void {
 
     const profile_run = b.addRunArtifact(profile_exe);
     profile_run.addArtifactArg(bench_release_exe);
-    profile_run.addArg("bench/instances/uuf100-430");
-    profile_run.addArg("bench/instances/uf100-430");
+    profile_run.addArg("bench/instances/uf200-860");
+    profile_run.addArg("bench/instances/uuf200-860");
     profile_run.has_side_effects = true;
     profile_run.stdio = .inherit;
 
-    const bench_step = b.step("bench", "Build ReleaseFast sat-bench and print a perf baseline table");
+    const bench_step = b.step("bench", "Run deep perf profile on uf200 + uuf200 (~80 s)");
     bench_step.dependOn(&profile_run.step);
+
+    const quick_profile_run = b.addRunArtifact(profile_exe);
+    quick_profile_run.addArtifactArg(bench_release_exe);
+    quick_profile_run.addArg("bench/instances/uf100-430");
+    quick_profile_run.addArg("bench/instances/uuf100-430");
+    quick_profile_run.has_side_effects = true;
+    quick_profile_run.stdio = .inherit;
+
+    const bench_quick_step = b.step("bench-quick", "Run fast perf profile on uf100 + uuf100 (~4 s)");
+    bench_quick_step.dependOn(&quick_profile_run.step);
 
     const sat_module = b.addModule("sat", .{
         .root_source_file = b.path("src/root.zig"),
