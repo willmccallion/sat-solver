@@ -26,6 +26,37 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(bench_exe);
 
+    // A dedicated ReleaseFast build of sat-bench used only by `zig build
+    // bench` — not installed, so it never shadows the user's optimize choice.
+    const bench_release_exe = b.addExecutable(.{
+        .name = "sat-bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bench.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .strip = false,
+        }),
+    });
+
+    const profile_exe = b.addExecutable(.{
+        .name = "sat-profile",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/profile.zig"),
+            .target = target,
+            .optimize = .Debug,
+        }),
+    });
+
+    const profile_run = b.addRunArtifact(profile_exe);
+    profile_run.addArtifactArg(bench_release_exe);
+    profile_run.addArg("bench/instances/uuf100-430");
+    profile_run.addArg("bench/instances/uf100-430");
+    profile_run.has_side_effects = true;
+    profile_run.stdio = .inherit;
+
+    const bench_step = b.step("bench", "Build ReleaseFast sat-bench and print a perf baseline table");
+    bench_step.dependOn(&profile_run.step);
+
     const sat_module = b.addModule("sat", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
