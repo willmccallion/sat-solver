@@ -1,0 +1,4 @@
+c trivial satisfiable instance: 2 vars, 1 clause
+c satisfying assignment: x1 = true (or x2 = true)
+p cnf 2 1
+1 2 0

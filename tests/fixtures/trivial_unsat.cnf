@@ -1,0 +1,4 @@
+c trivial unsatisfiable instance: 1 var, 2 contradictory clauses
+p cnf 1 2
+1 0
+-1 0
