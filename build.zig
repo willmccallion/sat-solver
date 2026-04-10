@@ -38,12 +38,22 @@ pub fn build(b: *std.Build) void {
     });
     const run_unit_tests = b.addRunArtifact(unit_tests);
 
-    const e2e_run = b.addRunArtifact(exe);
-    e2e_run.addFileArg(b.path("tests/fixtures/trivial_sat.cnf"));
-    e2e_run.expectExitCode(0);
-    e2e_run.expectStdOutEqual("s UNKNOWN\n");
+    const e2e_sat = b.addRunArtifact(exe);
+    e2e_sat.addFileArg(b.path("tests/fixtures/trivial_sat.cnf"));
+    e2e_sat.expectExitCode(10);
+
+    const e2e_unsat = b.addRunArtifact(exe);
+    e2e_unsat.addFileArg(b.path("tests/fixtures/trivial_unsat.cnf"));
+    e2e_unsat.expectExitCode(20);
+    e2e_unsat.expectStdOutEqual("s UNSATISFIABLE\n");
+
+    const e2e_small = b.addRunArtifact(exe);
+    e2e_small.addFileArg(b.path("tests/fixtures/small_sat.cnf"));
+    e2e_small.expectExitCode(10);
 
     const test_step = b.step("test", "Run unit tests and end-to-end round-trip");
     test_step.dependOn(&run_unit_tests.step);
-    test_step.dependOn(&e2e_run.step);
+    test_step.dependOn(&e2e_sat.step);
+    test_step.dependOn(&e2e_unsat.step);
+    test_step.dependOn(&e2e_small.step);
 }

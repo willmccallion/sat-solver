@@ -1,6 +1,9 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+pub const ClauseRef = u32;
+pub const null_clause: ClauseRef = std.math.maxInt(u32);
+
 pub const Literal = struct {
     raw: u32,
 

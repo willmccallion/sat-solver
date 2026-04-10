@@ -4,7 +4,18 @@ const testing = std.testing;
 const sat = @import("sat");
 const cnf = sat.cnf;
 const parser = sat.parser;
+const solver_mod = sat.solver;
 const Literal = cnf.Literal;
+
+fn solveSource(source: []const u8) !struct { result: solver_mod.Result, verified: bool } {
+    const gpa = testing.allocator;
+    const formula = try parser.parse(gpa, source);
+    var solver = try solver_mod.Solver.init(gpa, formula);
+    defer solver.deinit();
+    const result = try solver.solve();
+    const verified = if (result == .sat) solver.verifyModel() else true;
+    return .{ .result = result, .verified = verified };
+}
 
 const trivial_sat_src = @embedFile("fixtures/trivial_sat.cnf");
 const trivial_unsat_src = @embedFile("fixtures/trivial_unsat.cnf");
@@ -116,4 +127,60 @@ test "parser: rejects malformed p line" {
         \\1 0
     ;
     try testing.expectError(error.InvalidHeader, parser.parse(testing.allocator, src));
+}
+
+test "solver: trivial_sat returns sat with verified model" {
+    const out = try solveSource(trivial_sat_src);
+    try testing.expectEqual(solver_mod.Result.sat, out.result);
+    try testing.expect(out.verified);
+}
+
+test "solver: trivial_unsat returns unsat" {
+    const out = try solveSource(trivial_unsat_src);
+    try testing.expectEqual(solver_mod.Result.unsat, out.result);
+}
+
+test "solver: small_sat returns sat with verified model" {
+    const out = try solveSource(small_sat_src);
+    try testing.expectEqual(solver_mod.Result.sat, out.result);
+    try testing.expect(out.verified);
+}
+
+test "solver: empty formula is trivially sat" {
+    const out = try solveSource("p cnf 0 0\n");
+    try testing.expectEqual(solver_mod.Result.sat, out.result);
+    try testing.expect(out.verified);
+}
+
+test "solver: 3-literal unsat (pigeonhole-ish)" {
+    // Forces all eight clauses over x1,x2,x3 — i.e. every assignment falsifies
+    // some clause. Exercises conflict analysis and learning.
+    const src =
+        \\p cnf 3 8
+        \\ 1  2  3 0
+        \\ 1  2 -3 0
+        \\ 1 -2  3 0
+        \\ 1 -2 -3 0
+        \\-1  2  3 0
+        \\-1  2 -3 0
+        \\-1 -2  3 0
+        \\-1 -2 -3 0
+    ;
+    const out = try solveSource(src);
+    try testing.expectEqual(solver_mod.Result.unsat, out.result);
+}
+
+test "solver: chained implications propagate to sat" {
+    // 1 -> 2 -> 3 -> 4, with x1 forced true. Should be solved by unit
+    // propagation alone (no decisions beyond the forced unit).
+    const src =
+        \\p cnf 4 4
+        \\ 1 0
+        \\-1 2 0
+        \\-2 3 0
+        \\-3 4 0
+    ;
+    const out = try solveSource(src);
+    try testing.expectEqual(solver_mod.Result.sat, out.result);
+    try testing.expect(out.verified);
 }

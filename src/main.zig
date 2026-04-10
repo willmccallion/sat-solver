@@ -73,7 +73,7 @@ pub fn main() !void {
     var solver = try solver_mod.Solver.init(gpa, formula);
     defer solver.deinit();
 
-    const result = solver.solve();
+    const result = try solver.solve();
     switch (result) {
         .sat => {
             try stdout.writeAll("s SATISFIABLE\n");
@@ -107,7 +107,7 @@ fn readStdin(gpa: std.mem.Allocator) ![]u8 {
 }
 
 fn writeModel(out: *std.Io.Writer, solver: *solver_mod.Solver) !void {
-    const num_vars = solver.formula.num_vars;
+    const num_vars = solver.num_vars;
     try out.writeAll("v");
     var i: u32 = 0;
     while (i < num_vars) : (i += 1) {
