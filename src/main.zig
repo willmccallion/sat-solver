@@ -76,6 +76,12 @@ pub fn main() !void {
     const result = try solver.solve();
     switch (result) {
         .sat => {
+            if (!solver.verifyModel()) {
+                try stdout.writeAll("c BUG: model verification failed\n");
+                try stdout.writeAll("s UNKNOWN\n");
+                try stdout.flush();
+                std.process.exit(0);
+            }
             try stdout.writeAll("s SATISFIABLE\n");
             try writeModel(stdout, &solver);
             try stdout.flush();

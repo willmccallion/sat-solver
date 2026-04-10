@@ -39,6 +39,10 @@ pub fn parse(allocator: Allocator, source: []const u8) ParseError!Formula {
             continue;
         }
 
+        // SATLIB/DIMACS challenge format: a lone `%` marks the end of the
+        // problem content. Anything after it (typically `0\n`) is ignored.
+        if (source[i] == '%') break;
+
         if (source[i] == 'p') {
             if (header_seen) return error.DuplicateHeader;
             var line_end = i;

@@ -121,6 +121,19 @@ test "parser: rejects variable out of range" {
     try testing.expectError(error.VariableOutOfRange, parser.parse(testing.allocator, src));
 }
 
+test "parser: stops at SATLIB % end-of-content marker" {
+    const src =
+        \\p cnf 2 1
+        \\1 2 0
+        \\%
+        \\0
+    ;
+    var formula = try parser.parse(testing.allocator, src);
+    defer formula.deinit();
+    try testing.expectEqual(@as(u32, 2), formula.num_vars);
+    try testing.expectEqual(@as(usize, 1), formula.clauses.items.len);
+}
+
 test "parser: rejects malformed p line" {
     const src =
         \\p cnf 2

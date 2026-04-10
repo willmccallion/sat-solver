@@ -97,7 +97,7 @@ pub const Solver = struct {
         errdefer self.order_heap.deinit(allocator);
         var v: u32 = 0;
         while (v < formula.num_vars) : (v += 1) {
-            try self.order_heap.insert(allocator, v);
+            self.order_heap.insert(v);
         }
 
         // Transfer the input formula's clauses. We take ownership of the literal
@@ -378,6 +378,30 @@ pub const Solver = struct {
         return null;
     }
 
+    // Undoes every assignment above `target_level`, re-inserting each
+    // unassigned variable into the VSIDS order heap so pickBranching can
+    // reach it again. This is the only backtrack path used by the solver —
+    // Assignment.popToLevel is intentionally not called directly, because
+    // it does not know about the order heap.
+    fn backtrack(self: *Solver, target_level: u32) void {
+        const a = &self.assignment;
+        if (a.level <= target_level) return;
+        const trail_start = a.trail_lim.items[target_level];
+        var i: usize = a.trail.items.len;
+        while (i > trail_start) {
+            i -= 1;
+            const lit = a.trail.items[i];
+            const v = lit.variable();
+            a.saved_phases[v] = (a.vars[v].value == .@"true");
+            a.vars[v] = .{};
+            self.order_heap.insert(v);
+        }
+        a.trail.shrinkRetainingCapacity(trail_start);
+        a.trail_lim.shrinkRetainingCapacity(target_level);
+        a.level = target_level;
+        if (a.propagation_head > trail_start) a.propagation_head = trail_start;
+    }
+
     pub fn solve(self: *Solver) !Result {
         if (self.unsat_at_init) return .unsat;
         if ((try self.propagate()) != null_clause) return .unsat;
@@ -389,7 +413,7 @@ pub const Solver = struct {
                 if (self.assignment.level == 0) return .unsat;
 
                 const backjump_level = try self.analyze(conflict);
-                self.assignment.popToLevel(backjump_level);
+                self.backtrack(backjump_level);
 
                 const learned_len = self.analyze_learned.items.len;
                 if (learned_len == 1) {
@@ -414,7 +438,7 @@ pub const Solver = struct {
                     self.luby_index += 1;
                     self.next_restart = self.stats.conflicts + restart_base * luby(2, self.luby_index);
                     self.stats.restarts += 1;
-                    self.assignment.popToLevel(0);
+                    self.backtrack(0);
                 }
             } else {
                 const lit = self.pickBranching() orelse return .sat;
@@ -527,9 +551,11 @@ const OrderHeap = struct {
         self.pos[x] = @intCast(i);
     }
 
-    fn insert(self: *OrderHeap, allocator: Allocator, v: u32) !void {
+    // Assumes heap capacity is at least num_vars (reserved in init); a
+    // variable cannot be in the heap twice, so we never need to grow.
+    fn insert(self: *OrderHeap, v: u32) void {
         if (self.pos[v] != -1) return;
-        try self.heap.append(allocator, v);
+        self.heap.appendAssumeCapacity(v);
         self.pos[v] = @intCast(self.heap.items.len - 1);
         self.siftUp(self.heap.items.len - 1);
     }
