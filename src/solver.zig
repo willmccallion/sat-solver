@@ -87,6 +87,8 @@ pub const Solver = struct {
     analyze_seen: []bool,
     analyze_learned: std.ArrayList(Literal),
     analyze_levels: std.ArrayList(u32),
+    analyze_to_clear: std.ArrayList(u32),
+    analyze_stack: std.ArrayList(u32),
 
     learned_clauses: std.ArrayList(ClauseRef),
     max_learned: usize,
@@ -115,6 +117,8 @@ pub const Solver = struct {
             .analyze_seen = &.{},
             .analyze_learned = .empty,
             .analyze_levels = .empty,
+            .analyze_to_clear = .empty,
+            .analyze_stack = .empty,
             .learned_clauses = .empty,
             .max_learned = @max(formula.clauses.items.len, 1000),
             .proof_writer = null,
@@ -139,6 +143,16 @@ pub const Solver = struct {
         self.analyze_seen = try allocator.alloc(bool, formula.num_vars);
         @memset(self.analyze_seen, false);
         errdefer allocator.free(self.analyze_seen);
+
+        // Stacks used by recursive clause minimization in `analyze`. A var
+        // can be pushed at most once per analyze (the `seen` flag filters
+        // duplicates), so num_vars is a safe upper bound. Reserving up
+        // front lets litRedundant use appendAssumeCapacity and stay
+        // non-throwing in the hot loop.
+        try self.analyze_stack.ensureTotalCapacity(allocator, formula.num_vars);
+        errdefer self.analyze_stack.deinit(allocator);
+        try self.analyze_to_clear.ensureTotalCapacity(allocator, formula.num_vars);
+        errdefer self.analyze_to_clear.deinit(allocator);
 
         self.order_heap = try OrderHeap.init(allocator, formula.num_vars, self.activities);
         errdefer self.order_heap.deinit(allocator);
@@ -187,6 +201,8 @@ pub const Solver = struct {
         self.allocator.free(self.analyze_seen);
         self.analyze_learned.deinit(self.allocator);
         self.analyze_levels.deinit(self.allocator);
+        self.analyze_to_clear.deinit(self.allocator);
+        self.analyze_stack.deinit(self.allocator);
         self.learned_clauses.deinit(self.allocator);
         self.order_heap.deinit(self.allocator);
         self.assignment.deinit();
@@ -365,6 +381,60 @@ pub const Solver = struct {
 
     // --- conflict analysis -------------------------------------------------
 
+    // Iterative MiniSat-2.2 redundancy check. Returns true if the literal
+    // of `start_var` (which is in the learned clause, with reason != null)
+    // is implied by the rest of the learned clause, i.e. can be removed
+    // by self-subsuming resolution.
+    //
+    // Walks back through reason chains; a literal `q` in some reason is
+    // acceptable if it is already `seen` (i.e. already in the learned
+    // clause or transitively marked) OR itself has a reason and its
+    // decision level falls in `abstract_levels`, in which case we recurse.
+    // Any other case — a decision, a level-0 literal, or a literal whose
+    // level isn't in the mask — aborts the probe and rolls back any seen
+    // flags set since entering this call. On success, the new seen flags
+    // are kept (the caller clears analyze_to_clear at end of analyze).
+    //
+    // Precondition: `self.assignment.vars[start_var].reason != null_clause`
+    // and `analyze_stack` / `analyze_to_clear` have capacity >= num_vars.
+    fn litRedundant(self: *Solver, start_var: u32, abstract_levels: u64) bool {
+        self.analyze_stack.clearRetainingCapacity();
+        self.analyze_stack.appendAssumeCapacity(start_var);
+        const top = self.analyze_to_clear.items.len;
+
+        while (self.analyze_stack.items.len > 0) {
+            const v = self.analyze_stack.pop().?;
+            const reason_ref = self.assignment.vars[v].reason;
+            std.debug.assert(reason_ref != null_clause);
+            const lits = self.clauseLits(reason_ref);
+            // lits[0] is the literal forced by this clause (== literal of
+            // v) — skip it and scan the predecessor literals.
+            var k: usize = 1;
+            while (k < lits.len) : (k += 1) {
+                const q = lits[k];
+                const qv = q.variable();
+                const qlevel = self.assignment.vars[qv].level;
+                if (self.analyze_seen[qv] or qlevel == 0) continue;
+
+                if (self.assignment.vars[qv].reason != null_clause and
+                    (abstract_levels & (@as(u64, 1) << @intCast(qlevel & 63))) != 0)
+                {
+                    self.analyze_seen[qv] = true;
+                    self.analyze_stack.appendAssumeCapacity(qv);
+                    self.analyze_to_clear.appendAssumeCapacity(qv);
+                } else {
+                    // Abort — undo the seen flags set during this probe.
+                    for (self.analyze_to_clear.items[top..]) |cv| {
+                        self.analyze_seen[cv] = false;
+                    }
+                    self.analyze_to_clear.shrinkRetainingCapacity(top);
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
     // 1-UIP conflict analysis. Builds the learned clause into
     // analyze_learned, asserting literal at index 0, next-highest-level
     // literal at index 1 (ready to be the second watch). Returns the
@@ -419,8 +489,48 @@ pub const Solver = struct {
 
         self.analyze_learned.items[0] = resolved.negate();
 
-        for (self.analyze_learned.items[1..]) |lit| {
-            self.analyze_seen[lit.variable()] = false;
+        // --- recursive clause minimization (MiniSat 2.2 litRedundant) ---
+        // A literal p in the learned clause is redundant if it is implied
+        // by the other literals — checked via iterative self-subsuming
+        // resolution over reason chains. Typically removes 15–30% of
+        // literals on uniform random 3-SAT, compounding into smaller
+        // watcher lists and cheaper future propagate passes.
+        {
+            self.analyze_seen[self.analyze_learned.items[0].variable()] = true;
+
+            var abstract_levels: u64 = 0;
+            for (self.analyze_learned.items) |lit| {
+                const lv = self.assignment.vars[lit.variable()].level;
+                abstract_levels |= @as(u64, 1) << @intCast(lv & 63);
+            }
+
+            self.analyze_to_clear.clearRetainingCapacity();
+
+            const original_len = self.analyze_learned.items.len;
+            var wj: usize = 1;
+            var wk: usize = 1;
+            while (wk < original_len) : (wk += 1) {
+                const lit = self.analyze_learned.items[wk];
+                const lv = lit.variable();
+                if (self.assignment.vars[lv].reason == null_clause or
+                    !self.litRedundant(lv, abstract_levels))
+                {
+                    self.analyze_learned.items[wj] = lit;
+                    wj += 1;
+                } else {
+                    // Removed — queue its seen flag for cleanup at the
+                    // end alongside transitively-marked vars.
+                    self.analyze_to_clear.appendAssumeCapacity(lv);
+                }
+            }
+            self.analyze_learned.shrinkRetainingCapacity(wj);
+
+            for (self.analyze_learned.items) |lit| {
+                self.analyze_seen[lit.variable()] = false;
+            }
+            for (self.analyze_to_clear.items) |cv| {
+                self.analyze_seen[cv] = false;
+            }
         }
 
         var backjump: u32 = 0;
