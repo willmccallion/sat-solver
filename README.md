@@ -98,6 +98,47 @@ against known verdicts. Currently passing **5067 / 5067** instances across
 uf20, uf50, uf100, uuf50, uuf100, and the dimacs-{dubois, pret, bf, ii,
 hanoi} families.
 
+## Comparison against reference solvers
+
+`bench/compare.py` runs this solver side-by-side with MiniSat, CaDiCaL,
+and Kissat under hard `RLIMIT_CPU` and `RLIMIT_AS` limits, cross-checks
+verdicts to catch correctness bugs, and reports per-solver PAR-2 scores
+plus a cactus plot.
+
+To reproduce:
+
+```sh
+bench/build-solvers.sh              # clones + builds CaDiCaL and Kissat
+                                    # into bench/solvers/
+                                    # MiniSat: apt install minisat2
+
+zig build -Doptimize=ReleaseFast    # our solver
+
+bench/compare.py --limit 10         # smoke run, 10 instances per dir
+bench/compare.py                    # full run (300s CPU / 4 GB per instance)
+```
+
+Methodology notes (all SAT Competition standard):
+
+- **Time limit** is enforced via `setrlimit(RLIMIT_CPU)` inside the forked
+  child just before `execvp`. CPU time, not wall time, so system load and
+  thermal throttling don't confound the comparison. Default 300 s.
+- **Memory limit** via `setrlimit(RLIMIT_AS)`. Default 4 GB.
+- **CPU time + peak RSS** collected via `os.wait4` rusage, not a
+  GNU-time wrapper, so there's no extra process in the measurement path.
+- **Verdict cross-check**: if any two solvers produce different decisive
+  verdicts (SAT vs UNSAT) on the same instance, one of them is wrong —
+  flagged as a `CORRECTNESS WARNING` and the script exits non-zero.
+- **PAR-2 scoring**: solved instances contribute their CPU time, unsolved
+  (timeout / error) instances contribute 2 × timeout. Lower is better.
+  This is how SAT Competition ranks solvers.
+- **Cactus plot**: sorted per-instance CPU times per solver, plotted on a
+  log-scale y-axis. The curve that stays lower / further right wins.
+
+Results go to `bench/compare-results.csv` and `bench/compare-cactus.png`.
+
+*Comparison numbers will be filled in after the first full run.*
+
 ## Implementation notes
 
 The CDCL core lives in `src/solver.zig`. Major subsystems:
