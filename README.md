@@ -1,7 +1,7 @@
 # sat
 
-A SAT solver in Zig, targeting the annual
-[SAT Competition](https://satcompetition.github.io).
+A SAT solver in Zig. Maybe will try to compete in
+[SAT Competition](https://satcompetition.github.io) one day.
 
 ## Build
 
