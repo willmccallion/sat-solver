@@ -49,12 +49,18 @@ pub fn build(b: *std.Build) void {
 
     const profile_run = b.addRunArtifact(profile_exe);
     profile_run.addArtifactArg(bench_release_exe);
+    // uf200/uuf200 for continuity with prior baselines; uf250/uuf250
+    // for instances big enough that restart and clause-DB policy
+    // actually move the needle. The uf250 sets are ~8x harder than
+    // uf200 and are where adaptive strategies pay for themselves.
     profile_run.addArg("bench/instances/uf200-860");
     profile_run.addArg("bench/instances/uuf200-860");
+    profile_run.addArg("bench/instances/uf250-1065");
+    profile_run.addArg("bench/instances/uuf250-1065");
     profile_run.has_side_effects = true;
     profile_run.stdio = .inherit;
 
-    const bench_step = b.step("bench", "Run deep perf profile on uf200 + uuf200 (~80 s)");
+    const bench_step = b.step("bench", "Run deep perf profile on uf200/uuf200 + uf250/uuf250 (~7 min)");
     bench_step.dependOn(&profile_run.step);
 
     const compete_exe = b.addExecutable(.{

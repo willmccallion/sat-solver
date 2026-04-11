@@ -59,8 +59,34 @@ const Watcher = struct {
 };
 
 const var_decay: f64 = 0.95;
-const restart_base: u64 = 100;
 const rescale_threshold: f64 = 1e100;
+
+// Glucose-style adaptive restart. Two EMAs of learned-clause LBD
+// (fast = recent window, slow = long-run baseline) plus a "trail"
+// EMA of the trail length at conflict time. Restart when recent LBD
+// trends worse than the long-run average — unless the current stack
+// is much deeper than the recent trail average, meaning search is
+// clearly making progress and we shouldn't throw it away.
+//
+// Canonical Glucose tunings: fast window ~50, slow window ~1e4,
+// ratio 1.25 (equivalent to Glucose's K=0.8 on the inverse form),
+// blocker R=1.4. Both EMAs are bias-corrected (Adam style) so the
+// ratio is meaningful from the very first conflict — without that
+// correction, slow_raw << fast_raw during the first ~1/alpha_slow
+// conflicts and the ratio runs away, causing a restart storm on
+// short searches.
+const lbd_fast_alpha: f64 = 1.0 / 50.0;
+const lbd_slow_alpha: f64 = 1.0 / 10_000.0;
+const restart_ratio: f64 = 1.25;
+const trail_block_ratio: f64 = 1.4;
+const restart_min_conflicts: u64 = 50;
+
+// ReduceDB cadence — fires on its own conflict-count budget,
+// independent of restarts. The interval grows by `reduce_grow` each
+// trigger so long searches don't pay a log-N reduce every few
+// thousand conflicts.
+const reduce_initial: u64 = 2000;
+const reduce_grow: u64 = 300;
 
 pub const Stats = struct {
     decisions: u64 = 0,
@@ -95,8 +121,22 @@ pub const Solver = struct {
 
     proof_writer: ?*std.Io.Writer,
 
-    luby_index: u64,
-    next_restart: u64,
+    // Glucose restart state. Each EMA carries a bias-correction
+    // accumulator (`_bc`) that normalizes the raw sum for the Adam-
+    // style `value / bc` unbiased estimate. The bc fields start at 0
+    // and asymptote to 1.
+    lbd_fast: f64,
+    lbd_fast_bc: f64,
+    lbd_slow: f64,
+    lbd_slow_bc: f64,
+    trail_fast: f64,
+    trail_fast_bc: f64,
+    conflicts_since_restart: u64,
+
+    // Independent ReduceDB cadence.
+    next_reduce: u64,
+    reduce_interval: u64,
+
     unsat_at_init: bool,
 
     stats: Stats,
@@ -122,8 +162,15 @@ pub const Solver = struct {
             .learned_clauses = .empty,
             .max_learned = @max(formula.clauses.items.len, 1000),
             .proof_writer = null,
-            .luby_index = 0,
-            .next_restart = restart_base,
+            .lbd_fast = 0,
+            .lbd_fast_bc = 0,
+            .lbd_slow = 0,
+            .lbd_slow_bc = 0,
+            .trail_fast = 0,
+            .trail_fast_bc = 0,
+            .conflicts_since_restart = 0,
+            .next_reduce = reduce_initial,
+            .reduce_interval = reduce_initial,
             .unsat_at_init = false,
             .stats = .{},
         };
@@ -633,20 +680,38 @@ pub const Solver = struct {
             const conflict = try self.propagate();
             if (conflict != null_clause) {
                 self.stats.conflicts += 1;
+                self.conflicts_since_restart += 1;
                 if (self.assignment.level == 0) {
                     try self.proofEmpty();
                     return .unsat;
                 }
 
                 const backjump_level = try self.analyze(conflict);
+
+                // Snapshot trail length at the conflict point — used as
+                // the blocker sample below. Must be taken before backtrack.
+                const conflict_trail_f: f64 = @floatFromInt(self.assignment.trail.items.len);
+
                 self.backtrack(backjump_level);
 
                 const learned_len = self.analyze_learned.items.len;
+                const lbd: u32 = if (learned_len == 1)
+                    1
+                else
+                    self.computeLbd(self.analyze_learned.items);
+                const lbd_f: f64 = @floatFromInt(lbd);
+
+                // Bias-corrected EMA update: value += alpha*(x - value),
+                // bc += alpha*(1 - bc). The corrected estimate is value/bc.
+                self.lbd_fast += lbd_fast_alpha * (lbd_f - self.lbd_fast);
+                self.lbd_fast_bc += lbd_fast_alpha * (1 - self.lbd_fast_bc);
+                self.lbd_slow += lbd_slow_alpha * (lbd_f - self.lbd_slow);
+                self.lbd_slow_bc += lbd_slow_alpha * (1 - self.lbd_slow_bc);
+
                 if (learned_len == 1) {
                     try self.proofAdd(self.analyze_learned.items);
                     try self.assignment.assign(self.analyze_learned.items[0], null_clause);
                 } else {
-                    const lbd = self.computeLbd(self.analyze_learned.items);
                     try self.proofAdd(self.analyze_learned.items);
                     const cref = try self.addClauseToArena(
                         self.analyze_learned.items,
@@ -665,20 +730,49 @@ pub const Solver = struct {
 
                 self.decayVarActivity();
 
-                if (self.stats.conflicts >= self.next_restart) {
-                    self.luby_index += 1;
-                    self.next_restart = self.stats.conflicts +
-                        restart_base * luby(2, self.luby_index);
-                    self.stats.restarts += 1;
-                    self.backtrack(0);
+                // --- Glucose restart decision -------------------------
+                // Bias-corrected ratio test: if recent LBD quality is
+                // worse than the long-run baseline by `restart_ratio`,
+                // pop back to root. Blocker vetoes when the CURRENT
+                // conflict's stack is significantly deeper than the
+                // recent average (search is making progress, keep it).
+                const ready = self.conflicts_since_restart >= restart_min_conflicts;
+                var should_restart = false;
+                if (ready and self.lbd_fast_bc > 0 and self.lbd_slow_bc > 0) {
+                    const fast_corrected = self.lbd_fast / self.lbd_fast_bc;
+                    const slow_corrected = self.lbd_slow / self.lbd_slow_bc;
+                    const trending_bad = fast_corrected > slow_corrected * restart_ratio;
 
-                    // While we're at level 0, reduce the clause DB if
-                    // learned clauses have piled up. Keeps BCP from
-                    // dragging through garbage and bounds memory use on
-                    // hard instances.
-                    if (self.learned_clauses.items.len > self.max_learned) {
+                    var trail_blocks = false;
+                    if (self.trail_fast_bc > 0) {
+                        const trail_corrected = self.trail_fast / self.trail_fast_bc;
+                        trail_blocks = conflict_trail_f > trail_corrected * trail_block_ratio;
+                    }
+                    should_restart = trending_bad and !trail_blocks;
+                }
+
+                // Update the trail EMA *after* the blocker check so we
+                // compare this conflict against past history, not itself.
+                self.trail_fast += lbd_fast_alpha * (conflict_trail_f - self.trail_fast);
+                self.trail_fast_bc += lbd_fast_alpha * (1 - self.trail_fast_bc);
+
+                // ReduceDB runs on its own conflict-count budget, and
+                // only at level 0 — piggyback on a restart when the
+                // budget and the max_learned threshold both agree.
+                const should_reduce = self.stats.conflicts >= self.next_reduce and
+                    self.learned_clauses.items.len > self.max_learned;
+
+                if (should_restart or should_reduce) {
+                    if (should_restart) {
+                        self.stats.restarts += 1;
+                        self.conflicts_since_restart = 0;
+                    }
+                    self.backtrack(0);
+                    if (should_reduce) {
                         try self.reduceDB();
                         self.max_learned = (self.max_learned * 11) / 10;
+                        self.reduce_interval += reduce_grow;
+                        self.next_reduce = self.stats.conflicts + self.reduce_interval;
                     }
                 }
             } else {
@@ -799,29 +893,6 @@ pub const Solver = struct {
         self.learned_clauses.shrinkRetainingCapacity(j);
     }
 };
-
-// ---------------------------------------------------------------------------
-// Luby sequence — restart schedule.
-// ---------------------------------------------------------------------------
-
-fn luby(y: u64, x_in: u64) u64 {
-    var size: u64 = 1;
-    var seq: u32 = 0;
-    var x = x_in;
-    while (size < x + 1) {
-        seq += 1;
-        size = 2 * size + 1;
-    }
-    while (size != x + 1) {
-        size = (size - 1) / 2;
-        seq -= 1;
-        x = x % size;
-    }
-    var result: u64 = 1;
-    var i: u32 = 0;
-    while (i < seq) : (i += 1) result *= y;
-    return result;
-}
 
 // ---------------------------------------------------------------------------
 // VSIDS order heap (binary max-heap keyed by activity).
