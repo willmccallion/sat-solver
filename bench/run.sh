@@ -33,12 +33,23 @@ declare -A EXPECTED=(
     [uuf150-645]=20
     [uuf200-860]=20
     [uuf250-1065]=20
+    # DIMACS stress families with a single known verdict.
+    # Mixed-verdict families (aim, jnh, ssa) and solver-killers
+    # (parity — times out) aren't listed here and are skipped.
+    [dimacs-dubois]=20
+    [dimacs-pret]=20
+    [dimacs-bf]=20
+    [dimacs-ii]=10
+    [dimacs-hanoi]=10
 )
 
 if [[ $# -gt 0 ]]; then
     SETS_TO_RUN=("$@")
 else
-    SETS_TO_RUN=(uf20-91 uf50-218 uuf50-218 uf100-430 uuf100-430)
+    SETS_TO_RUN=(
+        uf20-91 uf50-218 uuf50-218 uf100-430 uuf100-430
+        dimacs-dubois dimacs-pret dimacs-bf dimacs-ii dimacs-hanoi
+    )
 fi
 
 total=0

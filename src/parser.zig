@@ -11,6 +11,7 @@ pub const ParseError = error{
     InvalidToken,
     VariableOutOfRange,
     UnterminatedClause,
+    ClauseCountMismatch,
     OutOfMemory,
 };
 
@@ -26,6 +27,7 @@ pub fn parse(allocator: Allocator, source: []const u8) ParseError!Formula {
     defer current.deinit(allocator);
 
     var header_seen = false;
+    var declared_clauses: u32 = 0;
     var i: usize = 0;
 
     while (i < source.len) {
@@ -60,7 +62,7 @@ pub fn parse(allocator: Allocator, source: []const u8) ParseError!Formula {
             if (it.next() != null) return error.InvalidHeader;
 
             formula.num_vars = std.fmt.parseInt(u32, nv_tok, 10) catch return error.InvalidHeader;
-            _ = std.fmt.parseInt(u32, nc_tok, 10) catch return error.InvalidHeader;
+            declared_clauses = std.fmt.parseInt(u32, nc_tok, 10) catch return error.InvalidHeader;
             header_seen = true;
             continue;
         }
@@ -85,6 +87,21 @@ pub fn parse(allocator: Allocator, source: []const u8) ParseError!Formula {
 
     if (!header_seen) return error.MissingHeader;
     if (current.items.len > 0) return error.UnterminatedClause;
+
+    // Sanity check against the `p cnf N M` header. A large delta is
+    // almost always a malformed file (missing `0` terminators or stray
+    // lines that got silently joined into giant clauses), as seen in
+    // SATLIB's dubois100.cnf. We accept a 5 % slack because some real
+    // files have off-by-one header errors but are otherwise fine.
+    const parsed: u32 = @intCast(formula.clauses.items.len);
+    if (declared_clauses > 0) {
+        const delta = if (parsed >= declared_clauses)
+            parsed - declared_clauses
+        else
+            declared_clauses - parsed;
+        const slack = (declared_clauses + 19) / 20; // 5 %
+        if (delta > slack) return error.ClauseCountMismatch;
+    }
 
     return formula;
 }
