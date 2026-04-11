@@ -42,7 +42,8 @@ pub const Result = enum { sat, unsat, unknown };
 // ---------------------------------------------------------------------------
 
 const learned_bit: u32 = 0x8000_0000;
-const len_mask: u32 = 0x7fff_ffff;
+const deleted_bit: u32 = 0x4000_0000;
+const len_mask: u32 = 0x3fff_ffff;
 const header_slots: u32 = 2;
 
 const Watcher = struct {
@@ -60,6 +61,8 @@ pub const Stats = struct {
     conflicts: u64 = 0,
     restarts: u64 = 0,
     learned: u64 = 0,
+    reductions: u64 = 0,
+    deleted: u64 = 0,
 };
 
 pub const Solver = struct {
@@ -77,6 +80,9 @@ pub const Solver = struct {
     analyze_seen: []bool,
     analyze_learned: std.ArrayList(Literal),
     analyze_levels: std.ArrayList(u32),
+
+    learned_clauses: std.ArrayList(ClauseRef),
+    max_learned: usize,
 
     luby_index: u64,
     next_restart: u64,
@@ -100,6 +106,8 @@ pub const Solver = struct {
             .analyze_seen = &.{},
             .analyze_learned = .empty,
             .analyze_levels = .empty,
+            .learned_clauses = .empty,
+            .max_learned = @max(formula.clauses.items.len, 1000),
             .luby_index = 0,
             .next_restart = restart_base,
             .unsat_at_init = false,
@@ -169,6 +177,7 @@ pub const Solver = struct {
         self.allocator.free(self.analyze_seen);
         self.analyze_learned.deinit(self.allocator);
         self.analyze_levels.deinit(self.allocator);
+        self.learned_clauses.deinit(self.allocator);
         self.order_heap.deinit(self.allocator);
         self.assignment.deinit();
         self.* = undefined;
@@ -182,6 +191,10 @@ pub const Solver = struct {
 
     inline fn clauseIsLearned(self: *const Solver, cref: ClauseRef) bool {
         return (self.arena.items[cref].raw & learned_bit) != 0;
+    }
+
+    inline fn clauseIsDeleted(self: *const Solver, cref: ClauseRef) bool {
+        return (self.arena.items[cref].raw & deleted_bit) != 0;
     }
 
     inline fn clauseLbd(self: *const Solver, cref: ClauseRef) u32 {
@@ -470,6 +483,7 @@ pub const Solver = struct {
                         true,
                         lbd,
                     );
+                    try self.learned_clauses.append(self.allocator, cref);
                     try self.attachWatches(cref);
                     // The UIP at index 0 is asserted under the new level.
                     // We read the literal *after* the append because the
@@ -487,6 +501,15 @@ pub const Solver = struct {
                         restart_base * luby(2, self.luby_index);
                     self.stats.restarts += 1;
                     self.backtrack(0);
+
+                    // While we're at level 0, reduce the clause DB if
+                    // learned clauses have piled up. Keeps BCP from
+                    // dragging through garbage and bounds memory use on
+                    // hard instances.
+                    if (self.learned_clauses.items.len > self.max_learned) {
+                        try self.reduceDB();
+                        self.max_learned = (self.max_learned * 11) / 10;
+                    }
                 }
             } else {
                 const lit = self.pickBranching() orelse return .sat;
@@ -498,13 +521,16 @@ pub const Solver = struct {
     }
 
     pub fn verifyModel(self: *Solver) bool {
-        // Walk only the original clauses (learned clauses are implied).
+        // Walk only the original, non-deleted clauses. (Learned clauses
+        // are implied by the originals, and deleted clauses are holes in
+        // the arena that no longer participate in the problem.)
         var cref: ClauseRef = 0;
         while (cref < self.arena.items.len) {
             const header = self.arena.items[cref].raw;
             const len = header & len_mask;
             const is_learned = (header & learned_bit) != 0;
-            if (!is_learned) {
+            const is_deleted = (header & deleted_bit) != 0;
+            if (!is_learned and !is_deleted) {
                 var satisfied = false;
                 var k: usize = 0;
                 while (k < len) : (k += 1) {
@@ -519,6 +545,87 @@ pub const Solver = struct {
             cref += header_slots + len;
         }
         return true;
+    }
+
+    // ---- Clause DB reduction --------------------------------------------
+    //
+    // Called at level 0 after a restart, when the learned clause count has
+    // outgrown `max_learned`. Keeps the better half (by LBD — lower is
+    // better). Clauses that are currently reasons for trail literals are
+    // "locked" and must never be deleted, since `analyze` follows reasons.
+    // Glue clauses (LBD <= 2) are also kept unconditionally — they are
+    // empirically the most useful learned clauses.
+    //
+    // Dead clauses stay in the arena as holes; this avoids rewriting
+    // ClauseRefs. BCP never visits them because we also strip their
+    // watchers from every watcher list. Proper arena compaction can come
+    // later if the holes become a memory problem.
+    fn reduceDB(self: *Solver) !void {
+        std.debug.assert(self.assignment.level == 0);
+
+        // Collect the set of clauses currently serving as reasons on the
+        // trail. These are locked.
+        var locked: std.AutoHashMap(ClauseRef, void) = .init(self.allocator);
+        defer locked.deinit();
+        for (self.assignment.trail.items) |lit| {
+            const r = self.assignment.vars[lit.variable()].reason;
+            if (r != null_clause) try locked.put(r, {});
+        }
+
+        // Build the deletion candidate list: learned, non-deleted,
+        // non-locked, non-glue.
+        const Candidate = struct { cref: ClauseRef, lbd: u32 };
+        var candidates: std.ArrayList(Candidate) = .empty;
+        defer candidates.deinit(self.allocator);
+        try candidates.ensureTotalCapacity(
+            self.allocator,
+            self.learned_clauses.items.len,
+        );
+        for (self.learned_clauses.items) |cref| {
+            if (self.clauseIsDeleted(cref)) continue;
+            if (locked.contains(cref)) continue;
+            const lbd = self.clauseLbd(cref);
+            if (lbd <= 2) continue;
+            candidates.appendAssumeCapacity(.{ .cref = cref, .lbd = lbd });
+        }
+
+        // Worst first (highest LBD first) so we can slice off the front.
+        std.mem.sort(Candidate, candidates.items, {}, struct {
+            fn lessThan(_: void, a: Candidate, b: Candidate) bool {
+                return a.lbd > b.lbd;
+            }
+        }.lessThan);
+
+        const to_delete = candidates.items.len / 2;
+        for (candidates.items[0..to_delete]) |c| {
+            self.arena.items[c.cref].raw |= deleted_bit;
+        }
+        self.stats.reductions += 1;
+        self.stats.deleted += to_delete;
+
+        // Sweep watcher lists: drop any watcher that points at a deleted
+        // clause. One pass per list, O(total watchers).
+        for (self.watchers) |*wlist| {
+            var j: usize = 0;
+            for (wlist.items) |w| {
+                if (!self.clauseIsDeleted(w.clause)) {
+                    wlist.items[j] = w;
+                    j += 1;
+                }
+            }
+            wlist.shrinkRetainingCapacity(j);
+        }
+
+        // Compact the learned_clauses index so the next reduceDB doesn't
+        // waste time re-scanning dead entries.
+        var j: usize = 0;
+        for (self.learned_clauses.items) |cref| {
+            if (!self.clauseIsDeleted(cref)) {
+                self.learned_clauses.items[j] = cref;
+                j += 1;
+            }
+        }
+        self.learned_clauses.shrinkRetainingCapacity(j);
     }
 };
 
