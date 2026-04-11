@@ -494,6 +494,9 @@ pub const Solver = struct {
             const v = lit.variable();
             a.saved_phases[v] = (a.vars[v].value == .@"true");
             a.vars[v] = .{};
+            const pos_slot = v << 1;
+            a.lit_values[pos_slot] = .unassigned;
+            a.lit_values[pos_slot | 1] = .unassigned;
             self.order_heap.insert(v);
         }
         a.trail.shrinkRetainingCapacity(trail_start);

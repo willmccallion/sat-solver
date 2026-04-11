@@ -134,6 +134,29 @@ test "parser: stops at SATLIB % end-of-content marker" {
     try testing.expectEqual(@as(usize, 1), formula.clauses.items.len);
 }
 
+test "parser: rejects clause count mismatch > 5% (malformed DIMACS)" {
+    // Declares 10 clauses but only provides 2 — mimics the malformed
+    // SATLIB dubois100.cnf which is missing `0` terminators and gets
+    // silently joined into a handful of giant tautology clauses.
+    const src =
+        \\p cnf 2 10
+        \\1 2 0
+        \\-1 -2 0
+    ;
+    try testing.expectError(error.ClauseCountMismatch, parser.parse(testing.allocator, src));
+}
+
+test "parser: accepts small clause count discrepancy (within slack)" {
+    // Declares 1 clause, provides 1 — exact match, always OK.
+    const src =
+        \\p cnf 2 1
+        \\1 2 0
+    ;
+    var formula = try parser.parse(testing.allocator, src);
+    defer formula.deinit();
+    try testing.expectEqual(@as(usize, 1), formula.clauses.items.len);
+}
+
 test "parser: rejects malformed p line" {
     const src =
         \\p cnf 2
