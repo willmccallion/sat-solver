@@ -1,0 +1,1013 @@
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+
+// sat-compete — tournament readiness checker for `zig build compete`.
+//
+// Runs a fixed rubric of checks against the current build and prints a
+// colored report comparing the solver to the published SAT Competition
+// 2025 main-track reference numbers. Two distinct jobs:
+//
+//   1. Submittability — the non-negotiable things a SAT Competition
+//      submission must do: correct verdicts, gzipped input, signal
+//      handling, DRAT proof output.
+//
+//   2. Competitiveness — rough performance metrics (wall time, IPC,
+//      branch-miss %, ns/propagation) compared to a published
+//      reference so you know how far off you are from placing.
+//
+// The published reference is hard-coded at the top of this file. If
+// a future SAT Competition shifts the numbers, update them here.
+
+// ---------------------------------------------------------------------------
+// Published reference — SAT Competition 2025 Main Track (sequential).
+// Source: https://satcompetition.github.io/2025/satcomp25slides.pdf
+//         Codel, Fazekas, Heule, Iser — SAT 2025, Glasgow, August 2025
+// ---------------------------------------------------------------------------
+const ref_total_instances: u32 = 400;
+const ref_timeout_seconds: u32 = 5000;
+const ref_scoring: []const u8 = "PAR-2 (penalizes slow solves)";
+const ref_winner_name: []const u8 = "AE-Kissat-MAB";
+const ref_winner_solved: u32 = 327;
+const ref_winner_par2: f64 = 2264.73;
+const ref_second_name: []const u8 = "Kissat-public";
+const ref_second_solved: u32 = 321;
+const ref_third_name: []const u8 = "Kissat-VSA";
+const ref_third_solved: u32 = 317;
+
+// Directional perf targets for a competitive solver. These aren't
+// exact published numbers — modern solver papers rarely publish ns-
+// level breakdowns — but they represent the order of magnitude a
+// competitive CDCL implementation should be in.
+const ref_ipc_good: f64 = 2.0;
+const ref_branch_miss_good_pct: f64 = 5.0;
+const ref_bad_spec_good_pct: f64 = 20.0;
+
+const Color = struct {
+    const reset = "\x1b[0m";
+    const bold = "\x1b[1m";
+    const dim = "\x1b[2m";
+    const red = "\x1b[31m";
+    const green = "\x1b[32m";
+    const yellow = "\x1b[33m";
+    const cyan = "\x1b[36m";
+    const gray = "\x1b[90m";
+};
+
+const Status = enum { pass, fail, warn, skip };
+
+const Check = struct {
+    name: []const u8,
+    status: Status,
+    detail: []u8, // owned
+};
+
+const Perf = struct {
+    available: bool = false,
+    wall_ms: f64 = 0,
+    instance_count: u64 = 0,
+    propagations: u64 = 0,
+    conflicts: u64 = 0,
+    ipc: f64 = 0,
+    branch_miss_pct: f64 = 0,
+    bad_spec_pct: f64 = 0,
+    retiring_pct: f64 = 0,
+};
+
+const Capacity = struct {
+    tested: u32 = 0,
+    solved: u32 = 0,
+    elapsed_s: f64 = 0,
+    limit_s: u32 = 0,
+    available: bool = false,
+};
+
+const width: usize = 72;
+
+// ---------------------------------------------------------------------------
+// main
+// ---------------------------------------------------------------------------
+
+pub fn main() !u8 {
+    var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = debug_allocator.deinit();
+    const gpa = debug_allocator.allocator();
+
+    var stdout_buffer: [8192]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout = &stdout_writer.interface;
+    defer stdout.flush() catch {};
+
+    var stderr_buffer: [2048]u8 = undefined;
+    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    const stderr = &stderr_writer.interface;
+    defer stderr.flush() catch {};
+
+    const args = try std.process.argsAlloc(gpa);
+    defer std.process.argsFree(gpa, args);
+
+    const sat_path = if (args.len >= 2) args[1] else "./zig-out/bin/sat";
+    const bench_path = if (args.len >= 3) args[2] else "./zig-out/bin/sat-bench";
+
+    var checks: std.ArrayList(Check) = .empty;
+    defer {
+        for (checks.items) |c| gpa.free(c.detail);
+        checks.deinit(gpa);
+    }
+
+    try stdout.print("{s}[1/5] verifying binaries...{s}\n", .{ Color.dim, Color.reset });
+    try stdout.flush();
+    try checks.append(gpa, try checkBinary(gpa, "sat binary", sat_path));
+    try checks.append(gpa, try checkBinary(gpa, "sat-bench binary", bench_path));
+
+    try stdout.print("{s}[2/5] running SATLIB correctness sweep...{s}\n", .{ Color.dim, Color.reset });
+    try stdout.flush();
+    try checks.append(gpa, try checkCorrectness(gpa));
+
+    try stdout.print("{s}[3/5] verifying gzip input + signal + DRAT...{s}\n", .{ Color.dim, Color.reset });
+    try stdout.flush();
+    try checks.append(gpa, try checkGzipInput(gpa, sat_path));
+    try checks.append(gpa, try checkSignalHandling(gpa, sat_path));
+    try checks.append(gpa, try checkDratOutput(gpa, sat_path));
+
+    try stdout.print("{s}[4/5] collecting perf baseline (uf100 + uuf100)...{s}\n", .{ Color.dim, Color.reset });
+    try stdout.flush();
+    var perf: Perf = .{};
+    collectPerf(gpa, bench_path, &perf) catch |err| {
+        try stderr.print("warning: perf baseline failed: {s}\n", .{@errorName(err)});
+    };
+
+    try stdout.print("{s}[5/5] capacity probe (uf250 sample, 5 s each)...{s}\n", .{ Color.dim, Color.reset });
+    try stdout.flush();
+    var capacity: Capacity = .{};
+    collectCapacity(gpa, sat_path, &capacity) catch |err| {
+        try stderr.print("warning: capacity probe failed: {s}\n", .{@errorName(err)});
+    };
+
+    try stdout.writeAll("\n");
+    try printReport(stdout, checks.items, &perf, &capacity);
+
+    // Non-zero exit if any submittability check failed.
+    for (checks.items) |c| {
+        if (c.status == .fail) return 1;
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// checks
+// ---------------------------------------------------------------------------
+
+fn checkBinary(gpa: Allocator, name: []const u8, path: []const u8) !Check {
+    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+        return .{
+            .name = name,
+            .status = .fail,
+            .detail = try std.fmt.allocPrint(gpa, "{s}: {s}", .{ path, @errorName(err) }),
+        };
+    };
+    file.close();
+    // Strip the cache prefix so the detail column stays readable.
+    const base = std.fs.path.basename(path);
+    return .{
+        .name = name,
+        .status = .pass,
+        .detail = try std.fmt.allocPrint(gpa, "{s}", .{base}),
+    };
+}
+
+// Spawns `bench/run.sh` and parses the trailing "all N instances correct"
+// line. Anything else (partial results, mismatches, missing instances)
+// is a fail with the first few mismatch lines quoted in the detail.
+fn checkCorrectness(gpa: Allocator) !Check {
+    const result = std.process.Child.run(.{
+        .allocator = gpa,
+        .argv = &.{ "bash", "bench/run.sh" },
+        .max_output_bytes = 1 << 20,
+    }) catch |err| {
+        return .{
+            .name = "correctness sweep",
+            .status = .fail,
+            .detail = try std.fmt.allocPrint(gpa, "spawn failed: {s}", .{@errorName(err)}),
+        };
+    };
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+
+    const passed = result.term == .Exited and result.term.Exited == 0;
+    var total: u64 = 0;
+    var it = std.mem.splitScalar(u8, result.stdout, '\n');
+    while (it.next()) |line| {
+        if (std.mem.startsWith(u8, line, "all ")) {
+            const rest = line["all ".len..];
+            const sp = std.mem.indexOfScalar(u8, rest, ' ') orelse continue;
+            total = std.fmt.parseInt(u64, rest[0..sp], 10) catch 0;
+        }
+    }
+
+    if (passed and total > 0) {
+        return .{
+            .name = "correctness sweep",
+            .status = .pass,
+            .detail = try std.fmt.allocPrint(gpa, "{d}/{d} instances across SATLIB + DIMACS", .{ total, total }),
+        };
+    }
+    return .{
+        .name = "correctness sweep",
+        .status = .fail,
+        .detail = try gpa.dupe(u8, "bench/run.sh reported mismatches (see `bench/run.sh`)"),
+    };
+}
+
+// Gzips the trivial_unsat fixture into /tmp and verifies sat returns
+// the same verdict + exit code for both versions.
+fn checkGzipInput(gpa: Allocator, sat_path: []const u8) !Check {
+    const plain_path = "tests/fixtures/trivial_unsat.cnf";
+    const gz_path = "/tmp/sat-compete-trivial.cnf.gz";
+
+    // Use the system gzip to create the .gz fixture. If gzip is missing
+    // the check degrades to `.warn` — the feature still works, we just
+    // can't exercise it from here.
+    const cmd = try std.fmt.allocPrint(gpa, "gzip -c {s} > {s}", .{ plain_path, gz_path });
+    defer gpa.free(cmd);
+    const gz_result = std.process.Child.run(.{
+        .allocator = gpa,
+        .argv = &.{ "bash", "-c", cmd },
+        .max_output_bytes = 1 << 14,
+    }) catch {
+        return .{
+            .name = "gzip input",
+            .status = .warn,
+            .detail = try gpa.dupe(u8, "could not run `gzip` to build fixture"),
+        };
+    };
+    defer gpa.free(gz_result.stdout);
+    defer gpa.free(gz_result.stderr);
+
+    if (gz_result.term != .Exited or gz_result.term.Exited != 0) {
+        return .{
+            .name = "gzip input",
+            .status = .warn,
+            .detail = try gpa.dupe(u8, "gzip subprocess failed"),
+        };
+    }
+
+    const plain = std.process.Child.run(.{
+        .allocator = gpa,
+        .argv = &.{ sat_path, plain_path },
+        .max_output_bytes = 1 << 14,
+    }) catch |err| return Check{
+        .name = "gzip input",
+        .status = .fail,
+        .detail = try std.fmt.allocPrint(gpa, "sat spawn: {s}", .{@errorName(err)}),
+    };
+    defer gpa.free(plain.stdout);
+    defer gpa.free(plain.stderr);
+
+    const gz_out = std.process.Child.run(.{
+        .allocator = gpa,
+        .argv = &.{ sat_path, gz_path },
+        .max_output_bytes = 1 << 14,
+    }) catch |err| return Check{
+        .name = "gzip input",
+        .status = .fail,
+        .detail = try std.fmt.allocPrint(gpa, "sat spawn (gz): {s}", .{@errorName(err)}),
+    };
+    defer gpa.free(gz_out.stdout);
+    defer gpa.free(gz_out.stderr);
+
+    std.fs.cwd().deleteFile(gz_path) catch {};
+
+    const same_exit = std.meta.eql(plain.term, gz_out.term);
+    const same_out = std.mem.eql(u8, plain.stdout, gz_out.stdout);
+    if (!same_exit or !same_out) {
+        return .{
+            .name = "gzip input",
+            .status = .fail,
+            .detail = try gpa.dupe(u8, "sat disagrees between .cnf and .cnf.gz"),
+        };
+    }
+
+    return .{
+        .name = "gzip input",
+        .status = .pass,
+        .detail = try std.fmt.allocPrint(
+            gpa,
+            "same verdict ({s})",
+            .{std.mem.trim(u8, plain.stdout, " \t\r\n")},
+        ),
+    };
+}
+
+// Spawns the solver on a long-ish instance, sends SIGTERM after a
+// short delay, verifies it exits 0 with `s UNKNOWN` on stdout.
+fn checkSignalHandling(gpa: Allocator, sat_path: []const u8) !Check {
+    // Prefer uf250 (guaranteed to take at least tens of ms in
+    // ReleaseFast) but fall back to uuf100 if the large set isn't
+    // downloaded. Either way the instance must run long enough for
+    // the SIGTERM to arrive before completion.
+    const candidates = [_][]const u8{
+        "bench/instances/uf250-1065/uf250-010.cnf",
+        "bench/instances/uuf100-430/uuf100-010.cnf",
+    };
+    var inst: ?[]const u8 = null;
+    for (candidates) |p| {
+        const f = std.fs.cwd().openFile(p, .{}) catch continue;
+        f.close();
+        inst = p;
+        break;
+    }
+    if (inst == null) {
+        return .{
+            .name = "signal handling (SIGTERM)",
+            .status = .skip,
+            .detail = try gpa.dupe(u8, "no bench instance available (run bench/fetch.sh)"),
+        };
+    }
+
+    var child = std.process.Child.init(&.{ sat_path, inst.? }, gpa);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+    try child.spawn();
+
+    // Give the solver a few ms to actually start BCP, then kill it.
+    std.Thread.sleep(10 * std.time.ns_per_ms);
+    _ = std.posix.kill(child.id, std.posix.SIG.TERM) catch 0;
+
+    var stdout_list: std.ArrayList(u8) = .empty;
+    defer stdout_list.deinit(gpa);
+    var stderr_list: std.ArrayList(u8) = .empty;
+    defer stderr_list.deinit(gpa);
+    try child.collectOutput(gpa, &stdout_list, &stderr_list, 1 << 16);
+    const term = try child.wait();
+
+    const exit_ok = term == .Exited and term.Exited == 0;
+    const says_unknown = std.mem.indexOf(u8, stdout_list.items, "s UNKNOWN") != null;
+    if (exit_ok and says_unknown) {
+        return .{
+            .name = "signal handling (SIGTERM)",
+            .status = .pass,
+            .detail = try gpa.dupe(u8, "exits 0 with `s UNKNOWN`"),
+        };
+    }
+    return .{
+        .name = "signal handling (SIGTERM)",
+        .status = .fail,
+        .detail = try std.fmt.allocPrint(
+            gpa,
+            "term={any} stdout=`{s}`",
+            .{ term, std.mem.trim(u8, stdout_list.items, " \t\r\n") },
+        ),
+    };
+}
+
+// Runs `sat --proof ...` on a known UNSAT instance and checks the proof
+// file was created and ends with an empty clause line. If `drat-trim`
+// is on PATH it also does a full proof-check round-trip.
+fn checkDratOutput(gpa: Allocator, sat_path: []const u8) !Check {
+    const inst = "tests/fixtures/trivial_unsat.cnf";
+    const drat_path = "/tmp/sat-compete.drat";
+    std.fs.cwd().deleteFile(drat_path) catch {};
+
+    const run = std.process.Child.run(.{
+        .allocator = gpa,
+        .argv = &.{ sat_path, "--proof", drat_path, inst },
+        .max_output_bytes = 1 << 14,
+    }) catch |err| return Check{
+        .name = "DRAT proof output",
+        .status = .fail,
+        .detail = try std.fmt.allocPrint(gpa, "sat spawn: {s}", .{@errorName(err)}),
+    };
+    defer gpa.free(run.stdout);
+    defer gpa.free(run.stderr);
+
+    const file = std.fs.cwd().openFile(drat_path, .{}) catch |err| return Check{
+        .name = "DRAT proof output",
+        .status = .fail,
+        .detail = try std.fmt.allocPrint(gpa, "no proof file: {s}", .{@errorName(err)}),
+    };
+    const contents = try file.readToEndAlloc(gpa, 1 << 16);
+    file.close();
+    defer gpa.free(contents);
+
+    const has_empty_clause = std.mem.indexOf(u8, contents, "0\n") != null;
+    if (!has_empty_clause) {
+        return .{
+            .name = "DRAT proof output",
+            .status = .fail,
+            .detail = try gpa.dupe(u8, "proof missing empty clause"),
+        };
+    }
+
+    // Optional: round-trip with drat-trim if installed.
+    const drat_trim_check = std.process.Child.run(.{
+        .allocator = gpa,
+        .argv = &.{ "drat-trim", "--version" },
+        .max_output_bytes = 1 << 14,
+    }) catch null;
+    if (drat_trim_check) |c| {
+        gpa.free(c.stdout);
+        gpa.free(c.stderr);
+
+        const verify = std.process.Child.run(.{
+            .allocator = gpa,
+            .argv = &.{ "drat-trim", inst, drat_path },
+            .max_output_bytes = 1 << 16,
+        }) catch {
+            std.fs.cwd().deleteFile(drat_path) catch {};
+            return .{
+                .name = "DRAT proof output",
+                .status = .warn,
+                .detail = try gpa.dupe(u8, "drat-trim spawn failed"),
+            };
+        };
+        defer gpa.free(verify.stdout);
+        defer gpa.free(verify.stderr);
+        std.fs.cwd().deleteFile(drat_path) catch {};
+
+        const verified = std.mem.indexOf(u8, verify.stdout, "s VERIFIED") != null;
+        if (verified) {
+            return .{
+                .name = "DRAT proof output",
+                .status = .pass,
+                .detail = try gpa.dupe(u8, "round-trip verified by drat-trim"),
+            };
+        }
+        return .{
+            .name = "DRAT proof output",
+            .status = .fail,
+            .detail = try gpa.dupe(u8, "drat-trim rejected proof"),
+        };
+    }
+
+    std.fs.cwd().deleteFile(drat_path) catch {};
+    return .{
+        .name = "DRAT proof output",
+        .status = .warn,
+        .detail = try gpa.dupe(u8, "emits empty clause (install `drat-trim` for full verification)"),
+    };
+}
+
+// ---------------------------------------------------------------------------
+// perf collection
+// ---------------------------------------------------------------------------
+
+fn collectPerf(gpa: Allocator, bench_path: []const u8, out: *Perf) !void {
+    // Light perf probe on uf100 + uuf100 — a few seconds total, long
+    // enough to get stable counter values without the 40-second deep
+    // bench. Full profiling lives in `zig build bench`.
+    const events = "cycles,instructions,branches,branch-misses";
+
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(gpa);
+    try argv.appendSlice(gpa, &.{
+        "perf",      "stat",
+        "-x",        ",",
+        "-e",        events,
+        "-M",        "TopdownL1",
+        "--",        bench_path,
+        "bench/instances/uf100-430",
+        "bench/instances/uuf100-430",
+    });
+
+    const result = std.process.Child.run(.{
+        .allocator = gpa,
+        .argv = argv.items,
+        .max_output_bytes = 1 << 22,
+    }) catch |err| {
+        if (err == error.FileNotFound) {
+            // `perf` not installed; don't hard-fail. Perf is optional
+            // for submittability and only needed for the competitive
+            // scoreboard section.
+            return;
+        }
+        return err;
+    };
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+
+    if (result.term != .Exited or result.term.Exited != 0) return;
+
+    parseBench(result.stdout, out);
+    parsePerfStat(result.stderr, out);
+    out.available = true;
+}
+
+// Parses the structured summary lines `sat-bench` prints on stdout.
+fn parseBench(output: []const u8, out: *Perf) void {
+    var it = std.mem.splitScalar(u8, output, '\n');
+    while (it.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (std.mem.startsWith(u8, line, "solved ")) {
+            const rest = line["solved ".len..];
+            const sp = std.mem.indexOfScalar(u8, rest, ' ') orelse continue;
+            out.instance_count = std.fmt.parseInt(u64, rest[0..sp], 10) catch 0;
+        } else if (std.mem.startsWith(u8, line, "total ")) {
+            const rest = line["total ".len..];
+            const sp = std.mem.indexOfScalar(u8, rest, ' ') orelse continue;
+            const ms = std.fmt.parseFloat(f64, rest[0..sp]) catch 0;
+            out.wall_ms = ms;
+        } else if (std.mem.startsWith(u8, line, "stats:")) {
+            parseStats(line["stats:".len..], out);
+        }
+    }
+}
+
+fn parseStats(payload: []const u8, out: *Perf) void {
+    var it = std.mem.tokenizeAny(u8, payload, " \t");
+    while (it.next()) |tok| {
+        const eq = std.mem.indexOfScalar(u8, tok, '=') orelse continue;
+        const key = tok[0..eq];
+        const val = tok[eq + 1 ..];
+        const n = std.fmt.parseInt(u64, val, 10) catch continue;
+        if (std.mem.eql(u8, key, "conflicts")) out.conflicts = n //
+        else if (std.mem.eql(u8, key, "propagations")) out.propagations = n;
+    }
+}
+
+// Parses perf stat's stderr CSV, picking up cycles/instructions/branches
+// for IPC & miss rate, and TopdownL1 metrics for bad-speculation /
+// retiring percentages. Filters out the cpu_atom PMU on hybrid Intel
+// chips (as documented in src/profile.zig).
+fn parsePerfStat(output: []const u8, out: *Perf) void {
+    var cycles: u64 = 0;
+    var insns: u64 = 0;
+    var branches: u64 = 0;
+    var br_misses: u64 = 0;
+
+    var pmu_is_atom = false;
+    var it = std.mem.splitScalar(u8, output, '\n');
+    while (it.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+
+        var fields = std.mem.splitScalar(u8, line, ',');
+        const value_str = fields.next() orelse continue;
+        _ = fields.next() orelse continue;
+        const event_raw = fields.next() orelse continue;
+        _ = fields.next() orelse continue;
+        _ = fields.next() orelse continue;
+        const metric_value = fields.next() orelse "";
+        const metric_unit = fields.next() orelse "";
+
+        if (event_raw.len > 0) {
+            if (std.mem.startsWith(u8, event_raw, "cpu_atom/")) {
+                pmu_is_atom = true;
+            } else if (std.mem.startsWith(u8, event_raw, "cpu_core/")) {
+                pmu_is_atom = false;
+            }
+        }
+        if (pmu_is_atom) continue;
+
+        if (value_str.len > 0 and value_str[0] != '<') {
+            if (std.fmt.parseInt(u64, value_str, 10)) |v| {
+                const ev = stripEvent(event_raw);
+                if (std.mem.eql(u8, ev, "cycles")) cycles += v //
+                else if (std.mem.eql(u8, ev, "instructions")) insns += v //
+                else if (std.mem.eql(u8, ev, "branches")) branches += v //
+                else if (std.mem.eql(u8, ev, "branch-misses")) br_misses += v;
+            } else |_| {}
+        }
+
+        if (metric_unit.len > 0 and metric_value.len > 0) {
+            var name = std.mem.trim(u8, metric_unit, " \t");
+            if (std.mem.startsWith(u8, name, "%")) name = name[1..];
+            name = std.mem.trim(u8, name, " \t");
+            const mv = std.fmt.parseFloat(f64, metric_value) catch continue;
+            if (std.mem.eql(u8, name, "tma_retiring")) out.retiring_pct += mv //
+            else if (std.mem.eql(u8, name, "tma_bad_speculation")) out.bad_spec_pct += mv;
+        }
+    }
+
+    if (cycles > 0) out.ipc = @as(f64, @floatFromInt(insns)) / @as(f64, @floatFromInt(cycles));
+    if (branches > 0) {
+        out.branch_miss_pct = @as(f64, @floatFromInt(br_misses)) * 100.0 /
+            @as(f64, @floatFromInt(branches));
+    }
+}
+
+fn stripEvent(event_in: []const u8) []const u8 {
+    var e = event_in;
+    if (std.mem.startsWith(u8, e, "cpu_core/")) e = e["cpu_core/".len..];
+    if (std.mem.startsWith(u8, e, "cpu_atom/")) e = e["cpu_atom/".len..];
+    if (std.mem.endsWith(u8, e, "/u")) e = e[0 .. e.len - 2];
+    if (std.mem.endsWith(u8, e, "/")) e = e[0 .. e.len - 1];
+    return e;
+}
+
+// ---------------------------------------------------------------------------
+// capacity probe
+// ---------------------------------------------------------------------------
+
+// Runs the solver on a sample of uf250 instances with a short time
+// limit and reports how many finished. This is the highest-tier
+// classical random 3-SAT set; modern solvers blast through it in
+// sub-second per instance. If yours times out on many of these you're
+// nowhere near competitive — but if it clears the sample, it means
+// the CDCL + reduceDB stack is working.
+fn collectCapacity(gpa: Allocator, sat_path: []const u8, out: *Capacity) !void {
+    const dir_path = "bench/instances/uf250-1065";
+    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch return;
+    defer dir.close();
+
+    const per_inst_limit_s: u32 = 5;
+    const max_samples: u32 = 10;
+
+    var names: std.ArrayList([]u8) = .empty;
+    defer {
+        for (names.items) |n| gpa.free(n);
+        names.deinit(gpa);
+    }
+    var it = dir.iterate();
+    while (try it.next()) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.name, ".cnf")) continue;
+        try names.append(gpa, try gpa.dupe(u8, entry.name));
+    }
+    std.mem.sort([]u8, names.items, {}, struct {
+        fn lt(_: void, a: []u8, b: []u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.lt);
+
+    const sample_count = @min(@as(usize, max_samples), names.items.len);
+    var timer = try std.time.Timer.start();
+    const limit_arg = try std.fmt.allocPrint(gpa, "{d}", .{per_inst_limit_s});
+    defer gpa.free(limit_arg);
+
+    for (names.items[0..sample_count]) |name| {
+        const path = try std.fs.path.join(gpa, &.{ dir_path, name });
+        defer gpa.free(path);
+
+        const result = std.process.Child.run(.{
+            .allocator = gpa,
+            .argv = &.{ sat_path, "--time-limit", limit_arg, path },
+            .max_output_bytes = 1 << 14,
+        }) catch continue;
+        defer gpa.free(result.stdout);
+        defer gpa.free(result.stderr);
+
+        out.tested += 1;
+        if (result.term == .Exited) {
+            const code = result.term.Exited;
+            if (code == 10 or code == 20) out.solved += 1;
+        }
+    }
+
+    out.elapsed_s = @as(f64, @floatFromInt(timer.read())) / 1e9;
+    out.limit_s = per_inst_limit_s;
+    out.available = sample_count > 0;
+}
+
+// ---------------------------------------------------------------------------
+// report printing
+// ---------------------------------------------------------------------------
+
+const box_tl = "╭";
+const box_tr = "╮";
+const box_bl = "╰";
+const box_br = "╯";
+const box_h = "─";
+const box_v = "│";
+const box_lt = "├";
+const box_rt = "┤";
+
+fn hrule(w: *std.Io.Writer, left: []const u8, right: []const u8) !void {
+    try w.print("{s}{s}", .{ Color.gray, left });
+    var i: usize = 0;
+    while (i < width - 2) : (i += 1) try w.writeAll(box_h);
+    try w.print("{s}{s}\n", .{ right, Color.reset });
+}
+
+fn startRow(w: *std.Io.Writer) !void {
+    try w.print("{s}{s}{s}  ", .{ Color.gray, box_v, Color.reset });
+}
+
+fn endRow(w: *std.Io.Writer, visible_cols: usize) !void {
+    var pad: usize = 0;
+    if (2 + visible_cols < width - 1) pad = (width - 1) - (2 + visible_cols);
+    var i: usize = 0;
+    while (i < pad) : (i += 1) try w.writeAll(" ");
+    try w.print("{s}{s}{s}\n", .{ Color.gray, box_v, Color.reset });
+}
+
+fn blankRow(w: *std.Io.Writer) !void {
+    try startRow(w);
+    try endRow(w, 0);
+}
+
+fn sectionHeader(w: *std.Io.Writer, text: []const u8) !void {
+    try hrule(w, box_lt, box_rt);
+    try blankRow(w);
+    try startRow(w);
+    try w.print("{s}{s}{s}", .{ Color.bold, text, Color.reset });
+    try endRow(w, text.len);
+    try blankRow(w);
+}
+
+fn statusGlyph(s: Status) struct { color: []const u8, glyph: []const u8 } {
+    return switch (s) {
+        .pass => .{ .color = Color.green, .glyph = "[ PASS ]" },
+        .fail => .{ .color = Color.red, .glyph = "[ FAIL ]" },
+        .warn => .{ .color = Color.yellow, .glyph = "[ WARN ]" },
+        .skip => .{ .color = Color.gray, .glyph = "[ SKIP ]" },
+    };
+}
+
+fn checkRow(w: *std.Io.Writer, check: *const Check) !void {
+    try startRow(w);
+    const g = statusGlyph(check.status);
+    try w.print("{s}{s}{s}{s}  ", .{ g.color, Color.bold, g.glyph, Color.reset });
+    try w.print("{s}", .{check.name});
+
+    var visible: usize = g.glyph.len + 2 + check.name.len;
+    const label_width: usize = 30;
+    if (visible < label_width) {
+        const pad = label_width - visible;
+        var i: usize = 0;
+        while (i < pad) : (i += 1) try w.writeAll(" ");
+        visible += pad;
+    } else {
+        try w.writeAll(" ");
+        visible += 1;
+    }
+
+    const max_detail: usize = width - 2 - visible - 1;
+    var detail = check.detail;
+    var truncated = false;
+    if (detail.len > max_detail) {
+        detail = detail[0 .. max_detail - 1];
+        truncated = true;
+    }
+    try w.print("{s}{s}{s}", .{ Color.dim, detail, Color.reset });
+    if (truncated) try w.writeAll("…");
+    visible += detail.len + @as(usize, if (truncated) 1 else 0);
+
+    try endRow(w, visible);
+}
+
+fn plainRow(w: *std.Io.Writer, label: []const u8, value: []const u8, note: []const u8) !void {
+    try startRow(w);
+    try w.writeAll(label);
+    var vis: usize = label.len;
+    const label_pad: usize = 22;
+    if (vis < label_pad) {
+        const pad = label_pad - vis;
+        var i: usize = 0;
+        while (i < pad) : (i += 1) try w.writeAll(" ");
+        vis += pad;
+    }
+    try w.print("{s}{s}{s}", .{ Color.cyan, value, Color.reset });
+    vis += value.len;
+    if (note.len > 0) {
+        try w.print("   {s}{s}{s}", .{ Color.dim, note, Color.reset });
+        vis += 3 + note.len;
+    }
+    try endRow(w, vis);
+}
+
+fn compareRow(
+    w: *std.Io.Writer,
+    label: []const u8,
+    your_value: []const u8,
+    ref_value: []const u8,
+    verdict_color: []const u8,
+) !void {
+    try startRow(w);
+    try w.writeAll(label);
+    var vis: usize = label.len;
+    const label_pad: usize = 22;
+    if (vis < label_pad) {
+        const pad = label_pad - vis;
+        var i: usize = 0;
+        while (i < pad) : (i += 1) try w.writeAll(" ");
+        vis += pad;
+    }
+
+    try w.print("{s}{s}{s}", .{ verdict_color, your_value, Color.reset });
+    vis += your_value.len;
+
+    const mid_pad: usize = if (your_value.len < 14) 14 - your_value.len else 2;
+    var i: usize = 0;
+    while (i < mid_pad) : (i += 1) try w.writeAll(" ");
+    vis += mid_pad;
+
+    try w.print("{s}vs {s}{s}", .{ Color.dim, ref_value, Color.reset });
+    vis += 3 + ref_value.len;
+
+    try endRow(w, vis);
+}
+
+fn printReport(
+    w: *std.Io.Writer,
+    checks: []const Check,
+    perf: *const Perf,
+    cap: *const Capacity,
+) !void {
+    try hrule(w, box_tl, box_tr);
+    try startRow(w);
+    try w.print("{s}{s}tournament readiness — sat{s}", .{ Color.bold, Color.cyan, Color.reset });
+    try endRow(w, "tournament readiness — sat".len);
+    try blankRow(w);
+    try startRow(w);
+    try w.print(
+        "{s}reference: SAT Competition 2025, Main Sequential Track{s}",
+        .{ Color.dim, Color.reset },
+    );
+    try endRow(w, "reference: SAT Competition 2025, Main Sequential Track".len);
+    try startRow(w);
+    try w.print(
+        "{s}satcompetition.github.io/2025/satcomp25slides.pdf{s}",
+        .{ Color.dim, Color.reset },
+    );
+    try endRow(w, "satcompetition.github.io/2025/satcomp25slides.pdf".len);
+    try blankRow(w);
+
+    // --- Submittability section ---
+    try sectionHeader(w, "submittability (required for competition entry)");
+    for (checks) |c| {
+        var cc = c;
+        try checkRow(w, &cc);
+    }
+    try blankRow(w);
+
+    var submittable = true;
+    for (checks) |c| {
+        if (c.status == .fail) submittable = false;
+    }
+    try startRow(w);
+    if (submittable) {
+        try w.print(
+            "{s}{s}=> submittable{s}{s}   every required check passes{s}",
+            .{ Color.green, Color.bold, Color.reset, Color.dim, Color.reset },
+        );
+        try endRow(w, "=> submittable   every required check passes".len);
+    } else {
+        try w.print(
+            "{s}{s}=> NOT submittable{s}{s}   at least one required check failed{s}",
+            .{ Color.red, Color.bold, Color.reset, Color.dim, Color.reset },
+        );
+        try endRow(w, "=> NOT submittable   at least one required check failed".len);
+    }
+    try blankRow(w);
+
+    // --- Perf comparison section ---
+    try sectionHeader(w, "competitive scoreboard");
+    try startRow(w);
+    var ref_line_buf: [96]u8 = undefined;
+    const ref_line = try std.fmt.bufPrint(
+        &ref_line_buf,
+        "SAT Comp 2025 main sequential, {d}s timeout, {s}",
+        .{ ref_timeout_seconds, ref_scoring },
+    );
+    try w.print("{s}{s}{s}", .{ Color.dim, ref_line, Color.reset });
+    try endRow(w, ref_line.len);
+    try blankRow(w);
+
+    var ref1_buf: [96]u8 = undefined;
+    const ref1 = try std.fmt.bufPrint(&ref1_buf, "1. {s:<16} {d}/{d}  PAR-2 {d:.0}", .{
+        ref_winner_name, ref_winner_solved, ref_total_instances, ref_winner_par2,
+    });
+    try startRow(w);
+    try w.print("{s}{s}{s}", .{ Color.cyan, ref1, Color.reset });
+    try endRow(w, ref1.len);
+
+    var ref2_buf: [96]u8 = undefined;
+    const ref2 = try std.fmt.bufPrint(&ref2_buf, "2. {s:<16} {d}/{d}", .{
+        ref_second_name, ref_second_solved, ref_total_instances,
+    });
+    try startRow(w);
+    try w.print("{s}{s}{s}", .{ Color.dim, ref2, Color.reset });
+    try endRow(w, ref2.len);
+
+    var ref3_buf: [96]u8 = undefined;
+    const ref3 = try std.fmt.bufPrint(&ref3_buf, "3. {s:<16} {d}/{d}", .{
+        ref_third_name, ref_third_solved, ref_total_instances,
+    });
+    try startRow(w);
+    try w.print("{s}{s}{s}", .{ Color.dim, ref3, Color.reset });
+    try endRow(w, ref3.len);
+    try blankRow(w);
+
+    // Hardware metrics (your solver vs good-range targets)
+    if (perf.available) {
+        try startRow(w);
+        try w.print("{s}hardware metrics (light bench: uf100 + uuf100){s}", .{ Color.bold, Color.reset });
+        try endRow(w, "hardware metrics (light bench: uf100 + uuf100)".len);
+        try blankRow(w);
+
+        const ipc_good = perf.ipc >= ref_ipc_good;
+        var ipc_buf: [16]u8 = undefined;
+        const ipc_str = try std.fmt.bufPrint(&ipc_buf, "{d:.2}", .{perf.ipc});
+        try compareRow(
+            w,
+            "IPC",
+            ipc_str,
+            "~2.0+ (target)",
+            if (ipc_good) Color.green else Color.red,
+        );
+
+        const br_good = perf.branch_miss_pct < ref_branch_miss_good_pct;
+        var br_buf: [16]u8 = undefined;
+        const br_str = try std.fmt.bufPrint(&br_buf, "{d:.1}%", .{perf.branch_miss_pct});
+        try compareRow(
+            w,
+            "branch-miss rate",
+            br_str,
+            "< 5% (target)",
+            if (br_good) Color.green else Color.red,
+        );
+
+        const bs_good = perf.bad_spec_pct < ref_bad_spec_good_pct;
+        var bs_buf: [16]u8 = undefined;
+        const bs_str = try std.fmt.bufPrint(&bs_buf, "{d:.1}%", .{perf.bad_spec_pct});
+        try compareRow(
+            w,
+            "bad-speculation",
+            bs_str,
+            "< 20% (target)",
+            if (bs_good) Color.green else Color.red,
+        );
+
+        if (perf.propagations > 0 and perf.wall_ms > 0) {
+            const ns_per_prop: f64 =
+                perf.wall_ms * 1e6 / @as(f64, @floatFromInt(perf.propagations));
+            var np_buf: [16]u8 = undefined;
+            const np_str = try std.fmt.bufPrint(&np_buf, "{d:.0} ns", .{ns_per_prop});
+            try compareRow(
+                w,
+                "ns / propagation",
+                np_str,
+                "30-80 ns (target)",
+                if (ns_per_prop < 100) Color.green else Color.red,
+            );
+        }
+
+        try blankRow(w);
+    } else {
+        try startRow(w);
+        try w.print("{s}hardware metrics: skipped (perf not available){s}", .{ Color.yellow, Color.reset });
+        try endRow(w, "hardware metrics: skipped (perf not available)".len);
+        try blankRow(w);
+    }
+
+    // Capacity probe (uf250 sample)
+    if (cap.available and cap.tested > 0) {
+        try startRow(w);
+        var title_buf: [64]u8 = undefined;
+        const title = try std.fmt.bufPrint(
+            &title_buf,
+            "capacity (uf250 sample, {d}s/instance)",
+            .{cap.limit_s},
+        );
+        try w.print("{s}{s}{s}", .{ Color.bold, title, Color.reset });
+        try endRow(w, title.len);
+        try blankRow(w);
+
+        var buf: [96]u8 = undefined;
+        const solved_str = try std.fmt.bufPrint(
+            &buf,
+            "solved  {d}/{d}  in {d:.1} s total",
+            .{ cap.solved, cap.tested, cap.elapsed_s },
+        );
+        try plainRow(w, "your solver", solved_str, "");
+
+        // All modern CDCL solvers (Kissat, CaDiCaL, Glucose, MiniSat)
+        // complete uf250 in well under a second per instance. If we
+        // don't clear the whole sample we are nowhere near competitive.
+        try plainRow(w, "modern CDCL", "≈10/10", "< 1 s / instance (Kissat / CaDiCaL)");
+        try blankRow(w);
+    } else {
+        try startRow(w);
+        try w.print(
+            "{s}capacity probe skipped (fetch uf250 via bench/fetch.sh){s}",
+            .{ Color.dim, Color.reset },
+        );
+        try endRow(w, "capacity probe skipped (fetch uf250 via bench/fetch.sh)".len);
+        try blankRow(w);
+    }
+
+    // Overall verdict
+    try hrule(w, box_lt, box_rt);
+    try blankRow(w);
+    try startRow(w);
+    try w.writeAll("overall: ");
+    var vis: usize = "overall: ".len;
+
+    if (!submittable) {
+        try w.print("{s}{s}NOT SUBMITTABLE{s}", .{ Color.red, Color.bold, Color.reset });
+        vis += "NOT SUBMITTABLE".len;
+    } else if (perf.available and perf.ipc >= ref_ipc_good and
+        perf.branch_miss_pct < ref_branch_miss_good_pct and
+        perf.bad_spec_pct < ref_bad_spec_good_pct)
+    {
+        try w.print("{s}{s}SUBMITTABLE + COMPETITIVE{s}", .{ Color.green, Color.bold, Color.reset });
+        vis += "SUBMITTABLE + COMPETITIVE".len;
+    } else {
+        try w.print("{s}{s}SUBMITTABLE, not yet competitive{s}", .{ Color.yellow, Color.bold, Color.reset });
+        vis += "SUBMITTABLE, not yet competitive".len;
+    }
+    try endRow(w, vis);
+    try blankRow(w);
+    try hrule(w, box_bl, box_br);
+}

@@ -57,6 +57,27 @@ pub fn build(b: *std.Build) void {
     const bench_step = b.step("bench", "Run deep perf profile on uf200 + uuf200 (~80 s)");
     bench_step.dependOn(&profile_run.step);
 
+    const compete_exe = b.addExecutable(.{
+        .name = "sat-compete",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/compete.zig"),
+            .target = target,
+            .optimize = .Debug,
+        }),
+    });
+
+    const compete_run = b.addRunArtifact(compete_exe);
+    compete_run.addArtifactArg(exe); // the installed `sat` binary
+    compete_run.addArtifactArg(bench_release_exe); // the ReleaseFast `sat-bench`
+    compete_run.has_side_effects = true;
+    compete_run.stdio = .inherit;
+
+    const compete_step = b.step(
+        "compete",
+        "Tournament readiness check — submittability + perf vs SAT Competition 2025",
+    );
+    compete_step.dependOn(&compete_run.step);
+
     const quick_profile_run = b.addRunArtifact(profile_exe);
     quick_profile_run.addArtifactArg(bench_release_exe);
     quick_profile_run.addArg("bench/instances/uf100-430");
