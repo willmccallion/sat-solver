@@ -11,6 +11,13 @@ const Value = assignment_mod.Value;
 
 pub const Result = enum { sat, unsat, unknown };
 
+/// Atomic interrupt flag. main.zig sets this from a signal handler
+/// (SIGINT/SIGTERM/SIGXCPU) and/or a time-limit thread. Solver.solve()
+/// polls it at the top of each conflict iteration and returns
+/// .unknown if it's been raised — so a paused or killed solver emits
+/// `s UNKNOWN` + exit 0 rather than a bogus verdict.
+pub var interrupted: std.atomic.Value(bool) = .init(false);
+
 // ---------------------------------------------------------------------------
 // Clause arena.
 //
@@ -84,6 +91,8 @@ pub const Solver = struct {
     learned_clauses: std.ArrayList(ClauseRef),
     max_learned: usize,
 
+    proof_writer: ?*std.Io.Writer,
+
     luby_index: u64,
     next_restart: u64,
     unsat_at_init: bool,
@@ -108,6 +117,7 @@ pub const Solver = struct {
             .analyze_levels = .empty,
             .learned_clauses = .empty,
             .max_learned = @max(formula.clauses.items.len, 1000),
+            .proof_writer = null,
             .luby_index = 0,
             .next_restart = restart_base,
             .unsat_at_init = false,
@@ -195,6 +205,40 @@ pub const Solver = struct {
 
     inline fn clauseIsDeleted(self: *const Solver, cref: ClauseRef) bool {
         return (self.arena.items[cref].raw & deleted_bit) != 0;
+    }
+
+    // --- DRAT proof emission ---------------------------------------------
+    //
+    // A DRAT proof is a sequence of clause additions ("a" lines, or no
+    // prefix) and deletions ("d " lines), terminated by the empty clause
+    // `0\n` once the solver has derived UNSAT. The input formula is
+    // implicit — the proof only describes derived clauses. Checkers like
+    // `drat-trim` replay the proof against the original .cnf to verify
+    // UNSAT verdicts, which most SAT Competition tracks require.
+    //
+    // All three helpers are no-ops when proof_writer is null, so the
+    // non-proof solve path pays only a load + branch per call.
+
+    pub fn setProofWriter(self: *Solver, w: *std.Io.Writer) void {
+        self.proof_writer = w;
+    }
+
+    fn proofAdd(self: *Solver, lits: []const Literal) !void {
+        const w = self.proof_writer orelse return;
+        for (lits) |lit| try w.print("{d} ", .{lit.toDimacs()});
+        try w.writeAll("0\n");
+    }
+
+    fn proofDelete(self: *Solver, cref: ClauseRef) !void {
+        const w = self.proof_writer orelse return;
+        try w.writeAll("d ");
+        for (self.clauseLits(cref)) |lit| try w.print("{d} ", .{lit.toDimacs()});
+        try w.writeAll("0\n");
+    }
+
+    fn proofEmpty(self: *Solver) !void {
+        const w = self.proof_writer orelse return;
+        try w.writeAll("0\n");
     }
 
     inline fn clauseLbd(self: *const Solver, cref: ClauseRef) u32 {
@@ -461,23 +505,36 @@ pub const Solver = struct {
     // --- main loop ---------------------------------------------------------
 
     pub fn solve(self: *Solver) !Result {
-        if (self.unsat_at_init) return .unsat;
-        if ((try self.propagate()) != null_clause) return .unsat;
+        if (self.unsat_at_init) {
+            try self.proofEmpty();
+            return .unsat;
+        }
+        if ((try self.propagate()) != null_clause) {
+            try self.proofEmpty();
+            return .unsat;
+        }
 
         while (true) {
+            if (interrupted.load(.monotonic)) return .unknown;
+
             const conflict = try self.propagate();
             if (conflict != null_clause) {
                 self.stats.conflicts += 1;
-                if (self.assignment.level == 0) return .unsat;
+                if (self.assignment.level == 0) {
+                    try self.proofEmpty();
+                    return .unsat;
+                }
 
                 const backjump_level = try self.analyze(conflict);
                 self.backtrack(backjump_level);
 
                 const learned_len = self.analyze_learned.items.len;
                 if (learned_len == 1) {
+                    try self.proofAdd(self.analyze_learned.items);
                     try self.assignment.assign(self.analyze_learned.items[0], null_clause);
                 } else {
                     const lbd = self.computeLbd(self.analyze_learned.items);
+                    try self.proofAdd(self.analyze_learned.items);
                     const cref = try self.addClauseToArena(
                         self.analyze_learned.items,
                         true,
@@ -598,6 +655,7 @@ pub const Solver = struct {
 
         const to_delete = candidates.items.len / 2;
         for (candidates.items[0..to_delete]) |c| {
+            try self.proofDelete(c.cref);
             self.arena.items[c.cref].raw |= deleted_bit;
         }
         self.stats.reductions += 1;
