@@ -2,4 +2,6 @@ zig-cache/
 zig-out/
 .zig-cache/
 bench/instances/
+bench/solvers
 bench/.cache/
+*.csv

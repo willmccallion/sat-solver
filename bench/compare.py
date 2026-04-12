@@ -110,7 +110,10 @@ class Result:
 # Runner — fork + setrlimit + exec + wait4
 # ---------------------------------------------------------------------------
 
-def sanitize_for_minisat(instance_path: Path) -> Tuple[Path, Optional[Path]]:
+STRICT_PARSER_SOLVERS = frozenset({"minisat", "cadical", "kissat"})
+
+
+def sanitize_satlib_footer(instance_path: Path) -> Tuple[Path, Optional[Path]]:
     """Strip the SATLIB-style `%\\n0\\n` trailing marker if present.
 
     SATLIB uf/uuf .cnf files end with a legacy
@@ -118,9 +121,11 @@ def sanitize_for_minisat(instance_path: Path) -> Tuple[Path, Optional[Path]]:
         %
         0
 
-    footer that strict MiniSat 2.2 rejects as a parse error ("Unexpected
-    char: %"). Modern SAT-Comp-compliant solvers ignore anything after
-    the last clause, so this only affects MiniSat. Returns a pair of
+    footer that strict DIMACS parsers reject with "expected digit or '-'"
+    (MiniSat 2.2, CaDiCaL, and Kissat all bail on this — they're correct
+    per the DIMACS spec, and SATLIB is technically non-conformant).
+    Our Zig parser tolerates trailing garbage, but to keep the comparison
+    fair we feed the stricter solvers a cleaned copy. Returns a pair of
     `(path_to_use, temp_path_to_cleanup_or_None)`. If no cleanup needed,
     the original path is returned with `None`.
     """
@@ -170,13 +175,14 @@ def run_one(
     because Popen.communicate() reaps the child internally, which prevents
     us from collecting rusage (CPU time, peak RSS) via wait4 afterwards.
     """
-    # MiniSat-specific preprocessing: strip SATLIB `%\n0\n` footer.
-    # Keep the ORIGINAL instance name for reporting; the scrubbed file is
-    # just what we hand to the solver.
+    # Strict-parser solvers (minisat, cadical, kissat) reject the SATLIB
+    # `%\n0\n` footer. Strip it to a temp file for those solvers, leave
+    # our Zig solver on the raw file (it tolerates trailing garbage and
+    # the historical numbers in the README were measured that way).
     original_name = instance_path.name
     cleanup_path: Optional[Path] = None
-    if solver_name == "minisat":
-        instance_path, cleanup_path = sanitize_for_minisat(instance_path)
+    if solver_name in STRICT_PARSER_SOLVERS:
+        instance_path, cleanup_path = sanitize_satlib_footer(instance_path)
 
     stdout_r, stdout_w = os.pipe()
     stderr_r, stderr_w = os.pipe()
