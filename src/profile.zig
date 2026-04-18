@@ -113,7 +113,22 @@ pub fn main() !void {
         std.process.exit(1);
     }
 
-    try stdout.print("{s}[1/3] perf stat with topdown...{s}\n", .{ Color.dim, Color.reset });
+    if (readPerfEventParanoid()) |paranoid| {
+        if (paranoid > 1) {
+            try stderr.print(
+                "error: /proc/sys/kernel/perf_event_paranoid = {d} (hardware counters require ≤ 1)\n" ++
+                "fix:   echo 1 | sudo tee /proc/sys/kernel/perf_event_paranoid\n",
+                .{paranoid},
+            );
+            try stderr.flush();
+            std.process.exit(1);
+        }
+    }
+
+    try stdout.print(
+        "{s}[1/3] perf stat with topdown (this takes ~7 min, no output until done)...{s}\n",
+        .{ Color.dim, Color.reset },
+    );
     try stdout.flush();
 
     var stats: Stats = .{};
@@ -250,6 +265,15 @@ pub fn main() !void {
 // =======================================================================
 // process + counter helpers
 // =======================================================================
+
+fn readPerfEventParanoid() ?i32 {
+    const f = std.fs.openFileAbsolute("/proc/sys/kernel/perf_event_paranoid", .{}) catch return null;
+    defer f.close();
+    var buf: [16]u8 = undefined;
+    const n = f.read(&buf) catch return null;
+    const trimmed = std.mem.trim(u8, buf[0..n], " \t\r\n");
+    return std.fmt.parseInt(i32, trimmed, 10) catch null;
+}
 
 fn perfAvailable(gpa: Allocator) !bool {
     const r = std.process.Child.run(.{
