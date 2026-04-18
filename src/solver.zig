@@ -261,15 +261,28 @@ pub const Solver = struct {
         // Reserve a tight upper bound for the arena. Binaries live in
         // bin_watchers (and original_binaries for verifyModel), not in
         // the arena, so only length-3+ originals contribute here.
+        // Along the way, tally how many long-clause watchers each
+        // literal will receive so we can pre-size watcher lists and
+        // skip the initial zero→8 growth alloc on first attach.
         var total_slots: usize = 0;
         var original_binary_count: usize = 0;
+        const watch_counts = try allocator.alloc(u32, @as(usize, formula.num_vars) * 2);
+        defer allocator.free(watch_counts);
+        @memset(watch_counts, 0);
         for (formula.clauses.items) |lits| {
-            if (lits.len >= 3) total_slots += lits.len + header_slots;
+            if (lits.len >= 3) {
+                total_slots += lits.len + header_slots;
+                watch_counts[lits[0].negate().raw] += 1;
+                watch_counts[lits[1].negate().raw] += 1;
+            }
             if (lits.len == 2) original_binary_count += 1;
         }
         try self.arena.ensureTotalCapacity(allocator, total_slots);
         errdefer self.arena.deinit(allocator);
         try self.original_binaries.ensureTotalCapacity(allocator, original_binary_count);
+        for (self.watchers, watch_counts) |*w, n| {
+            if (n > 0) try w.ensureTotalCapacity(allocator, n);
+        }
 
         for (formula.clauses.items) |lits| {
             if (self.unsat_at_init) continue;
@@ -429,6 +442,16 @@ pub const Solver = struct {
     // search loop. Only after binaries are exhausted do we fall through
     // to the long-clause loop with its full two-watched dance.
     fn propagate(self: *Solver) !?Conflict {
+        // Hoist into register-friendly locals. Neither pointer changes
+        // across the body of propagate: assign() writes into lit_values
+        // through the same allocation, and the arena is never grown
+        // from inside propagate (addClauseToArena is only called from
+        // solve, after analyze has returned). Zig sometimes
+        // rematerialises `self.*.items.ptr` on every access; pinning
+        // them here keeps both in a register.
+        const lit_values = self.assignment.lit_values.ptr;
+        const arena_ptr = self.arena.items.ptr;
+
         while (self.assignment.propagation_head < self.assignment.trail.items.len) {
             const p = self.assignment.trail.items[self.assignment.propagation_head];
             self.assignment.propagation_head += 1;
@@ -440,9 +463,10 @@ pub const Solver = struct {
             // onto the trail — that's handled by the outer while loop.
             const bws = self.bin_watchers[p.raw].items;
             for (bws) |b| {
-                const v = self.assignment.valueOfLiteral(b.other);
+                const v = lit_values[b.other.raw];
                 if (v == .@"true") continue;
                 if (v == .@"false") {
+                    @branchHint(.cold);
                     // Conflict: clause (¬p ∨ b.other) has both lits
                     // falsified. p is on the trail, so ¬p is false;
                     // b.other is also false by the check above.
@@ -464,10 +488,25 @@ pub const Solver = struct {
                 const w = ws.items[i];
                 i += 1;
 
-                if (self.assignment.valueOfLiteral(w.blocker) == .@"true") {
+                // Blocker-satisfied is the dominant exit on the bench
+                // (~70%). Tagging it .likely keeps the frontend
+                // speculating past the clause load in the common case.
+                if (lit_values[w.blocker.raw] == .@"true") {
+                    @branchHint(.likely);
                     ws.items[j] = w;
                     j += 1;
                     continue;
+                }
+
+                // Prefetch the next watcher's clause line before we
+                // touch this one's. The clause-body load was the top
+                // instruction in the old perf profile at 12%; issuing
+                // this prefetch hides its L2/L3 latency behind the
+                // current iteration's arithmetic. Prefetching a stale
+                // or past-end address is harmless.
+                if (i < end) {
+                    const next_cref = ws.items[i].clause;
+                    @prefetch(arena_ptr + next_cref, .{ .locality = 3 });
                 }
 
                 const lits = self.clauseLits(w.clause);
@@ -482,9 +521,7 @@ pub const Solver = struct {
                 const other = lits[0];
                 const new_w: Watcher = .{ .clause = w.clause, .blocker = other };
 
-                if (!other.eql(w.blocker) and
-                    self.assignment.valueOfLiteral(other) == .@"true")
-                {
+                if (!other.eql(w.blocker) and lit_values[other.raw] == .@"true") {
                     ws.items[j] = new_w;
                     j += 1;
                     continue;
@@ -492,7 +529,7 @@ pub const Solver = struct {
 
                 var k: usize = 2;
                 while (k < lits.len) : (k += 1) {
-                    if (self.assignment.valueOfLiteral(lits[k]) != .@"false") {
+                    if (lit_values[lits[k].raw] != .@"false") {
                         lits[1] = lits[k];
                         lits[k] = false_lit;
                         try self.watchers[lits[1].negate().raw].append(
@@ -507,7 +544,8 @@ pub const Solver = struct {
                 ws.items[j] = new_w;
                 j += 1;
 
-                if (self.assignment.valueOfLiteral(other) == .@"false") {
+                if (lit_values[other.raw] == .@"false") {
+                    @branchHint(.cold);
                     while (i < end) : ({
                         i += 1;
                         j += 1;
