@@ -4,10 +4,10 @@ const cnf = @import("cnf.zig");
 const Literal = cnf.Literal;
 const Formula = cnf.Formula;
 const ClauseRef = cnf.ClauseRef;
-const null_clause = cnf.null_clause;
 const assignment_mod = @import("assignment.zig");
 const Assignment = assignment_mod.Assignment;
 const Value = assignment_mod.Value;
+const Reason = assignment_mod.Reason;
 
 pub const Result = enum { sat, unsat, unknown };
 
@@ -58,6 +58,25 @@ const Watcher = struct {
     blocker: Literal,
 };
 
+// Specialized watcher for 2-literal clauses. Binary clauses never need
+// the blocker optimization or the "find a new watch" dance of the
+// two-watched scheme — the other literal IS the only alternative, so
+// BCP on a binary is a single value-lookup + branch. Eliminating the
+// 4-byte clause-ref load per watcher is measurable; eliminating the
+// ~24-byte clause-body load (header + lbd + 2 lits) is what actually
+// matters, and with BinaryWatch + inline reasons we skip that entirely.
+const BinaryWatch = struct {
+    other: Literal,
+};
+
+// Propagate's result on conflict. The long-clause variant references an
+// arena clause ref. The binary variant inlines the two literals of the
+// falsified 2-clause because those clauses do not live in the arena.
+const Conflict = union(enum) {
+    clause: ClauseRef,
+    binary: [2]Literal,
+};
+
 const var_decay: f64 = 0.95;
 const rescale_threshold: f64 = 1e100;
 
@@ -104,6 +123,25 @@ pub const Solver = struct {
 
     arena: std.ArrayList(Literal),
     watchers: []std.ArrayList(Watcher),
+
+    // Per-literal binary watcher lists. Indexed by literal.raw, with
+    // entries that carry the partner literal directly — no clause ref,
+    // no arena load. A binary clause (a ∨ b) registers b under ¬a and
+    // a under ¬b, same shape as regular watches, but the watcher can
+    // be processed without ever touching a clause header.
+    //
+    // Unlike the long-clause watcher lists, these are monotonic: entries
+    // are never moved or removed, because there is no "find a different
+    // literal to watch" step for a 2-clause. That also means no
+    // compaction cost in propagate.
+    bin_watchers: []std.ArrayList(BinaryWatch),
+
+    // Input-provided 2-literal clauses, kept verbatim for verifyModel.
+    // They are NOT in the arena — verifying a binary via bin_watchers
+    // would double-count (each clause appears as two watcher entries),
+    // so we record the original pairs here at load time.
+    original_binaries: std.ArrayList([2]Literal),
+
     assignment: Assignment,
 
     activities: []f64,
@@ -150,6 +188,8 @@ pub const Solver = struct {
             .num_vars = formula.num_vars,
             .arena = .empty,
             .watchers = &.{},
+            .bin_watchers = &.{},
+            .original_binaries = .empty,
             .assignment = try Assignment.init(allocator, formula.num_vars),
             .activities = &.{},
             .var_inc = 1.0,
@@ -183,6 +223,14 @@ pub const Solver = struct {
             allocator.free(self.watchers);
         }
 
+        self.bin_watchers = try allocator.alloc(std.ArrayList(BinaryWatch), formula.num_vars * 2);
+        for (self.bin_watchers) |*w| w.* = .empty;
+        errdefer {
+            for (self.bin_watchers) |*w| w.deinit(allocator);
+            allocator.free(self.bin_watchers);
+        }
+        errdefer self.original_binaries.deinit(allocator);
+
         self.activities = try allocator.alloc(f64, formula.num_vars);
         @memset(self.activities, 0);
         errdefer allocator.free(self.activities);
@@ -210,12 +258,18 @@ pub const Solver = struct {
             }
         }
 
-        // Reserve a tight upper bound for the arena: every original clause
-        // contributes (len + 2) slots. Learned clauses will extend it later.
+        // Reserve a tight upper bound for the arena. Binaries live in
+        // bin_watchers (and original_binaries for verifyModel), not in
+        // the arena, so only length-3+ originals contribute here.
         var total_slots: usize = 0;
-        for (formula.clauses.items) |lits| total_slots += lits.len + header_slots;
+        var original_binary_count: usize = 0;
+        for (formula.clauses.items) |lits| {
+            if (lits.len >= 3) total_slots += lits.len + header_slots;
+            if (lits.len == 2) original_binary_count += 1;
+        }
         try self.arena.ensureTotalCapacity(allocator, total_slots);
         errdefer self.arena.deinit(allocator);
+        try self.original_binaries.ensureTotalCapacity(allocator, original_binary_count);
 
         for (formula.clauses.items) |lits| {
             if (self.unsat_at_init) continue;
@@ -229,8 +283,23 @@ pub const Solver = struct {
                 if (val == .@"false") {
                     self.unsat_at_init = true;
                 } else if (val == .unassigned) {
-                    try self.assignment.assign(lit, null_clause);
+                    try self.assignment.assign(lit, Reason.none);
                 }
+                continue;
+            }
+            if (lits.len == 2) {
+                // Binaries skip the arena entirely. Originals are also
+                // recorded in original_binaries so verifyModel can check
+                // them at the end.
+                self.original_binaries.appendAssumeCapacity(.{ lits[0], lits[1] });
+                try self.bin_watchers[lits[0].negate().raw].append(
+                    allocator,
+                    .{ .other = lits[1] },
+                );
+                try self.bin_watchers[lits[1].negate().raw].append(
+                    allocator,
+                    .{ .other = lits[0] },
+                );
                 continue;
             }
             const cref = try self.addClauseToArena(lits, false, 0);
@@ -244,6 +313,9 @@ pub const Solver = struct {
         self.arena.deinit(self.allocator);
         for (self.watchers) |*w| w.deinit(self.allocator);
         self.allocator.free(self.watchers);
+        for (self.bin_watchers) |*w| w.deinit(self.allocator);
+        self.allocator.free(self.bin_watchers);
+        self.original_binaries.deinit(self.allocator);
         self.allocator.free(self.activities);
         self.allocator.free(self.analyze_seen);
         self.analyze_learned.deinit(self.allocator);
@@ -331,7 +403,9 @@ pub const Solver = struct {
 
     fn attachWatches(self: *Solver, cref: ClauseRef) !void {
         const lits = self.clauseLits(cref);
-        std.debug.assert(lits.len >= 2);
+        // Binaries go through bin_watchers, not here. The arena never
+        // holds a length-2 clause, so this must be length >= 3.
+        std.debug.assert(lits.len >= 3);
         try self.watchers[lits[0].negate().raw].append(self.allocator, .{
             .clause = cref,
             .blocker = lits[1],
@@ -344,15 +418,43 @@ pub const Solver = struct {
 
     // --- BCP ---------------------------------------------------------------
 
-    // Two-watched-literal propagation. Processes trail from propagation_head
-    // to the end, firing unit clauses as they appear. Returns the conflict
-    // clause on conflict, or null_clause on clean completion.
-    fn propagate(self: *Solver) !ClauseRef {
+    // Two-watched-literal propagation with a specialized binary-clause
+    // fast path. Processes the trail from propagation_head to the end,
+    // firing unit clauses as they appear. Returns a Conflict on conflict
+    // or null on clean completion.
+    //
+    // For each trail literal p we first sweep bin_watchers[p.raw]: every
+    // entry is a 2-clause (¬p ∨ other), so a single lit_values load on
+    // `other` resolves it — no arena touch, no compaction, no inner
+    // search loop. Only after binaries are exhausted do we fall through
+    // to the long-clause loop with its full two-watched dance.
+    fn propagate(self: *Solver) !?Conflict {
         while (self.assignment.propagation_head < self.assignment.trail.items.len) {
             const p = self.assignment.trail.items[self.assignment.propagation_head];
             self.assignment.propagation_head += 1;
             self.stats.propagations += 1;
 
+            // --- Binary fast path ------------------------------------------
+            // bin_watchers entries are permanent (no compaction), so we
+            // just iterate the snapshot. An `assign` below may cascade
+            // onto the trail — that's handled by the outer while loop.
+            const bws = self.bin_watchers[p.raw].items;
+            for (bws) |b| {
+                const v = self.assignment.valueOfLiteral(b.other);
+                if (v == .@"true") continue;
+                if (v == .@"false") {
+                    // Conflict: clause (¬p ∨ b.other) has both lits
+                    // falsified. p is on the trail, so ¬p is false;
+                    // b.other is also false by the check above.
+                    self.assignment.propagation_head = self.assignment.trail.items.len;
+                    return Conflict{ .binary = .{ p.negate(), b.other } };
+                }
+                // Unit: force b.other, recording that the partner in the
+                // implicit binary clause is ¬p.
+                try self.assignment.assign(b.other, Reason.fromBinary(p.negate()));
+            }
+
+            // --- Long-clause path ------------------------------------------
             const ws = &self.watchers[p.raw];
             var i: usize = 0;
             var j: usize = 0;
@@ -414,24 +516,24 @@ pub const Solver = struct {
                     }
                     ws.shrinkRetainingCapacity(j);
                     self.assignment.propagation_head = self.assignment.trail.items.len;
-                    return w.clause;
+                    return Conflict{ .clause = w.clause };
                 } else {
-                    try self.assignment.assign(other, w.clause);
+                    try self.assignment.assign(other, Reason.fromClause(w.clause));
                 }
             }
 
             ws.shrinkRetainingCapacity(j);
         }
 
-        return null_clause;
+        return null;
     }
 
     // --- conflict analysis -------------------------------------------------
 
     // Iterative MiniSat-2.2 redundancy check. Returns true if the literal
-    // of `start_var` (which is in the learned clause, with reason != null)
-    // is implied by the rest of the learned clause, i.e. can be removed
-    // by self-subsuming resolution.
+    // of `start_var` (which is in the learned clause, with a non-null
+    // reason) is implied by the rest of the learned clause, i.e. can be
+    // removed by self-subsuming resolution.
     //
     // Walks back through reason chains; a literal `q` in some reason is
     // acceptable if it is already `seen` (i.e. already in the learned
@@ -442,18 +544,28 @@ pub const Solver = struct {
     // flags set since entering this call. On success, the new seen flags
     // are kept (the caller clears analyze_to_clear at end of analyze).
     //
-    // Precondition: `self.assignment.vars[start_var].reason != null_clause`
+    // Precondition: `self.assignment.vars[start_var].reason` is non-none
     // and `analyze_stack` / `analyze_to_clear` have capacity >= num_vars.
     fn litRedundant(self: *Solver, start_var: u32, abstract_levels: u64) bool {
         self.analyze_stack.clearRetainingCapacity();
         self.analyze_stack.appendAssumeCapacity(start_var);
         const top = self.analyze_to_clear.items.len;
 
+        // Scratch for synthesizing the 2-lit view of a binary reason.
+        // lits[0] is the forced literal (which we skip below), so we
+        // leave it undefined and only populate lits[1].
+        var binary_scratch: [2]Literal = undefined;
+
         while (self.analyze_stack.items.len > 0) {
             const v = self.analyze_stack.pop().?;
-            const reason_ref = self.assignment.vars[v].reason;
-            std.debug.assert(reason_ref != null_clause);
-            const lits = self.clauseLits(reason_ref);
+            const reason = self.assignment.vars[v].reason;
+            std.debug.assert(!reason.isNone());
+
+            const lits: []const Literal = if (reason.isBinary()) blk: {
+                binary_scratch[1] = reason.binaryOther();
+                break :blk binary_scratch[0..2];
+            } else self.clauseLits(reason.clauseRef());
+
             // lits[0] is the literal forced by this clause (== literal of
             // v) — skip it and scan the predecessor literals.
             var k: usize = 1;
@@ -463,7 +575,7 @@ pub const Solver = struct {
                 const qlevel = self.assignment.vars[qv].level;
                 if (self.analyze_seen[qv] or qlevel == 0) continue;
 
-                if (self.assignment.vars[qv].reason != null_clause and
+                if (!self.assignment.vars[qv].reason.isNone() and
                     (abstract_levels & (@as(u64, 1) << @intCast(qlevel & 63))) != 0)
                 {
                     self.analyze_seen[qv] = true;
@@ -486,7 +598,12 @@ pub const Solver = struct {
     // analyze_learned, asserting literal at index 0, next-highest-level
     // literal at index 1 (ready to be the second watch). Returns the
     // backjump level.
-    fn analyze(self: *Solver, conflict_ref: ClauseRef) !u32 {
+    //
+    // Accepts both arena-backed (long) and implicit (binary) conflicts.
+    // When walking the reason chain, a binary reason is synthesized on
+    // the fly into a 2-lit view [forced_lit, binaryOther] so the outer
+    // loop is oblivious to the clause representation.
+    fn analyze(self: *Solver, conflict: Conflict) !u32 {
         self.analyze_learned.clearRetainingCapacity();
         self.analyze_levels.clearRetainingCapacity();
         try self.analyze_learned.append(self.allocator, undefined);
@@ -494,13 +611,22 @@ pub const Solver = struct {
         var counter: u32 = 0;
         var resolved: Literal = undefined;
         var has_resolved = false;
-        var cref = conflict_ref;
         var trail_idx: isize = @as(isize, @intCast(self.assignment.trail.items.len)) - 1;
 
-        while (true) {
-            std.debug.assert(cref != null_clause);
-            const lits = self.clauseLits(cref);
+        // Scratch for binary-conflict / binary-reason views. Stable for
+        // the lifetime of one analyze call.
+        var binary_scratch: [2]Literal = undefined;
 
+        // Seed the lits slice from the initial conflict.
+        var lits: []const Literal = switch (conflict) {
+            .clause => |cref| self.clauseLits(cref),
+            .binary => |two| blk: {
+                binary_scratch = two;
+                break :blk binary_scratch[0..2];
+            },
+        };
+
+        while (true) {
             const start: usize = if (has_resolved) 1 else 0;
             for (lits[start..]) |q| {
                 const v = q.variable();
@@ -531,7 +657,20 @@ pub const Solver = struct {
             trail_idx -= 1;
 
             if (counter == 0) break;
-            cref = self.assignment.vars[rv].reason;
+
+            // Refresh lits from the next reason on the chain. For a
+            // binary reason, the clause is (resolved ∨ binaryOther)
+            // and we only iterate lits[1..] next time anyway, so the
+            // lits[0] slot just needs to parse as a Literal.
+            const reason = self.assignment.vars[rv].reason;
+            std.debug.assert(!reason.isNone());
+            if (reason.isBinary()) {
+                binary_scratch[0] = resolved;
+                binary_scratch[1] = reason.binaryOther();
+                lits = binary_scratch[0..2];
+            } else {
+                lits = self.clauseLits(reason.clauseRef());
+            }
         }
 
         self.analyze_learned.items[0] = resolved.negate();
@@ -559,7 +698,7 @@ pub const Solver = struct {
             while (wk < original_len) : (wk += 1) {
                 const lit = self.analyze_learned.items[wk];
                 const lv = lit.variable();
-                if (self.assignment.vars[lv].reason == null_clause or
+                if (self.assignment.vars[lv].reason.isNone() or
                     !self.litRedundant(lv, abstract_levels))
                 {
                     self.analyze_learned.items[wj] = lit;
@@ -669,7 +808,7 @@ pub const Solver = struct {
             try self.proofEmpty();
             return .unsat;
         }
-        if ((try self.propagate()) != null_clause) {
+        if ((try self.propagate()) != null) {
             try self.proofEmpty();
             return .unsat;
         }
@@ -677,8 +816,7 @@ pub const Solver = struct {
         while (true) {
             if (interrupted.load(.monotonic)) return .unknown;
 
-            const conflict = try self.propagate();
-            if (conflict != null_clause) {
+            if (try self.propagate()) |conflict| {
                 self.stats.conflicts += 1;
                 self.conflicts_since_restart += 1;
                 if (self.assignment.level == 0) {
@@ -710,7 +848,25 @@ pub const Solver = struct {
 
                 if (learned_len == 1) {
                     try self.proofAdd(self.analyze_learned.items);
-                    try self.assignment.assign(self.analyze_learned.items[0], null_clause);
+                    try self.assignment.assign(self.analyze_learned.items[0], Reason.none);
+                } else if (learned_len == 2) {
+                    // Learned binary — skips the arena. Register both
+                    // watch directions and assert the UIP with an inline
+                    // binary reason. ReduceDB never touches bin_watchers,
+                    // so the clause is implicitly permanent.
+                    try self.proofAdd(self.analyze_learned.items);
+                    const uip = self.analyze_learned.items[0];
+                    const other = self.analyze_learned.items[1];
+                    try self.bin_watchers[uip.negate().raw].append(
+                        self.allocator,
+                        .{ .other = other },
+                    );
+                    try self.bin_watchers[other.negate().raw].append(
+                        self.allocator,
+                        .{ .other = uip },
+                    );
+                    try self.assignment.assign(uip, Reason.fromBinary(other));
+                    self.stats.learned += 1;
                 } else {
                     try self.proofAdd(self.analyze_learned.items);
                     const cref = try self.addClauseToArena(
@@ -724,7 +880,10 @@ pub const Solver = struct {
                     // We read the literal *after* the append because the
                     // arena may have been reallocated; analyze_learned
                     // survives the append (it's a separate ArrayList).
-                    try self.assignment.assign(self.analyze_learned.items[0], cref);
+                    try self.assignment.assign(
+                        self.analyze_learned.items[0],
+                        Reason.fromClause(cref),
+                    );
                     self.stats.learned += 1;
                 }
 
@@ -779,7 +938,7 @@ pub const Solver = struct {
                 const lit = self.pickBranching() orelse return .sat;
                 self.stats.decisions += 1;
                 try self.assignment.pushDecisionLevel();
-                try self.assignment.assign(lit, null_clause);
+                try self.assignment.assign(lit, Reason.none);
             }
         }
     }
@@ -808,6 +967,14 @@ pub const Solver = struct {
             }
             cref += header_slots + len;
         }
+        // Original binaries don't live in the arena — check them separately.
+        for (self.original_binaries.items) |pair| {
+            if (self.assignment.valueOfLiteral(pair[0]) != .@"true" and
+                self.assignment.valueOfLiteral(pair[1]) != .@"true")
+            {
+                return false;
+            }
+        }
         return true;
     }
 
@@ -827,13 +994,16 @@ pub const Solver = struct {
     fn reduceDB(self: *Solver) !void {
         std.debug.assert(self.assignment.level == 0);
 
-        // Collect the set of clauses currently serving as reasons on the
-        // trail. These are locked.
+        // Collect the set of arena-backed clauses currently serving as
+        // reasons on the trail. These are locked. Binary reasons inline
+        // their partner literal and don't reference the arena, so they
+        // don't participate in locking.
         var locked: std.AutoHashMap(ClauseRef, void) = .init(self.allocator);
         defer locked.deinit();
         for (self.assignment.trail.items) |lit| {
             const r = self.assignment.vars[lit.variable()].reason;
-            if (r != null_clause) try locked.put(r, {});
+            if (r.isNone() or r.isBinary()) continue;
+            try locked.put(r.clauseRef(), {});
         }
 
         // Build the deletion candidate list: learned, non-deleted,

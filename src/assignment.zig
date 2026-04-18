@@ -3,14 +3,69 @@ const Allocator = std.mem.Allocator;
 const cnf = @import("cnf.zig");
 const Literal = cnf.Literal;
 const ClauseRef = cnf.ClauseRef;
-const null_clause = cnf.null_clause;
 
 pub const Value = enum(u8) { unassigned, @"true", @"false" };
+
+// Why a literal on the trail was assigned.
+//
+// Three disjoint encodings share a single u32 so VarInfo stays 12 bytes
+// (one cache line per four variables):
+//
+//   none              raw == max_u32            decision — no reason
+//   clause(cref)      raw == cref               top bit clear, cref is an arena index
+//   binary(other)     raw == binary_bit | L     top bit set, L is the partner literal
+//
+// Binary reasons inline their partner literal so BCP on 2-literal
+// clauses never touches the clause arena: propagation, conflict analysis,
+// and minimization reconstruct the 2-lit clause as [forced_lit, binaryOther].
+// This is the single biggest reason modern solvers (Kissat, CaDiCaL)
+// treat binaries separately — the arena cache miss per watcher is gone.
+pub const Reason = struct {
+    raw: u32,
+
+    const binary_bit: u32 = 0x8000_0000;
+    pub const none = Reason{ .raw = std.math.maxInt(u32) };
+
+    pub fn fromClause(cref: ClauseRef) Reason {
+        // The arena header steals bits 30–31 for the learned/deleted flags,
+        // so ClauseRef indices are already capped below 2^30 in practice.
+        // This assert guards the tagging invariant: `clause` encodings must
+        // leave the top bit clear so `isBinary` can discriminate.
+        std.debug.assert(cref < binary_bit);
+        return .{ .raw = cref };
+    }
+
+    pub fn fromBinary(other: Literal) Reason {
+        // Literal.raw = var_idx*2+sign ≤ 2*num_vars; fits under 2^31 for
+        // any plausible instance.
+        std.debug.assert(other.raw < binary_bit);
+        return .{ .raw = binary_bit | other.raw };
+    }
+
+    pub inline fn isNone(self: Reason) bool {
+        return self.raw == none.raw;
+    }
+
+    pub inline fn isBinary(self: Reason) bool {
+        // `none` has the top bit set too, so filter it out first.
+        return self.raw != none.raw and (self.raw & binary_bit) != 0;
+    }
+
+    pub inline fn clauseRef(self: Reason) ClauseRef {
+        std.debug.assert(!self.isNone() and (self.raw & binary_bit) == 0);
+        return self.raw;
+    }
+
+    pub inline fn binaryOther(self: Reason) Literal {
+        std.debug.assert(self.isBinary());
+        return .{ .raw = self.raw & ~binary_bit };
+    }
+};
 
 pub const VarInfo = struct {
     value: Value = .unassigned,
     level: u32 = 0,
-    reason: ClauseRef = null_clause,
+    reason: Reason = Reason.none,
 };
 
 pub const Assignment = struct {
@@ -82,7 +137,7 @@ pub const Assignment = struct {
         return self.lit_values[lit.raw];
     }
 
-    pub fn assign(self: *Assignment, lit: Literal, reason: ClauseRef) !void {
+    pub fn assign(self: *Assignment, lit: Literal, reason: Reason) !void {
         const var_index = lit.variable();
         std.debug.assert(self.vars[var_index].value == .unassigned);
         const negative = lit.isNegative();
