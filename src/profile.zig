@@ -72,6 +72,7 @@ const Stats = struct {
     solver_flp_units: u64 = 0,
     solver_vivifies: u64 = 0,
     solver_vivified: u64 = 0,
+    solver_mode_switches: u64 = 0,
     peak_rss_kb: u64 = 0,
     par2_s: f64 = 0,
     timeout_s: u64 = 0,
@@ -372,6 +373,7 @@ fn parseBenchOutput(output: []const u8, stats: *Stats) void {
                     if (std.mem.eql(u8, key, "flp_units")) dst.solver_flp_units = n;
                     if (std.mem.eql(u8, key, "vivifies")) dst.solver_vivifies = n;
                     if (std.mem.eql(u8, key, "vivified")) dst.solver_vivified = n;
+                    if (std.mem.eql(u8, key, "mode_switches")) dst.solver_mode_switches = n;
                 }
             }.apply, stats);
         } else if (std.mem.startsWith(u8, line, "peak_rss_kb:")) {
@@ -878,6 +880,7 @@ fn printReport(
     try solverRow(w, "flp units", stats.solver_flp_units, stats.instance_count);
     try solverRow(w, "vivify passes", stats.solver_vivifies, stats.instance_count);
     try solverRow(w, "vivified clauses", stats.solver_vivified, stats.instance_count);
+    try solverRow(w, "mode switches", stats.solver_mode_switches, stats.instance_count);
     try blankRow(w);
 
     // --- throughput ---

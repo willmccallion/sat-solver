@@ -153,6 +153,15 @@ const vivify_budget_num: u64 = 2;
 const vivify_budget_den: u64 = 10;
 const vivify_lbd_cap: u32 = 6;
 
+// Focused/stable mode alternation (CaDiCaL, Kissat). Focused runs the
+// Glucose restart strategy we've always had; stable suppresses restarts
+// and re-biases saved_phases to the trail-peak snapshot on entry so the
+// solver can push deeper on the structural branch it's found. Each
+// chunk doubles in length so late search runs in long coherent bursts.
+const stable_initial_budget: u64 = 1000;
+
+const SolveMode = enum { focused, stable };
+
 // Chronological backtracking gate (Möhle/Biere 2018, Kissat default).
 // When a learned clause would jump more than this many levels down from
 // the conflict point, we backtrack by exactly one decision level instead
@@ -184,6 +193,7 @@ pub const Stats = struct {
     flp_units: u64 = 0,
     vivifies: u64 = 0,
     vivified: u64 = 0,
+    mode_switches: u64 = 0,
 };
 
 pub const Solver = struct {
@@ -270,6 +280,14 @@ pub const Solver = struct {
     vivify_interval: u64,
     props_at_last_vivify: u64,
 
+    // Focused/stable alternation. Start focused, flip when the solver
+    // has seen `mode_budget` conflicts in the current chunk; on each
+    // flip the budget doubles. Stable entry forces a rephase-to-best so
+    // saved_phases reflects the deepest partial assignment.
+    mode: SolveMode,
+    mode_budget: u64,
+    next_mode_switch: u64,
+
     unsat_at_init: bool,
 
     stats: Stats,
@@ -316,6 +334,9 @@ pub const Solver = struct {
             .next_vivify = vivify_initial_interval,
             .vivify_interval = vivify_initial_interval,
             .props_at_last_vivify = 0,
+            .mode = .focused,
+            .mode_budget = stable_initial_budget,
+            .next_mode_switch = stable_initial_budget,
             .unsat_at_init = false,
             .stats = .{},
         };
@@ -1508,7 +1529,13 @@ pub const Solver = struct {
                 // recent average (search is making progress, keep it).
                 const ready = self.conflicts_since_restart >= restart_min_conflicts;
                 var should_restart = false;
-                if (ready and self.lbd_fast_bc > 0 and self.lbd_slow_bc > 0) {
+                // Stable mode suppresses restarts entirely — once we've
+                // anchored on a trail peak we want to dive past it, not
+                // throw it away. The focused/stable boundary (below)
+                // still re-enables restarts on the next flip.
+                if (self.mode == .focused and
+                    ready and self.lbd_fast_bc > 0 and self.lbd_slow_bc > 0)
+                {
                     const fast_corrected = self.lbd_fast / self.lbd_fast_bc;
                     const slow_corrected = self.lbd_slow / self.lbd_slow_bc;
                     const trending_bad = fast_corrected > slow_corrected * restart_ratio;
@@ -1546,8 +1573,14 @@ pub const Solver = struct {
                 // gate that reduceDB needs.
                 const should_vivify = self.stats.conflicts >= self.next_vivify;
 
+                // Mode flip: chunks of ramping length alternate focused
+                // and stable. Each flip piggybacks on a level-0 backtrack
+                // (same as restart/reduce/rephase) so saved_phases can be
+                // rewritten cleanly on stable entry.
+                const should_flip_mode = self.stats.conflicts >= self.next_mode_switch;
+
                 if (should_restart or should_reduce or should_rephase or
-                    should_probe or should_vivify)
+                    should_probe or should_vivify or should_flip_mode)
                 {
                     if (should_restart) {
                         self.stats.restarts += 1;
@@ -1577,6 +1610,28 @@ pub const Solver = struct {
                         self.vivify_interval =
                             (self.vivify_interval * vivify_grow_num) / vivify_grow_den;
                         self.next_vivify = self.stats.conflicts + self.vivify_interval;
+                    }
+                    if (should_flip_mode) {
+                        self.mode = switch (self.mode) {
+                            .focused => .stable,
+                            .stable => .focused,
+                        };
+                        // On stable entry, copy the trail-peak snapshot
+                        // into saved_phases. The focused→stable boundary
+                        // is the natural place to anchor search on the
+                        // deepest partial assignment seen so far; on the
+                        // stable→focused boundary we leave saved_phases
+                        // alone because focused restarts will rewrite
+                        // them as conflicts accumulate.
+                        if (self.mode == .stable) {
+                            @memcpy(
+                                self.assignment.saved_phases,
+                                self.assignment.best_phases,
+                            );
+                        }
+                        self.mode_budget *= 2;
+                        self.next_mode_switch = self.stats.conflicts + self.mode_budget;
+                        self.stats.mode_switches += 1;
                     }
                 }
             } else {
