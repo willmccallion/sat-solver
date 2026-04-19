@@ -142,6 +142,7 @@ pub const Stats = struct {
     reductions: u64 = 0,
     deleted: u64 = 0,
     rephases: u64 = 0,
+    chronos: u64 = 0,
 };
 
 pub const Solver = struct {
@@ -1051,10 +1052,12 @@ pub const Solver = struct {
                 // skip many levels, pop exactly one level instead and
                 // re-assert the UIP at its resolution level so the
                 // intervening work survives.
-                const target_level: u32 = if (conflict_level > backjump_level + chrono_level_gap)
+                const chrono = conflict_level > backjump_level + chrono_level_gap;
+                const target_level: u32 = if (chrono)
                     conflict_level - 1
                 else
                     backjump_level;
+                if (chrono) self.stats.chronos += 1;
                 self.backtrack(target_level);
 
                 const learned_len = self.analyze_learned.items.len;

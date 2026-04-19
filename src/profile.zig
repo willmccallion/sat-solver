@@ -66,6 +66,8 @@ const Stats = struct {
     solver_restarts: u64 = 0,
     solver_reductions: u64 = 0,
     solver_learned: u64 = 0,
+    solver_rephases: u64 = 0,
+    solver_chronos: u64 = 0,
     peak_rss_kb: u64 = 0,
     par2_s: f64 = 0,
     timeout_s: u64 = 0,
@@ -360,6 +362,8 @@ fn parseBenchOutput(output: []const u8, stats: *Stats) void {
                     if (std.mem.eql(u8, key, "restarts")) dst.solver_restarts = n;
                     if (std.mem.eql(u8, key, "reductions")) dst.solver_reductions = n;
                     if (std.mem.eql(u8, key, "learned")) dst.solver_learned = n;
+                    if (std.mem.eql(u8, key, "rephases")) dst.solver_rephases = n;
+                    if (std.mem.eql(u8, key, "chronos")) dst.solver_chronos = n;
                 }
             }.apply, stats);
         } else if (std.mem.startsWith(u8, line, "peak_rss_kb:")) {
@@ -860,6 +864,8 @@ fn printReport(
     try solverRow(w, "restarts", stats.solver_restarts, stats.instance_count);
     try solverRow(w, "reductions", stats.solver_reductions, stats.instance_count);
     try solverRow(w, "learned clauses", stats.solver_learned, stats.instance_count);
+    try solverRow(w, "rephases", stats.solver_rephases, stats.instance_count);
+    try solverRow(w, "chrono backtracks", stats.solver_chronos, stats.instance_count);
     try blankRow(w);
 
     // --- throughput ---
