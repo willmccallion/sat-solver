@@ -160,7 +160,7 @@ pub fn main() !void {
     }
 
     try stdout.print(
-        "stats: decisions={d} conflicts={d} propagations={d} restarts={d} reductions={d} learned={d} rephases={d} chronos={d}\n",
+        "stats: decisions={d} conflicts={d} propagations={d} restarts={d} reductions={d} learned={d} rephases={d} chronos={d} probings={d} flp_units={d} vivifies={d} vivified={d}\n",
         .{
             agg_stats.decisions,
             agg_stats.conflicts,
@@ -170,6 +170,10 @@ pub fn main() !void {
             agg_stats.learned,
             agg_stats.rephases,
             agg_stats.chronos,
+            agg_stats.probings,
+            agg_stats.flp_units,
+            agg_stats.vivifies,
+            agg_stats.vivified,
         },
     );
 
@@ -304,4 +308,8 @@ fn accumulate(dst: *solver_mod.Stats, src: *const solver_mod.Stats) void {
     dst.deleted += src.deleted;
     dst.rephases += src.rephases;
     dst.chronos += src.chronos;
+    dst.probings += src.probings;
+    dst.flp_units += src.flp_units;
+    dst.vivifies += src.vivifies;
+    dst.vivified += src.vivified;
 }

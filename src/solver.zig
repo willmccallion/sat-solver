@@ -116,6 +116,43 @@ const rephase_initial: u64 = 1000;
 const rephase_grow_num: u64 = 3;
 const rephase_grow_den: u64 = 2;
 
+// Failed literal probing (FLP) — cheapest inprocessing technique that
+// actually derives new facts. At level 0, for a top-K slice of active
+// unassigned variables, we try both polarities at a throw-away
+// decision level 1 and propagate. A conflict in that probe means the
+// opposite polarity is implied by the formula, so we assert it as a
+// root-level unit and DRAT-log the addition. Only runs at level 0 and
+// only touches the level-1 scratch trail, so it slots cleanly between
+// a restart and the next decision without disturbing the search state.
+//
+// probe_budget_num/_den controls how much work each probe call may do
+// relative to the propagations accumulated since the last probe; the
+// outer interval grows geometrically so inprocessing doesn't dominate
+// on long searches.
+const probe_initial_interval: u64 = 10_000;
+const probe_grow_num: u64 = 3;
+const probe_grow_den: u64 = 2;
+const probe_budget_num: u64 = 1;
+const probe_budget_den: u64 = 10;
+const probe_max_vars: usize = 1024;
+
+// Vivification — at level 0, walk low-LBD learned clauses and assume
+// the negation of each literal in turn at a throwaway decision level.
+// If BCP derives a conflict at position i, then the prefix C[0..i+1]
+// is already implied by the formula, so the clause is replaced by
+// that shorter version; if BCP derives a later literal of C to
+// *true*, the same prefix shrink applies for a different reason
+// (¬C[0..i] ⊢ C[j>i]). Lits already falsified at level 0 are just
+// dropped in place. Targets LBD ≤ 6 because glue-adjacent clauses
+// are the ones whose BCP cost compounds through long searches, and
+// shrink success rate on high-LBD noise is too low to pay the probe.
+const vivify_initial_interval: u64 = 15_000;
+const vivify_grow_num: u64 = 3;
+const vivify_grow_den: u64 = 2;
+const vivify_budget_num: u64 = 2;
+const vivify_budget_den: u64 = 10;
+const vivify_lbd_cap: u32 = 6;
+
 // Chronological backtracking gate (Möhle/Biere 2018, Kissat default).
 // When a learned clause would jump more than this many levels down from
 // the conflict point, we backtrack by exactly one decision level instead
@@ -143,6 +180,10 @@ pub const Stats = struct {
     deleted: u64 = 0,
     rephases: u64 = 0,
     chronos: u64 = 0,
+    probings: u64 = 0,
+    flp_units: u64 = 0,
+    vivifies: u64 = 0,
+    vivified: u64 = 0,
 };
 
 pub const Solver = struct {
@@ -213,6 +254,22 @@ pub const Solver = struct {
     rephase_interval: u64,
     rephase_mode: RephaseMode,
 
+    // Failed literal probing cadence. `next_probe` is the conflict
+    // count that triggers the next run; `probe_interval` grows
+    // geometrically. `props_at_last_probe` is a propagation-count
+    // checkpoint used to size the per-call budget: we spend at most
+    // `(current - last) × num/den` propagations inside a probe call.
+    next_probe: u64,
+    probe_interval: u64,
+    props_at_last_probe: u64,
+
+    // Vivification cadence. Same propagation-budget pattern as FLP,
+    // independent conflict-count gate so inprocessing passes don't
+    // collide with reduceDB on the same level-0 backtrack.
+    next_vivify: u64,
+    vivify_interval: u64,
+    props_at_last_vivify: u64,
+
     unsat_at_init: bool,
 
     stats: Stats,
@@ -253,6 +310,12 @@ pub const Solver = struct {
             .rephase_next = rephase_initial,
             .rephase_interval = rephase_initial,
             .rephase_mode = .best,
+            .next_probe = probe_initial_interval,
+            .probe_interval = probe_initial_interval,
+            .props_at_last_probe = 0,
+            .next_vivify = vivify_initial_interval,
+            .vivify_interval = vivify_initial_interval,
+            .props_at_last_vivify = 0,
             .unsat_at_init = false,
             .stats = .{},
         };
@@ -939,6 +1002,315 @@ pub const Solver = struct {
         self.stats.rephases += 1;
     }
 
+    // Failed literal probing pass. Returns .unsat if the probe (or its
+    // follow-up propagation) derives an empty clause at level 0,
+    // otherwise null — the solver continues its normal search. Expects
+    // self.level == 0 and propagation to have reached fixed point; both
+    // are guaranteed by the caller gating this on the post-restart
+    // path in solve().
+    //
+    // For each top-K active unassigned variable, try its saved polarity
+    // at a throw-away level 1 and propagate. A conflict means the
+    // opposite polarity is entailed by the formula plus level-0 facts,
+    // so we pop the probe, assert the opposite as a real level-0 unit,
+    // emit the DRAT addition, and re-propagate. If that re-propagation
+    // itself conflicts, the whole formula is UNSAT. Otherwise retry the
+    // other polarity (unless the variable has meanwhile been assigned
+    // by a cascade from a different unit derivation).
+    fn probe(self: *Solver) !?Result {
+        std.debug.assert(self.assignment.level == 0);
+        self.stats.probings += 1;
+
+        const props_start = self.stats.propagations;
+        const delta = if (props_start > self.props_at_last_probe)
+            props_start - self.props_at_last_probe
+        else
+            0;
+        const budget: u64 = (delta * probe_budget_num) / probe_budget_den;
+        self.props_at_last_probe = props_start;
+
+        var candidates: std.ArrayList(u32) = .empty;
+        defer candidates.deinit(self.allocator);
+        try candidates.ensureTotalCapacity(self.allocator, self.num_vars);
+        for (self.assignment.vars, 0..) |vi, idx| {
+            if (vi.value == .unassigned) {
+                candidates.appendAssumeCapacity(@intCast(idx));
+            }
+        }
+        std.mem.sort(u32, candidates.items, self.activities, struct {
+            fn lessThan(acts: []f64, a: u32, b: u32) bool {
+                return acts[a] > acts[b];
+            }
+        }.lessThan);
+
+        const k = @min(candidates.items.len, probe_max_vars);
+
+        var probed: usize = 0;
+        while (probed < k) : (probed += 1) {
+            if (budget > 0 and self.stats.propagations - props_start > budget) break;
+
+            const v = candidates.items[probed];
+
+            // Try up to two polarities per variable. After the first
+            // succeeds or fails, the second is attempted only if v is
+            // still unassigned (a cascade from an earlier probe can
+            // have fixed it).
+            var iter: u32 = 0;
+            while (iter < 2) : (iter += 1) {
+                if (self.assignment.vars[v].value != .unassigned) break;
+
+                const first_neg = !self.assignment.saved_phases[v];
+                const neg = if (iter == 0) first_neg else !first_neg;
+                const probe_lit = Literal.init(v, neg);
+
+                try self.assignment.pushDecisionLevel();
+                try self.assignment.assign(probe_lit, Reason.none);
+                const conflict = try self.propagate();
+                self.backtrack(0);
+
+                if (conflict != null) {
+                    const unit = probe_lit.negate();
+                    try self.proofAdd(&.{unit});
+                    try self.assignment.assign(unit, Reason.none);
+                    self.stats.flp_units += 1;
+                    if ((try self.propagate()) != null) {
+                        try self.proofEmpty();
+                        return .unsat;
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
+    // Vivification pass. Attempts to shrink low-LBD learned clauses by
+    // assuming the negation of each literal in turn at a fresh decision
+    // level and running BCP. Three outcomes per literal l at position i:
+    //
+    //   * l is already level-0 true   → clause is subsumed by a unit;
+    //                                   delete it (emit DRAT del).
+    //   * l is already level-0 false  → drop l from the scratch clause;
+    //                                   no decision pushed.
+    //   * l is unassigned             → push decision level, assign ¬l,
+    //                                   propagate.
+    //     - conflict              → scratch[0..i+1] is RUP-implied;
+    //                               replace the clause with that shorter
+    //                               disjunction.
+    //     - propagates scratch[k] true (for some k > i):
+    //                               same implication, same shrink to
+    //                               scratch[0..i+1] (with scratch[i] = l
+    //                               already the current position).
+    //     - propagates scratch[k] false: l is redundant given the
+    //                               earlier decisions; drop without
+    //                               pushing.
+    //
+    // Returns .unsat if any shrink lands on an empty clause or derives
+    // a conflicting level-0 unit; otherwise null. Preconditions: level 0,
+    // BCP is at fixed point.
+    //
+    // Memory safety: addClauseToArena may reallocate the arena and
+    // invalidate outstanding `clauseLits` slices. We copy each candidate
+    // into `scratch` up-front and hold no arena slice across the decision
+    // loop. The `candidates` list is snapshotted before any mutations.
+    //
+    // Deleted-clause watcher sweep: shrunk/subsumed clauses leave their
+    // watchers dangling in `watchers[...]` pointing at deleted_bit-set
+    // arena slots. Propagate does not check `clauseIsDeleted`, so we must
+    // sweep watcher lists before returning — same invariant reduceDB
+    // maintains after its own deletion pass.
+    fn vivify(self: *Solver) !?Result {
+        std.debug.assert(self.assignment.level == 0);
+        self.stats.vivifies += 1;
+
+        const props_start = self.stats.propagations;
+        const delta = if (props_start > self.props_at_last_vivify)
+            props_start - self.props_at_last_vivify
+        else
+            0;
+        const budget: u64 = (delta * vivify_budget_num) / vivify_budget_den;
+        self.props_at_last_vivify = props_start;
+
+        // Snapshot candidates now — addClauseToArena below may reallocate
+        // and mutate learned_clauses during the loop, and we want stable
+        // targets.
+        var candidates: std.ArrayList(ClauseRef) = .empty;
+        defer candidates.deinit(self.allocator);
+        for (self.learned_clauses.items) |cref| {
+            if (self.clauseIsDeleted(cref)) continue;
+            if (self.clauseLbd(cref) > vivify_lbd_cap) continue;
+            try candidates.append(self.allocator, cref);
+        }
+
+        var scratch: std.ArrayList(Literal) = .empty;
+        defer scratch.deinit(self.allocator);
+
+        var any_deleted = false;
+
+        outer: for (candidates.items) |cref| {
+            if (budget > 0 and self.stats.propagations - props_start > budget) break;
+            if (self.clauseIsDeleted(cref)) continue;
+
+            // Copy lits before any decision-level push. Arena slices are
+            // only safe between allocations; we intentionally don't hold
+            // one across propagate().
+            const lits_now = self.clauseLits(cref);
+            scratch.clearRetainingCapacity();
+            try scratch.ensureTotalCapacity(self.allocator, lits_now.len);
+            scratch.appendSliceAssumeCapacity(lits_now);
+
+            // Locked-clause check: if this clause is currently a reason
+            // for a level-0 literal, mutating it would break reason
+            // chains. Skip — those are rare and analyze's level-0 path
+            // tolerates their survival.
+            var locked = false;
+            for (scratch.items) |lit| {
+                const vi = self.assignment.vars[lit.variable()];
+                if (vi.level == 0 and !vi.reason.isNone() and
+                    !vi.reason.isBinary() and vi.reason.clauseRef() == cref)
+                {
+                    locked = true;
+                    break;
+                }
+            }
+            if (locked) continue;
+
+            var shrink_len: ?usize = null;
+            var subsumed = false;
+
+            var i: usize = 0;
+            while (i < scratch.items.len) {
+                const lit = scratch.items[i];
+                const vi = self.assignment.vars[lit.variable()];
+
+                if (vi.level == 0 and vi.value != .unassigned) {
+                    if (self.assignment.valueOfLiteral(lit) == .@"true") {
+                        subsumed = true;
+                        break;
+                    }
+                    // level-0 false → redundant, drop without pushing.
+                    _ = scratch.swapRemove(i);
+                    continue;
+                }
+
+                const cur = self.assignment.valueOfLiteral(lit);
+                if (cur == .@"true") {
+                    // Propagated true by earlier ¬-decisions → prefix is
+                    // implied. Keep this lit as the tail of the shrunken
+                    // clause.
+                    shrink_len = i + 1;
+                    break;
+                }
+                if (cur == .@"false") {
+                    // Propagated false → redundant given earlier lits;
+                    // drop without pushing.
+                    _ = scratch.swapRemove(i);
+                    continue;
+                }
+
+                try self.assignment.pushDecisionLevel();
+                try self.assignment.assign(lit.negate(), Reason.none);
+                const conflict = try self.propagate();
+                if (conflict != null) {
+                    shrink_len = i + 1;
+                    break;
+                }
+                i += 1;
+            }
+
+            self.backtrack(0);
+
+            if (subsumed) {
+                try self.proofDelete(cref);
+                self.arena.items[cref].raw |= deleted_bit;
+                self.stats.vivified += 1;
+                any_deleted = true;
+                continue :outer;
+            }
+
+            // Did anything actually shrink? Only count/apply if the
+            // effective new length is strictly smaller than the original
+            // stored length.
+            const original_len = self.clauseLen(cref);
+            const new_len: usize = shrink_len orelse scratch.items.len;
+            if (new_len >= original_len) continue;
+
+            const new_lits = scratch.items[0..new_len];
+
+            if (new_len == 0) {
+                try self.proofEmpty();
+                return .unsat;
+            }
+
+            try self.proofAdd(new_lits);
+            try self.proofDelete(cref);
+            self.arena.items[cref].raw |= deleted_bit;
+            any_deleted = true;
+            self.stats.vivified += 1;
+
+            if (new_len == 1) {
+                const unit = new_lits[0];
+                const val = self.assignment.valueOfLiteral(unit);
+                if (val == .@"false") {
+                    try self.proofEmpty();
+                    return .unsat;
+                }
+                if (val == .unassigned) {
+                    try self.assignment.assign(unit, Reason.none);
+                }
+            } else if (new_len == 2) {
+                try self.bin_watchers[new_lits[0].negate().raw].append(
+                    self.allocator,
+                    .{ .other = new_lits[1] },
+                );
+                try self.bin_watchers[new_lits[1].negate().raw].append(
+                    self.allocator,
+                    .{ .other = new_lits[0] },
+                );
+            } else {
+                const new_lbd = self.computeLbd(new_lits);
+                const new_cref = try self.addClauseToArena(new_lits, true, new_lbd);
+                try self.learned_clauses.append(self.allocator, new_cref);
+                try self.attachWatches(new_cref);
+            }
+        }
+
+        // Watcher sweep — drop entries pointing at any clause we marked
+        // deleted this pass. Mirrors reduceDB's post-delete sweep so
+        // propagate never dereferences a tombstoned arena slot.
+        if (any_deleted) {
+            for (self.watchers) |*wlist| {
+                var j: usize = 0;
+                for (wlist.items) |w| {
+                    if (!self.clauseIsDeleted(w.clause)) {
+                        wlist.items[j] = w;
+                        j += 1;
+                    }
+                }
+                wlist.shrinkRetainingCapacity(j);
+            }
+
+            var j: usize = 0;
+            for (self.learned_clauses.items) |cref| {
+                if (!self.clauseIsDeleted(cref)) {
+                    self.learned_clauses.items[j] = cref;
+                    j += 1;
+                }
+            }
+            self.learned_clauses.shrinkRetainingCapacity(j);
+        }
+
+        // Any new level-0 unit we derived (from a 1-lit shrink) needs
+        // propagating before we return to search. If that itself
+        // conflicts, the formula is UNSAT.
+        if ((try self.propagate()) != null) {
+            try self.proofEmpty();
+            return .unsat;
+        }
+
+        return null;
+    }
+
     // Compacting backtrack. Starts at trail_lim[target_level] — a valid
     // lower bound because every entry below that index was assigned
     // before level target+1 was first entered — and walks forward. Each
@@ -1165,7 +1537,18 @@ pub const Solver = struct {
                 // level-0 backtrack so we can rewrite saved_phases.
                 const should_rephase = self.stats.conflicts >= self.rephase_next;
 
-                if (should_restart or should_reduce or should_rephase) {
+                // FLP also only fires at level 0. Same pattern: gate on
+                // the conflict budget, piggyback on a level-0 backtrack.
+                const should_probe = self.stats.conflicts >= self.next_probe;
+
+                // Vivification: independent cadence from reduceDB so
+                // inprocessing passes don't starve on the max_learned
+                // gate that reduceDB needs.
+                const should_vivify = self.stats.conflicts >= self.next_vivify;
+
+                if (should_restart or should_reduce or should_rephase or
+                    should_probe or should_vivify)
+                {
                     if (should_restart) {
                         self.stats.restarts += 1;
                         self.conflicts_since_restart = 0;
@@ -1182,6 +1565,18 @@ pub const Solver = struct {
                         self.rephase_interval =
                             (self.rephase_interval * rephase_grow_num) / rephase_grow_den;
                         self.rephase_next = self.stats.conflicts + self.rephase_interval;
+                    }
+                    if (should_probe) {
+                        if (try self.probe()) |r| return r;
+                        self.probe_interval =
+                            (self.probe_interval * probe_grow_num) / probe_grow_den;
+                        self.next_probe = self.stats.conflicts + self.probe_interval;
+                    }
+                    if (should_vivify) {
+                        if (try self.vivify()) |r| return r;
+                        self.vivify_interval =
+                            (self.vivify_interval * vivify_grow_num) / vivify_grow_den;
+                        self.next_vivify = self.stats.conflicts + self.vivify_interval;
                     }
                 }
             } else {

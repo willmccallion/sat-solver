@@ -68,6 +68,10 @@ const Stats = struct {
     solver_learned: u64 = 0,
     solver_rephases: u64 = 0,
     solver_chronos: u64 = 0,
+    solver_probings: u64 = 0,
+    solver_flp_units: u64 = 0,
+    solver_vivifies: u64 = 0,
+    solver_vivified: u64 = 0,
     peak_rss_kb: u64 = 0,
     par2_s: f64 = 0,
     timeout_s: u64 = 0,
@@ -364,6 +368,10 @@ fn parseBenchOutput(output: []const u8, stats: *Stats) void {
                     if (std.mem.eql(u8, key, "learned")) dst.solver_learned = n;
                     if (std.mem.eql(u8, key, "rephases")) dst.solver_rephases = n;
                     if (std.mem.eql(u8, key, "chronos")) dst.solver_chronos = n;
+                    if (std.mem.eql(u8, key, "probings")) dst.solver_probings = n;
+                    if (std.mem.eql(u8, key, "flp_units")) dst.solver_flp_units = n;
+                    if (std.mem.eql(u8, key, "vivifies")) dst.solver_vivifies = n;
+                    if (std.mem.eql(u8, key, "vivified")) dst.solver_vivified = n;
                 }
             }.apply, stats);
         } else if (std.mem.startsWith(u8, line, "peak_rss_kb:")) {
@@ -866,6 +874,10 @@ fn printReport(
     try solverRow(w, "learned clauses", stats.solver_learned, stats.instance_count);
     try solverRow(w, "rephases", stats.solver_rephases, stats.instance_count);
     try solverRow(w, "chrono backtracks", stats.solver_chronos, stats.instance_count);
+    try solverRow(w, "probings", stats.solver_probings, stats.instance_count);
+    try solverRow(w, "flp units", stats.solver_flp_units, stats.instance_count);
+    try solverRow(w, "vivify passes", stats.solver_vivifies, stats.instance_count);
+    try solverRow(w, "vivified clauses", stats.solver_vivified, stats.instance_count);
     try blankRow(w);
 
     // --- throughput ---
