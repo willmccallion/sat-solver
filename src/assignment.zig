@@ -88,6 +88,14 @@ pub const Assignment = struct {
     lit_values: []Value,
 
     saved_phases: []bool,
+
+    // Deepest-trail snapshot used by rephase. Solver updates this when
+    // a conflict finds a trail longer than any previous one, storing the
+    // polarity each variable had at that peak. rephase() copies it back
+    // into saved_phases to re-bias branching toward the best partial
+    // assignment seen so far.
+    best_phases: []bool,
+
     trail: std.ArrayList(Literal),
     trail_lim: std.ArrayList(u32),
     level: u32,
@@ -106,11 +114,16 @@ pub const Assignment = struct {
         errdefer allocator.free(saved);
         @memset(saved, false);
 
+        const best = try allocator.alloc(bool, num_vars);
+        errdefer allocator.free(best);
+        @memset(best, false);
+
         return .{
             .allocator = allocator,
             .vars = vars,
             .lit_values = lit_values,
             .saved_phases = saved,
+            .best_phases = best,
             .trail = .empty,
             .trail_lim = .empty,
             .level = 0,
@@ -122,6 +135,7 @@ pub const Assignment = struct {
         self.allocator.free(self.vars);
         self.allocator.free(self.lit_values);
         self.allocator.free(self.saved_phases);
+        self.allocator.free(self.best_phases);
         self.trail.deinit(self.allocator);
         self.trail_lim.deinit(self.allocator);
         self.* = undefined;
@@ -138,16 +152,28 @@ pub const Assignment = struct {
     }
 
     pub fn assign(self: *Assignment, lit: Literal, reason: Reason) !void {
+        return self.assignAtLevel(lit, reason, self.level);
+    }
+
+    // Assign `lit` at an explicit level, which may be lower than
+    // self.level. Chronological backtracking uses this: after a big jump
+    // is skipped in favour of popping a single level, the learned-clause
+    // UIP is asserted at its natural (resolution) level rather than the
+    // current decision level, and chrono-friendly propagation records
+    // forced literals at the max level of the falsified clause lits.
+    //
+    // Breaks the "trail is monotonically increasing in level" invariant —
+    // callers in analyze / backtrack must not rely on it.
+    pub fn assignAtLevel(self: *Assignment, lit: Literal, reason: Reason, lvl: u32) !void {
         const var_index = lit.variable();
         std.debug.assert(self.vars[var_index].value == .unassigned);
+        std.debug.assert(lvl <= self.level);
         const negative = lit.isNegative();
         self.vars[var_index] = .{
             .value = if (negative) .@"false" else .@"true",
-            .level = self.level,
+            .level = lvl,
             .reason = reason,
         };
-        // Update both literal slots at once. The compiler turns this
-        // into two byte stores to adjacent addresses.
         const pos_slot = var_index << 1;
         self.lit_values[pos_slot] = if (negative) .@"false" else .@"true";
         self.lit_values[pos_slot | 1] = if (negative) .@"true" else .@"false";

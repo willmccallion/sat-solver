@@ -300,4 +300,5 @@ fn accumulate(dst: *solver_mod.Stats, src: *const solver_mod.Stats) void {
     dst.learned += src.learned;
     dst.reductions += src.reductions;
     dst.deleted += src.deleted;
+    dst.rephases += src.rephases;
 }

@@ -107,6 +107,32 @@ const restart_min_conflicts: u64 = 50;
 const reduce_initial: u64 = 2000;
 const reduce_grow: u64 = 300;
 
+// Rephase cadence. Every `rephase_next` conflicts, the solver backs to
+// level 0 and rotates `saved_phases` through a small family of
+// polarities (best / original / inverse / random) so phase saving can
+// escape local minima. The interval grows geometrically so late search
+// doesn't thrash the branching heuristic.
+const rephase_initial: u64 = 1000;
+const rephase_grow_num: u64 = 3;
+const rephase_grow_den: u64 = 2;
+
+// Chronological backtracking gate (Möhle/Biere 2018, Kissat default).
+// When a learned clause would jump more than this many levels down from
+// the conflict point, we backtrack by exactly one decision level instead
+// — the intuition is that long jumps destroy useful assignments and the
+// chronological path re-derives the same learned clause on the way down.
+// The UIP is still asserted at its natural (resolution) level via
+// assignAtLevel, so the trail goes out-of-order; analyze and backtrack
+// are level-aware rather than position-aware to accommodate this.
+const chrono_level_gap: u32 = 100;
+
+// Which polarity strategy the next rephase will apply. We cycle
+// through the four in order; `.best` copies the trail-peak snapshot,
+// `.original` resets to the solver's default (all-false), `.inverse`
+// flips every current saved phase, and `.random` seeds a fresh set
+// from a deterministic PRNG so reruns are reproducible.
+const RephaseMode = enum { best, original, inverse, random };
+
 pub const Stats = struct {
     decisions: u64 = 0,
     propagations: u64 = 0,
@@ -115,6 +141,7 @@ pub const Stats = struct {
     learned: u64 = 0,
     reductions: u64 = 0,
     deleted: u64 = 0,
+    rephases: u64 = 0,
 };
 
 pub const Solver = struct {
@@ -175,6 +202,16 @@ pub const Solver = struct {
     next_reduce: u64,
     reduce_interval: u64,
 
+    // Rephase state. `best_trail_len` tracks the longest partial
+    // assignment we've ever seen at a conflict point — each new peak
+    // writes its polarities into assignment.best_phases. The trigger
+    // cadence is independent of restart/reduce, and the mode cycles
+    // round-robin every time rephase() runs.
+    best_trail_len: usize,
+    rephase_next: u64,
+    rephase_interval: u64,
+    rephase_mode: RephaseMode,
+
     unsat_at_init: bool,
 
     stats: Stats,
@@ -211,6 +248,10 @@ pub const Solver = struct {
             .conflicts_since_restart = 0,
             .next_reduce = reduce_initial,
             .reduce_interval = reduce_initial,
+            .best_trail_len = 0,
+            .rephase_next = rephase_initial,
+            .rephase_interval = rephase_initial,
+            .rephase_mode = .best,
             .unsat_at_init = false,
             .stats = .{},
         };
@@ -457,6 +498,15 @@ pub const Solver = struct {
             self.assignment.propagation_head += 1;
             self.stats.propagations += 1;
 
+            // Under chronological backtracking the trail is not
+            // monotonic in level, so the level at which a forced literal
+            // "naturally" holds is max over the falsified clause lits
+            // rather than the current decision level. For a binary (¬p ∨ b)
+            // the only falsified lit is ¬p, so the force level is simply
+            // p's level. For long clauses we compute the max when we hit
+            // the unit case (see below).
+            const p_level = self.assignment.vars[p.variable()].level;
+
             // --- Binary fast path ------------------------------------------
             // bin_watchers entries are permanent (no compaction), so we
             // just iterate the snapshot. An `assign` below may cascade
@@ -473,9 +523,13 @@ pub const Solver = struct {
                     self.assignment.propagation_head = self.assignment.trail.items.len;
                     return Conflict{ .binary = .{ p.negate(), b.other } };
                 }
-                // Unit: force b.other, recording that the partner in the
-                // implicit binary clause is ¬p.
-                try self.assignment.assign(b.other, Reason.fromBinary(p.negate()));
+                // Unit: force b.other at p's level (natural level for a
+                // binary under chrono).
+                try self.assignment.assignAtLevel(
+                    b.other,
+                    Reason.fromBinary(p.negate()),
+                    p_level,
+                );
             }
 
             // --- Long-clause path ------------------------------------------
@@ -556,7 +610,21 @@ pub const Solver = struct {
                     self.assignment.propagation_head = self.assignment.trail.items.len;
                     return Conflict{ .clause = w.clause };
                 } else {
-                    try self.assignment.assign(other, Reason.fromClause(w.clause));
+                    // Natural force level = max level of the other lits
+                    // in the clause (all of which are currently false).
+                    // Classical trail ⇒ this collapses to self.level, so
+                    // the expense only shows up on genuine chrono paths.
+                    var force_level: u32 = p_level;
+                    var m: usize = 2;
+                    while (m < lits.len) : (m += 1) {
+                        const lv = self.assignment.vars[lits[m].variable()].level;
+                        if (lv > force_level) force_level = lv;
+                    }
+                    try self.assignment.assignAtLevel(
+                        other,
+                        Reason.fromClause(w.clause),
+                        force_level,
+                    );
                 }
             }
 
@@ -641,7 +709,15 @@ pub const Solver = struct {
     // When walking the reason chain, a binary reason is synthesized on
     // the fly into a 2-lit view [forced_lit, binaryOther] so the outer
     // loop is oblivious to the clause representation.
-    fn analyze(self: *Solver, conflict: Conflict) !u32 {
+    //
+    // `conflict_level` is the maximum level of any literal in the
+    // initial conflict. Under classical backtracking it equals the
+    // current decision level; under chronological backtracking the
+    // trail may be out-of-order and the conflict can fire at a level
+    // below self.level, so the caller computes it from the conflict
+    // lits and passes it in. All UIP-counter and trail-walk checks use
+    // conflict_level in place of self.level.
+    fn analyze(self: *Solver, conflict: Conflict, conflict_level: u32) !u32 {
         self.analyze_learned.clearRetainingCapacity();
         self.analyze_levels.clearRetainingCapacity();
         try self.analyze_learned.append(self.allocator, undefined);
@@ -674,16 +750,26 @@ pub const Solver = struct {
 
                 self.analyze_seen[v] = true;
                 self.bumpVarActivity(v);
-                if (q_level >= self.assignment.level) {
+                if (q_level >= conflict_level) {
                     counter += 1;
                 } else {
                     try self.analyze_learned.append(self.allocator, q);
                 }
             }
 
+            // Walk the trail backwards. Under chrono the trail is not
+            // monotonic in level, so a seen var at a lower level could
+            // be interleaved with conflict-level entries — those belong
+            // in the learned clause (they went through the .else branch
+            // above), not as resolution candidates, so skip them.
             while (trail_idx >= 0) {
                 const tl = self.assignment.trail.items[@intCast(trail_idx)];
-                if (self.analyze_seen[tl.variable()]) break;
+                const tv = tl.variable();
+                if (self.analyze_seen[tv] and
+                    self.assignment.vars[tv].level == conflict_level)
+                {
+                    break;
+                }
                 trail_idx -= 1;
             }
             std.debug.assert(trail_idx >= 0);
@@ -817,26 +903,83 @@ pub const Solver = struct {
         return null;
     }
 
+    // Rotate `saved_phases` through the rephase family. Called only at
+    // level 0 — the search tree has already been torn down and we're
+    // rebiasing the *next* descent, not perturbing an active trail.
+    //
+    // best    → copy the deepest-trail snapshot (best_phases) in.
+    // original → reset to the solver default (all-false == "try
+    //            negative first" under pickBranching's neg = !saved rule).
+    // inverse → flip every saved phase; lets us probe the complementary
+    //           neighborhood of wherever saving had drifted to.
+    // random  → deterministic PRNG seeded by conflict count. Reruns are
+    //           reproducible and bench diffs stay meaningful.
+    fn rephase(self: *Solver) void {
+        std.debug.assert(self.assignment.level == 0);
+        const saved = self.assignment.saved_phases;
+        switch (self.rephase_mode) {
+            .best => @memcpy(saved, self.assignment.best_phases),
+            .original => @memset(saved, false),
+            .inverse => {
+                for (saved) |*b| b.* = !b.*;
+            },
+            .random => {
+                var rng = std.Random.DefaultPrng.init(self.stats.conflicts);
+                const r = rng.random();
+                for (saved) |*b| b.* = r.boolean();
+            },
+        }
+        self.rephase_mode = switch (self.rephase_mode) {
+            .best => .original,
+            .original => .inverse,
+            .inverse => .random,
+            .random => .best,
+        };
+        self.stats.rephases += 1;
+    }
+
+    // Compacting backtrack. Starts at trail_lim[target_level] — a valid
+    // lower bound because every entry below that index was assigned
+    // before level target+1 was first entered — and walks forward. Each
+    // entry at vars[v].level > target is popped (its value cleared,
+    // phase saved, heap re-inserted); each entry ≤ target is kept and
+    // shifted left into the compacted region.
+    //
+    // Under classical CDCL the trail is monotonic in level, so this
+    // collapses to the old "slice off the tail" behaviour. Under
+    // chronological backtracking, where earlier chrono-asserted literals
+    // can live at lower levels than their trail neighbours, the compact
+    // pass is required for correctness.
     fn backtrack(self: *Solver, target_level: u32) void {
         const a = &self.assignment;
         if (a.level <= target_level) return;
-        const trail_start = a.trail_lim.items[target_level];
-        var i: usize = a.trail.items.len;
-        while (i > trail_start) {
-            i -= 1;
-            const lit = a.trail.items[i];
+        const scan_start = a.trail_lim.items[target_level];
+        var j: usize = scan_start;
+        var i: usize = scan_start;
+        const trail_items = a.trail.items;
+        while (i < trail_items.len) : (i += 1) {
+            const lit = trail_items[i];
             const v = lit.variable();
-            a.saved_phases[v] = (a.vars[v].value == .@"true");
-            a.vars[v] = .{};
-            const pos_slot = v << 1;
-            a.lit_values[pos_slot] = .unassigned;
-            a.lit_values[pos_slot | 1] = .unassigned;
-            self.order_heap.insert(v);
+            if (a.vars[v].level > target_level) {
+                a.saved_phases[v] = (a.vars[v].value == .@"true");
+                a.vars[v] = .{};
+                const pos_slot = v << 1;
+                a.lit_values[pos_slot] = .unassigned;
+                a.lit_values[pos_slot | 1] = .unassigned;
+                self.order_heap.insert(v);
+            } else {
+                trail_items[j] = lit;
+                j += 1;
+            }
         }
-        a.trail.shrinkRetainingCapacity(trail_start);
+        a.trail.shrinkRetainingCapacity(j);
         a.trail_lim.shrinkRetainingCapacity(target_level);
         a.level = target_level;
-        if (a.propagation_head > trail_start) a.propagation_head = trail_start;
+        // Re-propagate everything from the compact boundary on. Kept
+        // literals at the current level may still have watcher work to
+        // do against the new trail shape, and the UIP we're about to
+        // chrono-assert will land at exactly this index.
+        if (a.propagation_head > scan_start) a.propagation_head = scan_start;
     }
 
     // --- main loop ---------------------------------------------------------
@@ -857,18 +1000,62 @@ pub const Solver = struct {
             if (try self.propagate()) |conflict| {
                 self.stats.conflicts += 1;
                 self.conflicts_since_restart += 1;
-                if (self.assignment.level == 0) {
+
+                // Conflict level = max level of any lit in the falsified
+                // clause. Under classical CDCL this is always self.level;
+                // under chrono it can be lower (an asserted lit at a low
+                // level conflicts with an existing assignment). A
+                // conflict_level of 0 means the empty clause is implied
+                // at the root — UNSAT.
+                const conflict_level: u32 = switch (conflict) {
+                    .clause => |cref| blk: {
+                        var m: u32 = 0;
+                        for (self.clauseLits(cref)) |lit| {
+                            const lv = self.assignment.vars[lit.variable()].level;
+                            if (lv > m) m = lv;
+                        }
+                        break :blk m;
+                    },
+                    .binary => |two| @max(
+                        self.assignment.vars[two[0].variable()].level,
+                        self.assignment.vars[two[1].variable()].level,
+                    ),
+                };
+                if (conflict_level == 0) {
                     try self.proofEmpty();
                     return .unsat;
                 }
 
-                const backjump_level = try self.analyze(conflict);
+                const backjump_level = try self.analyze(conflict, conflict_level);
 
                 // Snapshot trail length at the conflict point — used as
                 // the blocker sample below. Must be taken before backtrack.
-                const conflict_trail_f: f64 = @floatFromInt(self.assignment.trail.items.len);
+                const conflict_trail_len = self.assignment.trail.items.len;
+                const conflict_trail_f: f64 = @floatFromInt(conflict_trail_len);
 
-                self.backtrack(backjump_level);
+                // Record a new trail-peak snapshot for rephase. We only
+                // overwrite variables that are actually on the current
+                // trail so peak-specific polarities persist across
+                // shallower future conflicts. Doing this before backtrack
+                // is essential — backtrack erases vars[v].value.
+                if (conflict_trail_len > self.best_trail_len) {
+                    for (self.assignment.trail.items) |tl| {
+                        const v = tl.variable();
+                        self.assignment.best_phases[v] =
+                            (self.assignment.vars[v].value == .@"true");
+                    }
+                    self.best_trail_len = conflict_trail_len;
+                }
+
+                // Chronological gate: if the non-chrono backjump would
+                // skip many levels, pop exactly one level instead and
+                // re-assert the UIP at its resolution level so the
+                // intervening work survives.
+                const target_level: u32 = if (conflict_level > backjump_level + chrono_level_gap)
+                    conflict_level - 1
+                else
+                    backjump_level;
+                self.backtrack(target_level);
 
                 const learned_len = self.analyze_learned.items.len;
                 const lbd: u32 = if (learned_len == 1)
@@ -886,7 +1073,14 @@ pub const Solver = struct {
 
                 if (learned_len == 1) {
                     try self.proofAdd(self.analyze_learned.items);
-                    try self.assignment.assign(self.analyze_learned.items[0], Reason.none);
+                    // Top-level unit: always level 0, even when a chrono
+                    // target left self.level > 0. assignAtLevel pins it
+                    // to level 0 regardless of the current stack.
+                    try self.assignment.assignAtLevel(
+                        self.analyze_learned.items[0],
+                        Reason.none,
+                        0,
+                    );
                 } else if (learned_len == 2) {
                     // Learned binary — skips the arena. Register both
                     // watch directions and assert the UIP with an inline
@@ -903,7 +1097,11 @@ pub const Solver = struct {
                         self.allocator,
                         .{ .other = uip },
                     );
-                    try self.assignment.assign(uip, Reason.fromBinary(other));
+                    try self.assignment.assignAtLevel(
+                        uip,
+                        Reason.fromBinary(other),
+                        backjump_level,
+                    );
                     self.stats.learned += 1;
                 } else {
                     try self.proofAdd(self.analyze_learned.items);
@@ -914,13 +1112,13 @@ pub const Solver = struct {
                     );
                     try self.learned_clauses.append(self.allocator, cref);
                     try self.attachWatches(cref);
-                    // The UIP at index 0 is asserted under the new level.
-                    // We read the literal *after* the append because the
-                    // arena may have been reallocated; analyze_learned
-                    // survives the append (it's a separate ArrayList).
-                    try self.assignment.assign(
+                    // UIP goes in at its resolution (backjump) level,
+                    // not self.level — they diverge when chronological
+                    // backtracking skipped the big jump.
+                    try self.assignment.assignAtLevel(
                         self.analyze_learned.items[0],
                         Reason.fromClause(cref),
+                        backjump_level,
                     );
                     self.stats.learned += 1;
                 }
@@ -959,7 +1157,12 @@ pub const Solver = struct {
                 const should_reduce = self.stats.conflicts >= self.next_reduce and
                     self.learned_clauses.items.len > self.max_learned;
 
-                if (should_restart or should_reduce) {
+                // Rephase also only fires at level 0. It's independent of
+                // restart/reduce; when its budget is up we force a
+                // level-0 backtrack so we can rewrite saved_phases.
+                const should_rephase = self.stats.conflicts >= self.rephase_next;
+
+                if (should_restart or should_reduce or should_rephase) {
                     if (should_restart) {
                         self.stats.restarts += 1;
                         self.conflicts_since_restart = 0;
@@ -970,6 +1173,12 @@ pub const Solver = struct {
                         self.max_learned = (self.max_learned * 11) / 10;
                         self.reduce_interval += reduce_grow;
                         self.next_reduce = self.stats.conflicts + self.reduce_interval;
+                    }
+                    if (should_rephase) {
+                        self.rephase();
+                        self.rephase_interval =
+                            (self.rephase_interval * rephase_grow_num) / rephase_grow_den;
+                        self.rephase_next = self.stats.conflicts + self.rephase_interval;
                     }
                 }
             } else {
