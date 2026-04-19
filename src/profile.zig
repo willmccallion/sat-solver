@@ -52,6 +52,9 @@ const Stats = struct {
     // from sat-bench stdout
     elapsed_ns: u64 = 0,
     instance_count: u64 = 0,
+    sat_count: u64 = 0,
+    unsat_count: u64 = 0,
+    unknown_count: u64 = 0,
     dist_min_ms: f64 = 0,
     dist_p50_ms: f64 = 0,
     dist_p90_ms: f64 = 0,
@@ -64,6 +67,8 @@ const Stats = struct {
     solver_reductions: u64 = 0,
     solver_learned: u64 = 0,
     peak_rss_kb: u64 = 0,
+    par2_s: f64 = 0,
+    timeout_s: u64 = 0,
 };
 
 const Hotspot = struct {
@@ -103,7 +108,36 @@ pub fn main() !void {
     }
 
     const sat_bench = args[1];
-    const dirs = args[2..];
+
+    // The caller (build.zig) sends a mix of sat-bench flags (e.g.
+    // `--timeout-sec 30`) and directory paths after the binary. Split
+    // them: forward everything to sat-bench, but only use real dir
+    // paths in the "workload" row of the report table.
+    var bench_args: std.ArrayList([]const u8) = .empty;
+    defer bench_args.deinit(gpa);
+    var dirs_list: std.ArrayList([]const u8) = .empty;
+    defer dirs_list.deinit(gpa);
+    {
+        var ai: usize = 2;
+        while (ai < args.len) : (ai += 1) {
+            const a = args[ai];
+            if (std.mem.eql(u8, a, "--timeout-sec")) {
+                try bench_args.append(gpa, a);
+                ai += 1;
+                if (ai >= args.len) {
+                    try stderr.writeAll("sat-profile: --timeout-sec requires a value\n");
+                    try stderr.flush();
+                    std.process.exit(1);
+                }
+                try bench_args.append(gpa, args[ai]);
+            } else if (a.len > 0 and a[0] == '-') {
+                try bench_args.append(gpa, a);
+            } else {
+                try dirs_list.append(gpa, a);
+            }
+        }
+    }
+    const dirs = dirs_list.items;
 
     if (!try perfAvailable(gpa)) {
         try stderr.writeAll(
@@ -144,6 +178,7 @@ pub fn main() !void {
             "-M",               "TopdownL1",
             "--",               sat_bench,
         });
+        try argv.appendSlice(gpa, bench_args.items);
         try argv.appendSlice(gpa, dirs);
 
         const result = try std.process.Child.run(.{
@@ -193,6 +228,7 @@ pub fn main() !void {
             "-o",           perf_data,
             "--",           sat_bench,
         });
+        try argv.appendSlice(gpa, bench_args.items);
         try argv.appendSlice(gpa, dirs);
 
         var child = std.process.Child.init(argv.items, gpa);
@@ -291,9 +327,13 @@ fn parseBenchOutput(output: []const u8, stats: *Stats) void {
     while (it.next()) |raw_line| {
         const line = std.mem.trim(u8, raw_line, " \t\r");
         if (std.mem.startsWith(u8, line, "solved ")) {
+            // Line shape: "solved N instances: X SAT, Y UNSAT, Z unknown"
             const rest = line["solved ".len..];
             const space = std.mem.indexOfScalar(u8, rest, ' ') orelse continue;
             stats.instance_count = std.fmt.parseInt(u64, rest[0..space], 10) catch 0;
+            stats.sat_count = extractCountBefore(line, " SAT");
+            stats.unsat_count = extractCountBefore(line, " UNSAT");
+            stats.unknown_count = extractCountBefore(line, " unknown");
         } else if (std.mem.startsWith(u8, line, "total ")) {
             const rest = line["total ".len..];
             const space = std.mem.indexOfScalar(u8, rest, ' ') orelse continue;
@@ -325,8 +365,27 @@ fn parseBenchOutput(output: []const u8, stats: *Stats) void {
         } else if (std.mem.startsWith(u8, line, "peak_rss_kb:")) {
             const rest = std.mem.trim(u8, line["peak_rss_kb:".len..], " \t");
             stats.peak_rss_kb = std.fmt.parseInt(u64, rest, 10) catch 0;
+        } else if (std.mem.startsWith(u8, line, "par2_s:")) {
+            const rest = std.mem.trim(u8, line["par2_s:".len..], " \t");
+            stats.par2_s = std.fmt.parseFloat(f64, rest) catch 0;
+        } else if (std.mem.startsWith(u8, line, "timeout_s:")) {
+            const rest = std.mem.trim(u8, line["timeout_s:".len..], " \t");
+            stats.timeout_s = std.fmt.parseInt(u64, rest, 10) catch 0;
         }
     }
+}
+
+// Pulls the integer immediately preceding `needle` in the line.
+// Given "solved 400 instances: 237 SAT, 150 UNSAT, 13 unknown"
+// and needle " SAT", returns 237. Used to avoid writing a regex
+// for the three-token result tally.
+fn extractCountBefore(line: []const u8, needle: []const u8) u64 {
+    const idx = std.mem.indexOf(u8, line, needle) orelse return 0;
+    var end = idx;
+    while (end > 0 and (line[end - 1] == ' ' or line[end - 1] == '\t')) end -= 1;
+    var start = end;
+    while (start > 0 and std.ascii.isDigit(line[start - 1])) start -= 1;
+    return std.fmt.parseInt(u64, line[start..end], 10) catch 0;
 }
 
 // Parses space-separated `key=value` pairs. Callback receives a pointer
@@ -678,6 +737,35 @@ fn printReport(
         try endRow(w, "instances  ".len + nstr.len);
     }
     {
+        // solved N/M with a SAT/UNSAT breakdown — the first thing you
+        // want to see when switching to a timed industrial bench where
+        // not every instance finishes.
+        try startRow(w);
+        try w.writeAll("solved     ");
+        var nb: [64]u8 = undefined;
+        const solved = stats.sat_count + stats.unsat_count;
+        const nstr = try std.fmt.bufPrint(
+            &nb,
+            "{d} / {d}",
+            .{ solved, stats.instance_count },
+        );
+        const solved_color = if (stats.unknown_count == 0)
+            Color.green
+        else if (solved * 2 >= stats.instance_count)
+            Color.yellow
+        else
+            Color.red;
+        try w.print("{s}{s}{s}", .{ solved_color, nstr, Color.reset });
+        var db: [64]u8 = undefined;
+        const dstr = try std.fmt.bufPrint(
+            &db,
+            "  ({d} SAT, {d} UNSAT, {d} timeout)",
+            .{ stats.sat_count, stats.unsat_count, stats.unknown_count },
+        );
+        try w.print("{s}{s}{s}", .{ Color.dim, dstr, Color.reset });
+        try endRow(w, "solved     ".len + nstr.len + dstr.len);
+    }
+    {
         try startRow(w);
         try w.writeAll("wall time  ");
         var vb: [32]u8 = undefined;
@@ -687,6 +775,20 @@ fn printReport(
         const pstr = try std.fmt.bufPrint(&pb, "  ({d:.3} ms / instance)", .{per_inst_ms});
         try w.print("{s}{s}{s}", .{ Color.dim, pstr, Color.reset });
         try endRow(w, "wall time  ".len + vstr.len + pstr.len);
+    }
+    if (stats.timeout_s > 0) {
+        // PAR-2 is the actual SAT Competition ranking metric: every
+        // solved instance costs its wall time, every unsolved one costs
+        // 2× the cap. Only meaningful when a per-instance cap was set.
+        try startRow(w);
+        try w.writeAll("PAR-2      ");
+        var vb: [32]u8 = undefined;
+        const vstr = try std.fmt.bufPrint(&vb, "{d:.2} s", .{stats.par2_s});
+        try w.print("{s}{s}{s}", .{ Color.cyan, vstr, Color.reset });
+        var db: [32]u8 = undefined;
+        const dstr = try std.fmt.bufPrint(&db, "  (cap {d} s/inst)", .{stats.timeout_s});
+        try w.print("{s}{s}{s}", .{ Color.dim, dstr, Color.reset });
+        try endRow(w, "PAR-2      ".len + vstr.len + dstr.len);
     }
     try blankRow(w);
 

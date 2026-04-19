@@ -94,6 +94,47 @@ pub fn build(b: *std.Build) void {
     const bench_quick_step = b.step("bench-quick", "Run fast perf profile on uf100 + uuf100 (~4 s)");
     bench_quick_step.dependOn(&quick_profile_run.step);
 
+    // bench-industrial — SATLIB crafted instances that behave much
+    // more like competition industrial (structure, long chains of
+    // implications, learned-clause payoff) than uniform-random 3-SAT.
+    // 30 s per-instance cap is short enough for a dev-loop iteration
+    // and long enough that something genuinely hard becomes visible.
+    const industrial_profile_run = b.addRunArtifact(profile_exe);
+    industrial_profile_run.addArtifactArg(bench_release_exe);
+    industrial_profile_run.addArg("--timeout-sec");
+    industrial_profile_run.addArg("30");
+    industrial_profile_run.addArg("bench/instances/dimacs-bf");
+    industrial_profile_run.addArg("bench/instances/dimacs-ssa");
+    industrial_profile_run.addArg("bench/instances/dimacs-hanoi");
+    industrial_profile_run.addArg("bench/instances/dimacs-parity");
+    industrial_profile_run.addArg("bench/instances/dimacs-aim");
+    industrial_profile_run.has_side_effects = true;
+    industrial_profile_run.stdio = .inherit;
+
+    const bench_industrial_step = b.step(
+        "bench-industrial",
+        "Perf profile on SATLIB crafted (bf/ssa/hanoi/parity/aim) with 30 s cap",
+    );
+    bench_industrial_step.dependOn(&industrial_profile_run.step);
+
+    // bench-satcomp — SAT Competition 2025 main-track subset fetched
+    // by `bench/fetch_satcomp.sh`. Requires running that script first
+    // (it decompresses xz→cnf into bench/instances/satcomp2025/).
+    // 60 s cap keeps a 40-instance subset under an hour worst case.
+    const satcomp_profile_run = b.addRunArtifact(profile_exe);
+    satcomp_profile_run.addArtifactArg(bench_release_exe);
+    satcomp_profile_run.addArg("--timeout-sec");
+    satcomp_profile_run.addArg("60");
+    satcomp_profile_run.addArg("bench/instances/satcomp2025");
+    satcomp_profile_run.has_side_effects = true;
+    satcomp_profile_run.stdio = .inherit;
+
+    const bench_satcomp_step = b.step(
+        "bench-satcomp",
+        "Perf profile on SAT Competition 2025 subset (run bench/fetch_satcomp.sh first)",
+    );
+    bench_satcomp_step.dependOn(&satcomp_profile_run.step);
+
     const sat_module = b.addModule("sat", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
