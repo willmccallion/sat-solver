@@ -9,7 +9,13 @@ a PAR-2 summary table. Optionally writes a CSV and a cactus-plot PNG.
 Usage:
     bench/compare.py [--timeout 300] [--mem 4096] \\
                      [--instances DIR ...] [--solvers NAME ...] \\
+                     [--compare-to PATH] \\
                      [--out PATH] [--plot PATH] [--limit N] [--dry-run]
+
+By default only `sat-solver` is run. Reference solver numbers (cadical,
+kissat, minisat) rarely change and re-running them wastes wall time when
+iterating on sat-solver. Pass `--compare-to PATH` pointing at a prior CSV
+to overlay those solvers' numbers in the summary without re-running them.
 
 Methodology notes:
   - Resource limits enforced via setrlimit(RLIMIT_CPU) and setrlimit(RLIMIT_AS)
@@ -344,6 +350,38 @@ def collect_instances(dirs: List[Path], limit: Optional[int]) -> List[Path]:
     return instances
 
 
+def load_baseline(
+    path: Path,
+    active_solvers: frozenset,
+    instance_names: frozenset,
+) -> List[Result]:
+    """Load results from a prior compare.py CSV.
+
+    Returns rows whose solver is NOT in `active_solvers` (those get re-run
+    live this session) and whose instance IS in `instance_names` (filter
+    out stale rows from larger prior runs). `stdout_tail` / `stderr_tail`
+    aren't persisted in the CSV and default to the empty string.
+    """
+    baseline: List[Result] = []
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if row["solver"] in active_solvers:
+                continue
+            if row["instance"] not in instance_names:
+                continue
+            baseline.append(Result(
+                solver=row["solver"],
+                instance=row["instance"],
+                verdict=row["verdict"],
+                cpu_time=float(row["cpu_time"]),
+                wall_time=float(row["wall_time"]),
+                maxrss_kb=int(row["maxrss_kb"]),
+                exit_code=int(row["exit_code"]),
+            ))
+    return baseline
+
+
 def check_verdicts(results: List[Result]) -> List[str]:
     """Return a list of disagreement warnings across solvers on the same
     instance. Ignores UNKNOWN / TIMEOUT / ERROR (no claim made)."""
@@ -485,8 +523,13 @@ def main() -> int:
         str(REPO_ROOT / "bench" / "instances" / "uuf200-860"),
     ], help="Instance directories to benchmark")
     ap.add_argument("--solvers", nargs="+",
-                    default=["sat-solver", "minisat", "cadical", "kissat"],
-                    help="Solvers to compare")
+                    default=["sat-solver"],
+                    help="Solvers to run live (default: just sat-solver). Use "
+                         "--compare-to to overlay cached reference numbers.")
+    ap.add_argument("--compare-to", type=Path, default=None,
+                    help="Path to a prior compare.py CSV. Rows whose solver is "
+                         "NOT in --solvers are merged into the summary so you "
+                         "get reference numbers without re-running them.")
     ap.add_argument("--out", type=Path,
                     default=SCRIPT_DIR / "compare-results.csv",
                     help="CSV output path")
@@ -526,12 +569,30 @@ def main() -> int:
         print("error: no .cnf or .cnf.gz files found", file=sys.stderr)
         return 2
 
+    baseline_results: List[Result] = []
+    if args.compare_to is not None:
+        if not args.compare_to.is_file():
+            print(f"error: --compare-to path {args.compare_to} not found",
+                  file=sys.stderr)
+            return 2
+        instance_names = frozenset(i.name for i in instances)
+        baseline_results = load_baseline(
+            args.compare_to,
+            frozenset(solvers.keys()),
+            instance_names,
+        )
+
+    baseline_solvers = sorted({r.solver for r in baseline_results})
+
     print("Plan:")
     for name, p in solvers.items():
-        print(f"  {name:<12} {p}")
+        print(f"  {name:<12} {p}  (live)")
+    for bs in baseline_solvers:
+        print(f"  {bs:<12} (from {args.compare_to})")
     print(f"  instances: {len(instances)} across {len(instance_dirs)} dirs")
     print(f"  CPU limit: {args.timeout}s   mem limit: {args.mem} MB")
-    print(f"  total runs: {len(solvers) * len(instances)}")
+    print(f"  total runs: {len(solvers) * len(instances)} "
+          f"(+{len(baseline_results)} cached)")
     print()
 
     if args.dry_run:
@@ -556,11 +617,18 @@ def main() -> int:
     except KeyboardInterrupt:
         print("\ninterrupted — writing partial results", file=sys.stderr)
 
+    # Overlay cached reference-solver rows so the output CSV is self-contained
+    # (can be re-used as --compare-to next run) and the summary / cactus plot
+    # include the reference numbers alongside the live sat-solver numbers.
+    results.extend(baseline_results)
+
     write_csv(results, args.out)
     print(f"\nresults written to {args.out}")
 
+    all_solver_names = list(solvers.keys()) + baseline_solvers
     results_by_solver: Dict[str, List[Result]] = {
-        name: [r for r in results if r.solver == name] for name in solvers
+        name: [r for r in results if r.solver == name]
+        for name in all_solver_names
     }
 
     warnings = check_verdicts(results)
