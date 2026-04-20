@@ -162,7 +162,7 @@ pub fn main() !void {
     }
 
     try stdout.print(
-        "stats: decisions={d} conflicts={d} propagations={d} restarts={d} reductions={d} learned={d} rephases={d} chronos={d} probings={d} flp_units={d} vivifies={d} vivified={d} mode_switches={d} compactions={d}\n",
+        "stats: decisions={d} conflicts={d} propagations={d} restarts={d} reductions={d} learned={d} rephases={d} chronos={d} probings={d} flp_units={d} vivifies={d} vivified={d} subsumes={d} subsumed={d} strengthened={d} mode_switches={d} compactions={d}\n",
         .{
             agg_stats.decisions,
             agg_stats.conflicts,
@@ -176,6 +176,9 @@ pub fn main() !void {
             agg_stats.flp_units,
             agg_stats.vivifies,
             agg_stats.vivified,
+            agg_stats.subsumes,
+            agg_stats.subsumed,
+            agg_stats.strengthened,
             agg_stats.mode_switches,
             agg_stats.compactions,
         },
@@ -316,6 +319,9 @@ fn accumulate(dst: *solver_mod.Stats, src: *const solver_mod.Stats) void {
     dst.flp_units += src.flp_units;
     dst.vivifies += src.vivifies;
     dst.vivified += src.vivified;
+    dst.subsumes += src.subsumes;
+    dst.subsumed += src.subsumed;
+    dst.strengthened += src.strengthened;
     dst.mode_switches += src.mode_switches;
     dst.compactions += src.compactions;
 }

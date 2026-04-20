@@ -40,6 +40,9 @@ pub const Stats = struct {
     flp_units: u64 = 0,
     vivifies: u64 = 0,
     vivified: u64 = 0,
+    subsumes: u64 = 0,
+    subsumed: u64 = 0,
+    strengthened: u64 = 0,
     mode_switches: u64 = 0,
     compactions: u64 = 0,
 };
@@ -115,6 +118,11 @@ pub const Solver = struct {
     vivify_interval: u64,
     props_at_last_vivify: u64,
 
+    // Subsumption cadence.
+    next_subsume: u64,
+    subsume_interval: u64,
+    props_at_last_subsume: u64,
+
     // Focused/stable alternation.
     mode: mode_mod.Solve,
     mode_budget: u64,
@@ -138,6 +146,8 @@ pub const Solver = struct {
     pub const verifyModel = @import("verify.zig").verifyModel;
     pub const probe = @import("inprocess/probe.zig").probe;
     pub const vivify = @import("inprocess/vivify.zig").vivify;
+    pub const subsume = @import("inprocess/subsume.zig").subsume;
+    pub const preprocessSubsume = @import("inprocess/subsume.zig").preprocessSubsume;
     pub const reduceDB = @import("inprocess/reduce.zig").reduceDB;
     pub const compact = @import("inprocess/reduce.zig").compact;
 
@@ -183,6 +193,9 @@ pub const Solver = struct {
             .next_vivify = @import("inprocess/vivify.zig").initial_interval,
             .vivify_interval = @import("inprocess/vivify.zig").initial_interval,
             .props_at_last_vivify = 0,
+            .next_subsume = @import("inprocess/subsume.zig").inprocess_initial_interval,
+            .subsume_interval = @import("inprocess/subsume.zig").inprocess_initial_interval,
+            .props_at_last_subsume = 0,
             .mode = .focused,
             .mode_budget = mode_mod.stable_initial_budget,
             .next_mode_switch = mode_mod.stable_initial_budget,

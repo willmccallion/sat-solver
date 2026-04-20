@@ -16,6 +16,7 @@ const Result = solver_mod.Result;
 
 const probe_mod = @import("inprocess/probe.zig");
 const vivify_mod = @import("inprocess/vivify.zig");
+const subsume_mod = @import("inprocess/subsume.zig");
 
 pub fn solve(self: *Solver) !Result {
     if (self.unsat_at_init) {
@@ -26,6 +27,8 @@ pub fn solve(self: *Solver) !Result {
         try self.proof.empty();
         return .unsat;
     }
+
+    if (try self.preprocessSubsume()) |r| return r;
 
     while (true) {
         if (solver_mod.interrupted.load(.monotonic)) return .unknown;
@@ -158,10 +161,11 @@ pub fn solve(self: *Solver) !Result {
             const should_rephase = self.stats.conflicts >= self.rephase_next;
             const should_probe = self.stats.conflicts >= self.next_probe;
             const should_vivify = self.stats.conflicts >= self.next_vivify;
+            const should_subsume = self.stats.conflicts >= self.next_subsume;
             const should_flip_mode = self.stats.conflicts >= self.next_mode_switch;
 
             if (should_restart or should_reduce or should_rephase or
-                should_probe or should_vivify or should_flip_mode)
+                should_probe or should_vivify or should_subsume or should_flip_mode)
             {
                 if (should_restart) {
                     self.stats.restarts += 1;
@@ -196,6 +200,12 @@ pub fn solve(self: *Solver) !Result {
                     self.vivify_interval =
                         (self.vivify_interval * vivify_mod.grow_num) / vivify_mod.grow_den;
                     self.next_vivify = self.stats.conflicts + self.vivify_interval;
+                }
+                if (should_subsume) {
+                    if (try self.subsume()) |r| return r;
+                    self.subsume_interval =
+                        (self.subsume_interval * subsume_mod.grow_num) / subsume_mod.grow_den;
+                    self.next_subsume = self.stats.conflicts + self.subsume_interval;
                 }
                 if (should_flip_mode) {
                     self.mode = switch (self.mode) {

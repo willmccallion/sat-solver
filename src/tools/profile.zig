@@ -72,6 +72,9 @@ const Stats = struct {
     solver_flp_units: u64 = 0,
     solver_vivifies: u64 = 0,
     solver_vivified: u64 = 0,
+    solver_subsumes: u64 = 0,
+    solver_subsumed: u64 = 0,
+    solver_strengthened: u64 = 0,
     solver_mode_switches: u64 = 0,
     solver_compactions: u64 = 0,
     peak_rss_kb: u64 = 0,
@@ -374,6 +377,9 @@ fn parseBenchOutput(output: []const u8, stats: *Stats) void {
                     if (std.mem.eql(u8, key, "flp_units")) dst.solver_flp_units = n;
                     if (std.mem.eql(u8, key, "vivifies")) dst.solver_vivifies = n;
                     if (std.mem.eql(u8, key, "vivified")) dst.solver_vivified = n;
+                    if (std.mem.eql(u8, key, "subsumes")) dst.solver_subsumes = n;
+                    if (std.mem.eql(u8, key, "subsumed")) dst.solver_subsumed = n;
+                    if (std.mem.eql(u8, key, "strengthened")) dst.solver_strengthened = n;
                     if (std.mem.eql(u8, key, "mode_switches")) dst.solver_mode_switches = n;
                     if (std.mem.eql(u8, key, "compactions")) dst.solver_compactions = n;
                 }
@@ -882,6 +888,9 @@ fn printReport(
     try solverRow(w, "flp units", stats.solver_flp_units, stats.instance_count);
     try solverRow(w, "vivify passes", stats.solver_vivifies, stats.instance_count);
     try solverRow(w, "vivified clauses", stats.solver_vivified, stats.instance_count);
+    try solverRow(w, "subsume passes", stats.solver_subsumes, stats.instance_count);
+    try solverRow(w, "subsumed clauses", stats.solver_subsumed, stats.instance_count);
+    try solverRow(w, "strengthened", stats.solver_strengthened, stats.instance_count);
     try solverRow(w, "mode switches", stats.solver_mode_switches, stats.instance_count);
     try solverRow(w, "compactions", stats.solver_compactions, stats.instance_count);
     try blankRow(w);
