@@ -105,10 +105,18 @@ pub fn propagate(self: *Solver) !?Conflict {
                 if (lit_values[lits[k].raw] != .@"false") {
                     lits[1] = lits[k];
                     lits[k] = false_lit;
-                    try self.watchers[lits[1].negate().raw].append(
-                        self.allocator,
-                        .{ .clause = w.clause, .blocker = other },
-                    );
+                    const target = &self.watchers[lits[1].negate().raw];
+                    if (target.items.len == target.capacity) {
+                        @branchHint(.cold);
+                        try target.ensureTotalCapacity(
+                            self.allocator,
+                            @max(target.capacity * 2, 16),
+                        );
+                    }
+                    target.appendAssumeCapacity(.{
+                        .clause = w.clause,
+                        .blocker = other,
+                    });
                     continue :outer;
                 }
             }

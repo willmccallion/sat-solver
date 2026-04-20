@@ -359,14 +359,16 @@ pub const Solver = struct {
     pub fn attachWatches(self: *Solver, cref: ClauseRef) !void {
         const lits = self.clauseLits(cref);
         std.debug.assert(lits.len >= 3);
-        try self.watchers[lits[0].negate().raw].append(self.allocator, .{
-            .clause = cref,
-            .blocker = lits[1],
-        });
-        try self.watchers[lits[1].negate().raw].append(self.allocator, .{
-            .clause = cref,
-            .blocker = lits[0],
-        });
+        const w0 = &self.watchers[lits[0].negate().raw];
+        const w1 = &self.watchers[lits[1].negate().raw];
+        if (w0.items.len == w0.capacity) {
+            try w0.ensureTotalCapacity(self.allocator, @max(w0.capacity * 2, 16));
+        }
+        if (w1.items.len == w1.capacity) {
+            try w1.ensureTotalCapacity(self.allocator, @max(w1.capacity * 2, 16));
+        }
+        w0.appendAssumeCapacity(.{ .clause = cref, .blocker = lits[1] });
+        w1.appendAssumeCapacity(.{ .clause = cref, .blocker = lits[0] });
     }
 
     // --- VSIDS branching --------------------------------------------------
