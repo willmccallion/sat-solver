@@ -38,9 +38,7 @@ fn timeoutThreadFn(seconds: u32) void {
 }
 
 pub fn main() !u8 {
-    var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = debug_allocator.deinit();
-    const gpa = debug_allocator.allocator();
+    const gpa = std.heap.smp_allocator;
 
     var stdout_buffer: [4096]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
