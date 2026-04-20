@@ -153,6 +153,13 @@ const vivify_budget_num: u64 = 2;
 const vivify_budget_den: u64 = 10;
 const vivify_lbd_cap: u32 = 6;
 
+// Arena compaction cadence. Every N reduceDB calls we rebuild the
+// arena without deleted-clause holes. Phase 5b's shrink-then-mark-dead
+// path leaves one hole per vivified clause, and reduceDB doubles that
+// count every few thousand conflicts; without compaction the arena
+// grows unboundedly even as the live-clause set stays bounded.
+const compact_every_reductions: u64 = 4;
+
 // Focused/stable mode alternation (CaDiCaL, Kissat). Focused runs the
 // Glucose restart strategy we've always had; stable suppresses restarts
 // and re-biases saved_phases to the trail-peak snapshot on entry so the
@@ -194,6 +201,7 @@ pub const Stats = struct {
     vivifies: u64 = 0,
     vivified: u64 = 0,
     mode_switches: u64 = 0,
+    compactions: u64 = 0,
 };
 
 pub const Solver = struct {
@@ -288,6 +296,11 @@ pub const Solver = struct {
     mode_budget: u64,
     next_mode_switch: u64,
 
+    // Arena compaction cadence. When reductions_since_compact reaches
+    // compact_every_reductions, solve() runs compact() to reclaim the
+    // deleted-clause holes that accumulate from reduceDB and vivify.
+    reductions_since_compact: u64,
+
     unsat_at_init: bool,
 
     stats: Stats,
@@ -337,6 +350,7 @@ pub const Solver = struct {
             .mode = .focused,
             .mode_budget = stable_initial_budget,
             .next_mode_switch = stable_initial_budget,
+            .reductions_since_compact = 0,
             .unsat_at_init = false,
             .stats = .{},
         };
@@ -1592,6 +1606,11 @@ pub const Solver = struct {
                         self.max_learned = (self.max_learned * 11) / 10;
                         self.reduce_interval += reduce_grow;
                         self.next_reduce = self.stats.conflicts + self.reduce_interval;
+                        self.reductions_since_compact += 1;
+                        if (self.reductions_since_compact >= compact_every_reductions) {
+                            try self.compact();
+                            self.reductions_since_compact = 0;
+                        }
                     }
                     if (should_rephase) {
                         self.rephase();
@@ -1691,6 +1710,132 @@ pub const Solver = struct {
     // ClauseRefs. BCP never visits them because we also strip their
     // watchers from every watcher list. Proper arena compaction can come
     // later if the holes become a memory problem.
+    // Arena compaction. Rebuilds `self.arena` without deleted-clause
+    // holes and rewrites every ClauseRef consumer so references stay
+    // consistent. Only safe at level 0; called from solve() after a
+    // reduceDB/vivify pass has already run (so there are holes to
+    // reclaim and no in-flight arena slices).
+    //
+    // Three passes, no hashmap — we piggyback on the doomed arena to
+    // store the old→new mapping:
+    //
+    //   Pass 1. Walk headers sequentially. For each live clause, stash
+    //     its LBD into `lbd_stash` and overwrite arena[cref+1] with the
+    //     new cref it's going to land at. Deleted clauses are skipped
+    //     and their slots left alone (we won't dereference them).
+    //
+    //   Pass 2. Rewrite every consumer of ClauseRef using the in-arena
+    //     mapping: watchers[...].clause, vars[v].reason (long-clause
+    //     reasons only — binaries never reference the arena), and
+    //     learned_clauses[]. Deleted watchers are dropped during the
+    //     rewrite so the swept lists stay valid.
+    //
+    //   Pass 3. Walk the old arena once more; for each live clause copy
+    //     header + stashed LBD + literals to the new arena at the new
+    //     cref. Clear deleted_bit on the way (by construction nothing
+    //     carried it here). Swap the arenas at the end.
+    fn compact(self: *Solver) !void {
+        std.debug.assert(self.assignment.level == 0);
+
+        // Pass 1: assign new crefs, stash LBDs.
+        var lbd_stash: std.ArrayList(u32) = .empty;
+        defer lbd_stash.deinit(self.allocator);
+
+        var new_size: u32 = 0;
+        var any_live = false;
+        {
+            var cref: u32 = 0;
+            while (cref < self.arena.items.len) {
+                const hdr = self.arena.items[cref].raw;
+                const len = hdr & len_mask;
+                const span = header_slots + len;
+                if ((hdr & deleted_bit) == 0) {
+                    try lbd_stash.append(self.allocator, self.arena.items[cref + 1].raw);
+                    self.arena.items[cref + 1].raw = new_size;
+                    new_size += span;
+                    any_live = true;
+                }
+                cref += span;
+            }
+        }
+
+        // Pass 2a: rewrite watchers. Also sweep deleted-clause watchers
+        // here — they point at arena slots we won't copy, so their
+        // redirection slot is meaningless. Treat any watcher whose
+        // header has the deleted bit as stale.
+        for (self.watchers) |*wlist| {
+            var j: usize = 0;
+            for (wlist.items) |w| {
+                const hdr = self.arena.items[w.clause].raw;
+                if ((hdr & deleted_bit) != 0) continue;
+                const new_cref = self.arena.items[w.clause + 1].raw;
+                wlist.items[j] = .{ .clause = new_cref, .blocker = w.blocker };
+                j += 1;
+            }
+            wlist.shrinkRetainingCapacity(j);
+        }
+
+        // Pass 2b: rewrite long-clause reasons on the trail. Binary
+        // reasons inline their partner literal and don't reference the
+        // arena, so skip those. `none` reasons (decisions, root units)
+        // also skip.
+        for (self.assignment.trail.items) |lit| {
+            const v = lit.variable();
+            const r = self.assignment.vars[v].reason;
+            if (r.isNone() or r.isBinary()) continue;
+            const old_cref = r.clauseRef();
+            const new_cref = self.arena.items[old_cref + 1].raw;
+            self.assignment.vars[v].reason = Reason.fromClause(new_cref);
+        }
+
+        // Pass 2c: rewrite learned-clauses index. Deleted entries were
+        // already swept by reduceDB, but vivify's shrink path leaves
+        // deleted entries in place — strain them out here.
+        {
+            var j: usize = 0;
+            for (self.learned_clauses.items) |cref| {
+                const hdr = self.arena.items[cref].raw;
+                if ((hdr & deleted_bit) != 0) continue;
+                self.learned_clauses.items[j] = self.arena.items[cref + 1].raw;
+                j += 1;
+            }
+            self.learned_clauses.shrinkRetainingCapacity(j);
+        }
+
+        // Pass 3: materialize the compacted arena.
+        var new_arena: std.ArrayList(Literal) = .empty;
+        errdefer new_arena.deinit(self.allocator);
+        try new_arena.ensureTotalCapacity(self.allocator, new_size);
+        new_arena.items.len = new_size;
+        if (any_live) {
+            var cref: u32 = 0;
+            var live_idx: usize = 0;
+            while (cref < self.arena.items.len) {
+                const hdr = self.arena.items[cref].raw;
+                const len = hdr & len_mask;
+                const span = header_slots + len;
+                if ((hdr & deleted_bit) == 0) {
+                    const new_cref = self.arena.items[cref + 1].raw;
+                    // Clear the deleted bit defensively; a live clause
+                    // should never carry it, but belt-and-suspenders.
+                    new_arena.items[new_cref].raw = hdr & ~deleted_bit;
+                    new_arena.items[new_cref + 1].raw = lbd_stash.items[live_idx];
+                    live_idx += 1;
+                    var k: u32 = 0;
+                    while (k < len) : (k += 1) {
+                        new_arena.items[new_cref + header_slots + k] =
+                            self.arena.items[cref + header_slots + k];
+                    }
+                }
+                cref += span;
+            }
+        }
+
+        self.arena.deinit(self.allocator);
+        self.arena = new_arena;
+        self.stats.compactions += 1;
+    }
+
     fn reduceDB(self: *Solver) !void {
         std.debug.assert(self.assignment.level == 0);
 
