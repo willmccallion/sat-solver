@@ -1,0 +1,424 @@
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+
+const core = @import("core");
+const cnf = core.cnf;
+const Literal = cnf.Literal;
+const Formula = cnf.Formula;
+const ClauseRef = cnf.ClauseRef;
+const assignment_mod = core.assignment;
+const Assignment = assignment_mod.Assignment;
+const Value = assignment_mod.Value;
+const Reason = assignment_mod.Reason;
+const clause_mod = core.clause;
+const Watcher = clause_mod.Watcher;
+const BinaryWatch = clause_mod.BinaryWatch;
+const learned_bit = clause_mod.learned_bit;
+const deleted_bit = clause_mod.deleted_bit;
+const len_mask = clause_mod.len_mask;
+const header_slots = clause_mod.header_slots;
+
+const heuristics = @import("heuristics");
+const OrderHeap = heuristics.order_heap.OrderHeap;
+const restart = heuristics.restart;
+const rephase_mod = heuristics.rephase;
+const mode_mod = heuristics.mode;
+
+const io = @import("io");
+
+pub const Stats = struct {
+    decisions: u64 = 0,
+    propagations: u64 = 0,
+    conflicts: u64 = 0,
+    restarts: u64 = 0,
+    learned: u64 = 0,
+    reductions: u64 = 0,
+    deleted: u64 = 0,
+    rephases: u64 = 0,
+    chronos: u64 = 0,
+    probings: u64 = 0,
+    flp_units: u64 = 0,
+    vivifies: u64 = 0,
+    vivified: u64 = 0,
+    mode_switches: u64 = 0,
+    compactions: u64 = 0,
+};
+
+pub const Solver = struct {
+    allocator: Allocator,
+    num_vars: u32,
+
+    // Clause arena. Every original (length >= 3) and learned clause lives
+    // in this single flat buffer; ClauseRef is an index of its header.
+    // See core/clause.zig for the on-disk layout.
+    arena: std.ArrayList(Literal),
+    watchers: []std.ArrayList(Watcher),
+
+    // Per-literal binary watcher lists. Indexed by literal.raw. Each
+    // entry carries the partner literal directly — no clause ref, no
+    // arena load. Monotonic: entries are never moved or removed, because
+    // there is no "find a different literal to watch" step for a 2-clause.
+    bin_watchers: []std.ArrayList(BinaryWatch),
+
+    // Input-provided 2-literal clauses, kept verbatim for verifyModel.
+    // They are NOT in the arena — verifying a binary via bin_watchers
+    // would double-count (each clause appears as two watcher entries).
+    original_binaries: std.ArrayList([2]Literal),
+
+    assignment: Assignment,
+
+    activities: []f64,
+    var_inc: f64,
+    order_heap: OrderHeap,
+
+    analyze_seen: []bool,
+    analyze_learned: std.ArrayList(Literal),
+    analyze_levels: std.ArrayList(u32),
+    analyze_to_clear: std.ArrayList(u32),
+    analyze_stack: std.ArrayList(u32),
+
+    learned_clauses: std.ArrayList(ClauseRef),
+    max_learned: usize,
+
+    proof: io.drat.Writer,
+
+    // Glucose restart state. Each EMA carries a bias-correction
+    // accumulator (`_bc`) that normalizes the raw sum for the Adam-style
+    // `value / bc` unbiased estimate. The bc fields start at 0 and
+    // asymptote to 1.
+    lbd_fast: f64,
+    lbd_fast_bc: f64,
+    lbd_slow: f64,
+    lbd_slow_bc: f64,
+    trail_fast: f64,
+    trail_fast_bc: f64,
+    conflicts_since_restart: u64,
+
+    next_reduce: u64,
+    reduce_interval: u64,
+
+    // Rephase state. `best_trail_len` tracks the longest partial
+    // assignment seen at a conflict point — each new peak writes its
+    // polarities into assignment.best_phases.
+    best_trail_len: usize,
+    rephase_next: u64,
+    rephase_interval: u64,
+    rephase_mode: rephase_mod.Mode,
+
+    // Failed literal probing cadence.
+    next_probe: u64,
+    probe_interval: u64,
+    props_at_last_probe: u64,
+
+    // Vivification cadence.
+    next_vivify: u64,
+    vivify_interval: u64,
+    props_at_last_vivify: u64,
+
+    // Focused/stable alternation.
+    mode: mode_mod.Solve,
+    mode_budget: u64,
+    next_mode_switch: u64,
+
+    // Arena compaction cadence.
+    reductions_since_compact: u64,
+
+    unsat_at_init: bool,
+
+    stats: Stats,
+
+    // Large algorithm bodies live in sibling files as free functions
+    // taking *Solver. Aliasing them here lets callers use the natural
+    // `solver.propagate()` method syntax.
+    pub const propagate = @import("propagate.zig").propagate;
+    pub const analyze = @import("analyze.zig").analyze;
+    pub const computeLbd = @import("analyze.zig").computeLbd;
+    pub const backtrack = @import("backtrack.zig").backtrack;
+    pub const solve = @import("solve.zig").solve;
+    pub const verifyModel = @import("verify.zig").verifyModel;
+    pub const probe = @import("inprocess/probe.zig").probe;
+    pub const vivify = @import("inprocess/vivify.zig").vivify;
+    pub const reduceDB = @import("inprocess/reduce.zig").reduceDB;
+    pub const compact = @import("inprocess/reduce.zig").compact;
+
+    pub fn init(allocator: Allocator, formula_in: Formula) !Solver {
+        var formula = formula_in;
+        defer formula.deinit();
+
+        var self: Solver = .{
+            .allocator = allocator,
+            .num_vars = formula.num_vars,
+            .arena = .empty,
+            .watchers = &.{},
+            .bin_watchers = &.{},
+            .original_binaries = .empty,
+            .assignment = try Assignment.init(allocator, formula.num_vars),
+            .activities = &.{},
+            .var_inc = 1.0,
+            .order_heap = undefined,
+            .analyze_seen = &.{},
+            .analyze_learned = .empty,
+            .analyze_levels = .empty,
+            .analyze_to_clear = .empty,
+            .analyze_stack = .empty,
+            .learned_clauses = .empty,
+            .max_learned = @max(formula.clauses.items.len, 1000),
+            .proof = io.drat.Writer.none(),
+            .lbd_fast = 0,
+            .lbd_fast_bc = 0,
+            .lbd_slow = 0,
+            .lbd_slow_bc = 0,
+            .trail_fast = 0,
+            .trail_fast_bc = 0,
+            .conflicts_since_restart = 0,
+            .next_reduce = restart.reduce_initial,
+            .reduce_interval = restart.reduce_initial,
+            .best_trail_len = 0,
+            .rephase_next = rephase_mod.rephase_initial,
+            .rephase_interval = rephase_mod.rephase_initial,
+            .rephase_mode = .best,
+            .next_probe = @import("inprocess/probe.zig").initial_interval,
+            .probe_interval = @import("inprocess/probe.zig").initial_interval,
+            .props_at_last_probe = 0,
+            .next_vivify = @import("inprocess/vivify.zig").initial_interval,
+            .vivify_interval = @import("inprocess/vivify.zig").initial_interval,
+            .props_at_last_vivify = 0,
+            .mode = .focused,
+            .mode_budget = mode_mod.stable_initial_budget,
+            .next_mode_switch = mode_mod.stable_initial_budget,
+            .reductions_since_compact = 0,
+            .unsat_at_init = false,
+            .stats = .{},
+        };
+        errdefer self.assignment.deinit();
+
+        self.watchers = try allocator.alloc(std.ArrayList(Watcher), formula.num_vars * 2);
+        for (self.watchers) |*w| w.* = .empty;
+        errdefer {
+            for (self.watchers) |*w| w.deinit(allocator);
+            allocator.free(self.watchers);
+        }
+
+        self.bin_watchers = try allocator.alloc(std.ArrayList(BinaryWatch), formula.num_vars * 2);
+        for (self.bin_watchers) |*w| w.* = .empty;
+        errdefer {
+            for (self.bin_watchers) |*w| w.deinit(allocator);
+            allocator.free(self.bin_watchers);
+        }
+        errdefer self.original_binaries.deinit(allocator);
+
+        self.activities = try allocator.alloc(f64, formula.num_vars);
+        @memset(self.activities, 0);
+        errdefer allocator.free(self.activities);
+
+        self.analyze_seen = try allocator.alloc(bool, formula.num_vars);
+        @memset(self.analyze_seen, false);
+        errdefer allocator.free(self.analyze_seen);
+
+        // Stacks used by recursive clause minimization in analyze. A var
+        // can be pushed at most once per analyze, so num_vars is a safe
+        // upper bound. Reserving up front lets litRedundant use
+        // appendAssumeCapacity and stay non-throwing in the hot loop.
+        try self.analyze_stack.ensureTotalCapacity(allocator, formula.num_vars);
+        errdefer self.analyze_stack.deinit(allocator);
+        try self.analyze_to_clear.ensureTotalCapacity(allocator, formula.num_vars);
+        errdefer self.analyze_to_clear.deinit(allocator);
+
+        self.order_heap = try OrderHeap.init(allocator, formula.num_vars, self.activities);
+        errdefer self.order_heap.deinit(allocator);
+        {
+            var v: u32 = 0;
+            while (v < formula.num_vars) : (v += 1) {
+                self.order_heap.insert(v);
+            }
+        }
+
+        // Reserve a tight upper bound for the arena. Binaries live in
+        // bin_watchers (and original_binaries for verifyModel), not in
+        // the arena, so only length-3+ originals contribute here. Along
+        // the way, tally how many long-clause watchers each literal will
+        // receive so we can pre-size watcher lists and skip the initial
+        // zero→8 growth alloc on first attach.
+        var total_slots: usize = 0;
+        var original_binary_count: usize = 0;
+        const watch_counts = try allocator.alloc(u32, @as(usize, formula.num_vars) * 2);
+        defer allocator.free(watch_counts);
+        @memset(watch_counts, 0);
+        for (formula.clauses.items) |lits| {
+            if (lits.len >= 3) {
+                total_slots += lits.len + header_slots;
+                watch_counts[lits[0].negate().raw] += 1;
+                watch_counts[lits[1].negate().raw] += 1;
+            }
+            if (lits.len == 2) original_binary_count += 1;
+        }
+        try self.arena.ensureTotalCapacity(allocator, total_slots);
+        errdefer self.arena.deinit(allocator);
+        try self.original_binaries.ensureTotalCapacity(allocator, original_binary_count);
+        for (self.watchers, watch_counts) |*w, n| {
+            if (n > 0) try w.ensureTotalCapacity(allocator, n);
+        }
+
+        for (formula.clauses.items) |lits| {
+            if (self.unsat_at_init) continue;
+            if (lits.len == 0) {
+                self.unsat_at_init = true;
+                continue;
+            }
+            if (lits.len == 1) {
+                const lit = lits[0];
+                const val = self.assignment.valueOfLiteral(lit);
+                if (val == .@"false") {
+                    self.unsat_at_init = true;
+                } else if (val == .unassigned) {
+                    try self.assignment.assign(lit, Reason.none);
+                }
+                continue;
+            }
+            if (lits.len == 2) {
+                self.original_binaries.appendAssumeCapacity(.{ lits[0], lits[1] });
+                try self.bin_watchers[lits[0].negate().raw].append(
+                    allocator,
+                    .{ .other = lits[1] },
+                );
+                try self.bin_watchers[lits[1].negate().raw].append(
+                    allocator,
+                    .{ .other = lits[0] },
+                );
+                continue;
+            }
+            const cref = try self.addClauseToArena(lits, false, 0);
+            try self.attachWatches(cref);
+        }
+
+        return self;
+    }
+
+    pub fn deinit(self: *Solver) void {
+        self.arena.deinit(self.allocator);
+        for (self.watchers) |*w| w.deinit(self.allocator);
+        self.allocator.free(self.watchers);
+        for (self.bin_watchers) |*w| w.deinit(self.allocator);
+        self.allocator.free(self.bin_watchers);
+        self.original_binaries.deinit(self.allocator);
+        self.allocator.free(self.activities);
+        self.allocator.free(self.analyze_seen);
+        self.analyze_learned.deinit(self.allocator);
+        self.analyze_levels.deinit(self.allocator);
+        self.analyze_to_clear.deinit(self.allocator);
+        self.analyze_stack.deinit(self.allocator);
+        self.learned_clauses.deinit(self.allocator);
+        self.order_heap.deinit(self.allocator);
+        self.assignment.deinit();
+        self.* = undefined;
+    }
+
+    pub fn setProofWriter(self: *Solver, w: *std.Io.Writer) void {
+        self.proof = io.drat.Writer.wrap(w);
+    }
+
+    // --- clause accessors -------------------------------------------------
+
+    pub inline fn clauseLen(self: *const Solver, cref: ClauseRef) u32 {
+        return self.arena.items[cref].raw & len_mask;
+    }
+
+    pub inline fn clauseIsLearned(self: *const Solver, cref: ClauseRef) bool {
+        return (self.arena.items[cref].raw & learned_bit) != 0;
+    }
+
+    pub inline fn clauseIsDeleted(self: *const Solver, cref: ClauseRef) bool {
+        return (self.arena.items[cref].raw & deleted_bit) != 0;
+    }
+
+    pub inline fn clauseLbd(self: *const Solver, cref: ClauseRef) u32 {
+        return self.arena.items[cref + 1].raw;
+    }
+
+    pub inline fn clauseLits(self: *Solver, cref: ClauseRef) []Literal {
+        const len = self.clauseLen(cref);
+        const start: usize = @as(usize, cref) + header_slots;
+        return self.arena.items[start .. start + len];
+    }
+
+    pub fn addClauseToArena(
+        self: *Solver,
+        lits: []const Literal,
+        learned: bool,
+        lbd: u32,
+    ) !ClauseRef {
+        const ref: ClauseRef = @intCast(self.arena.items.len);
+        const header_raw: u32 = @as(u32, @intCast(lits.len)) |
+            (if (learned) learned_bit else 0);
+        try self.arena.append(self.allocator, .{ .raw = header_raw });
+        try self.arena.append(self.allocator, .{ .raw = lbd });
+        try self.arena.appendSlice(self.allocator, lits);
+        return ref;
+    }
+
+    pub fn attachWatches(self: *Solver, cref: ClauseRef) !void {
+        const lits = self.clauseLits(cref);
+        std.debug.assert(lits.len >= 3);
+        try self.watchers[lits[0].negate().raw].append(self.allocator, .{
+            .clause = cref,
+            .blocker = lits[1],
+        });
+        try self.watchers[lits[1].negate().raw].append(self.allocator, .{
+            .clause = cref,
+            .blocker = lits[0],
+        });
+    }
+
+    // --- VSIDS branching --------------------------------------------------
+
+    pub fn bumpVarActivity(self: *Solver, var_idx: u32) void {
+        self.activities[var_idx] += self.var_inc;
+        if (self.activities[var_idx] > restart.rescale_threshold) {
+            for (self.activities) |*a| a.* *= 1.0 / restart.rescale_threshold;
+            self.var_inc *= 1.0 / restart.rescale_threshold;
+        }
+        self.order_heap.update(var_idx);
+    }
+
+    pub fn decayVarActivity(self: *Solver) void {
+        self.var_inc *= 1.0 / restart.var_decay;
+    }
+
+    pub fn pickBranching(self: *Solver) ?Literal {
+        while (!self.order_heap.isEmpty()) {
+            const v = self.order_heap.popMax();
+            if (self.assignment.vars[v].value == .unassigned) {
+                const neg = !self.assignment.saved_phases[v];
+                return Literal.init(v, neg);
+            }
+        }
+        return null;
+    }
+
+    // Rotate saved_phases through the rephase family. Called only at
+    // level 0 — the search tree has already been torn down and we're
+    // rebiasing the next descent, not perturbing an active trail.
+    //
+    // best    → copy the deepest-trail snapshot (best_phases) in.
+    // original→ reset to the solver default (all-false).
+    // inverse → flip every saved phase.
+    // random  → deterministic PRNG seeded by conflict count.
+    pub fn rephase(self: *Solver) void {
+        std.debug.assert(self.assignment.level == 0);
+        const saved = self.assignment.saved_phases;
+        switch (self.rephase_mode) {
+            .best => @memcpy(saved, self.assignment.best_phases),
+            .original => @memset(saved, false),
+            .inverse => {
+                for (saved) |*b| b.* = !b.*;
+            },
+            .random => {
+                var rng = std.Random.DefaultPrng.init(self.stats.conflicts);
+                const r = rng.random();
+                for (saved) |*b| b.* = r.boolean();
+            },
+        }
+        self.rephase_mode = rephase_mod.next(self.rephase_mode);
+        self.stats.rephases += 1;
+    }
+};

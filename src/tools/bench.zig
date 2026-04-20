@@ -1,6 +1,8 @@
 const std = @import("std");
-const parser = @import("parser.zig");
-const solver_mod = @import("solver.zig");
+const io = @import("io");
+const search = @import("search");
+const parser = io.parser;
+const solver_mod = search.solver;
 
 // sat-bench — batch runner designed to be the perf-record target for
 // `zig build bench`. Iterates one or more directories of .cnf files in

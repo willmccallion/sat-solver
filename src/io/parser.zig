@@ -1,6 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const cnf = @import("cnf.zig");
+const cnf = @import("core").cnf;
 const Literal = cnf.Literal;
 const Formula = cnf.Formula;
 

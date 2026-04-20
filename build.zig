@@ -4,55 +4,93 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const exe = b.addExecutable(.{
-        .name = "sat",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .strip = false,
-        }),
+    // --- Layer module graph ------------------------------------------------
+    // Dependency DAG, strictly downward:
+    //   core  ←  io, heuristics
+    //   core, heuristics  ←  search
+    //   everything  ←  tools, main, root (the `sat` public module)
+    const core = b.createModule(.{
+        .root_source_file = b.path("src/core/mod.zig"),
+        .target = target,
+        .optimize = optimize,
     });
+    const io = b.createModule(.{
+        .root_source_file = b.path("src/io/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    io.addImport("core", core);
+
+    const heuristics = b.createModule(.{
+        .root_source_file = b.path("src/heuristics/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    heuristics.addImport("core", core);
+
+    const search = b.createModule(.{
+        .root_source_file = b.path("src/search/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    search.addImport("core", core);
+    search.addImport("io", io);
+    search.addImport("heuristics", heuristics);
+
+    const addLayerImports = struct {
+        fn apply(
+            m: *std.Build.Module,
+            c: *std.Build.Module,
+            i: *std.Build.Module,
+            h: *std.Build.Module,
+            s: *std.Build.Module,
+        ) void {
+            m.addImport("core", c);
+            m.addImport("io", i);
+            m.addImport("heuristics", h);
+            m.addImport("search", s);
+        }
+    }.apply;
+
+    const exe_module = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .strip = false,
+    });
+    addLayerImports(exe_module, core, io, heuristics, search);
+    const exe = b.addExecutable(.{ .name = "sat", .root_module = exe_module });
     b.installArtifact(exe);
 
-    const bench_exe = b.addExecutable(.{
-        .name = "sat-bench",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/bench.zig"),
-            .target = target,
-            .optimize = optimize,
-            .strip = false,
-        }),
+    const bench_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/bench.zig"),
+        .target = target,
+        .optimize = optimize,
+        .strip = false,
     });
+    addLayerImports(bench_module, core, io, heuristics, search);
+    const bench_exe = b.addExecutable(.{ .name = "sat-bench", .root_module = bench_module });
     b.installArtifact(bench_exe);
 
-    // A dedicated ReleaseFast build of sat-bench used only by `zig build
-    // bench` — not installed, so it never shadows the user's optimize choice.
-    const bench_release_exe = b.addExecutable(.{
-        .name = "sat-bench",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/bench.zig"),
-            .target = target,
-            .optimize = .ReleaseFast,
-            .strip = false,
-        }),
+    const bench_release_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/bench.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .strip = false,
     });
+    addLayerImports(bench_release_module, core, io, heuristics, search);
+    const bench_release_exe = b.addExecutable(.{ .name = "sat-bench", .root_module = bench_release_module });
 
-    const profile_exe = b.addExecutable(.{
-        .name = "sat-profile",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/profile.zig"),
-            .target = target,
-            .optimize = .Debug,
-        }),
+    const profile_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/profile.zig"),
+        .target = target,
+        .optimize = .Debug,
     });
+    addLayerImports(profile_module, core, io, heuristics, search);
+    const profile_exe = b.addExecutable(.{ .name = "sat-profile", .root_module = profile_module });
 
     const profile_run = b.addRunArtifact(profile_exe);
     profile_run.addArtifactArg(bench_release_exe);
-    // uf200/uuf200 for continuity with prior baselines; uf250/uuf250
-    // for instances big enough that restart and clause-DB policy
-    // actually move the needle. The uf250 sets are ~8x harder than
-    // uf200 and are where adaptive strategies pay for themselves.
     profile_run.addArg("bench/instances/uf200-860");
     profile_run.addArg("bench/instances/uuf200-860");
     profile_run.addArg("bench/instances/uf250-1065");
@@ -63,18 +101,17 @@ pub fn build(b: *std.Build) void {
     const bench_step = b.step("bench", "Run deep perf profile on uf200/uuf200 + uf250/uuf250 (~7 min)");
     bench_step.dependOn(&profile_run.step);
 
-    const compete_exe = b.addExecutable(.{
-        .name = "sat-compete",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/compete.zig"),
-            .target = target,
-            .optimize = .Debug,
-        }),
+    const compete_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/compete.zig"),
+        .target = target,
+        .optimize = .Debug,
     });
+    addLayerImports(compete_module, core, io, heuristics, search);
+    const compete_exe = b.addExecutable(.{ .name = "sat-compete", .root_module = compete_module });
 
     const compete_run = b.addRunArtifact(compete_exe);
-    compete_run.addArtifactArg(exe); // the installed `sat` binary
-    compete_run.addArtifactArg(bench_release_exe); // the ReleaseFast `sat-bench`
+    compete_run.addArtifactArg(exe);
+    compete_run.addArtifactArg(bench_release_exe);
     compete_run.has_side_effects = true;
     compete_run.stdio = .inherit;
 
@@ -94,11 +131,6 @@ pub fn build(b: *std.Build) void {
     const bench_quick_step = b.step("bench-quick", "Run fast perf profile on uf100 + uuf100 (~4 s)");
     bench_quick_step.dependOn(&quick_profile_run.step);
 
-    // bench-industrial — SATLIB crafted instances that behave much
-    // more like competition industrial (structure, long chains of
-    // implications, learned-clause payoff) than uniform-random 3-SAT.
-    // 30 s per-instance cap is short enough for a dev-loop iteration
-    // and long enough that something genuinely hard becomes visible.
     const industrial_profile_run = b.addRunArtifact(profile_exe);
     industrial_profile_run.addArtifactArg(bench_release_exe);
     industrial_profile_run.addArg("--timeout-sec");
@@ -117,10 +149,6 @@ pub fn build(b: *std.Build) void {
     );
     bench_industrial_step.dependOn(&industrial_profile_run.step);
 
-    // bench-satcomp — SAT Competition 2025 main-track subset fetched
-    // by `bench/fetch_satcomp.sh`. Requires running that script first
-    // (it decompresses xz→cnf into bench/instances/satcomp2025/).
-    // 60 s cap keeps a 40-instance subset under an hour worst case.
     const satcomp_profile_run = b.addRunArtifact(profile_exe);
     satcomp_profile_run.addArtifactArg(bench_release_exe);
     satcomp_profile_run.addArg("--timeout-sec");
@@ -140,6 +168,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    addLayerImports(sat_module, core, io, heuristics, search);
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());

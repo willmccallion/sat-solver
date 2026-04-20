@@ -1,7 +1,10 @@
 const std = @import("std");
-const parser = @import("parser.zig");
-const cnf = @import("cnf.zig");
-const solver_mod = @import("solver.zig");
+const core = @import("core");
+const io = @import("io");
+const search = @import("search");
+const parser = io.parser;
+const cnf = core.cnf;
+const solver_mod = search.solver;
 const flate = std.compress.flate;
 
 const usage =
