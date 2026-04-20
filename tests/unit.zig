@@ -17,6 +17,7 @@ fn solveSource(source: []const u8) !struct { result: solver_mod.Result, verified
     var solver = try solver_mod.Solver.init(gpa, formula);
     defer solver.deinit();
     const result = try solver.solve();
+    if (result == .sat) solver.reconstructEliminatedVars();
     const verified = if (result == .sat) solver.verifyModel() else true;
     return .{ .result = result, .verified = verified };
 }
@@ -249,6 +250,11 @@ fn hasBinary(solver: *solver_mod.Solver, a: Literal, b: Literal) bool {
         if (entry.other.raw == b.raw) return true;
     }
     return false;
+}
+
+// True iff the `var_idx`-th variable has been marked eliminated by BVE.
+fn hasEliminated(solver: *solver_mod.Solver, var_idx: u32) bool {
+    return solver.eliminated.isSet(var_idx);
 }
 
 test "subsume: trivial — (1 2 3) subsumed by (1 2)" {
@@ -495,4 +501,180 @@ test "subsume: unsat — (1 2), (1 -2), (-1) derives contradiction" {
 
     const r = try solver.preprocessSubsume();
     try testing.expectEqual(solver_mod.Result.unsat, r.?);
+}
+
+// ---- BVE tests -----------------------------------------------------------
+
+test "bve: trivial elimination — (1 2), (-1 3) resolves to (2 3)" {
+    // One clause containing +1 and one containing -1. Resolving on var
+    // 1 yields (2, 3). After that, vars 2 and 3 are pure (only one
+    // polarity remains) so they get eliminated too — a pure literal's
+    // opposite-polarity side is empty, producing zero resolvents, and
+    // the growth check trivially passes. All three vars end up
+    // eliminated by the end of the pass.
+    //
+    // Stats: resolvents_added = 1 (from var 0's pass; pure literals
+    // add zero resolvents). eliminated ≥ 1.
+    const src =
+        \\p cnf 3 2
+        \\1 2 0
+        \\-1 3 0
+    ;
+    const gpa = testing.allocator;
+    const formula = try parser.parse(gpa, src);
+    var solver = try solver_mod.Solver.init(gpa, formula);
+    defer solver.deinit();
+
+    _ = try solver.propagate();
+
+    const r = try solver.preprocessBVE();
+    try testing.expect(r == null);
+
+    try testing.expect(hasEliminated(&solver, 0));
+    try testing.expect(solver.stats.eliminated >= 1);
+    try testing.expectEqual(@as(u64, 1), solver.stats.resolvents_added);
+}
+
+test "bve: growth skip — eliminating a var would create more resolvents than originals" {
+    // Two +1 clauses and two -1 clauses, chosen so none of the four
+    // resolvents is tautological and all are length ≤ 16. 2+2 originals
+    // vs 4 resolvents: 4 > 2+2+0 so the growth test skips the variable.
+    //
+    // +1 clauses: (1 2 3), (1 4 5)     — longs go to the arena
+    // -1 clauses: (-1 6 7), (-1 8 9)
+    // Resolvents over var 1: (2,3,6,7), (2,3,8,9), (4,5,6,7), (4,5,8,9)
+    // All distinct, no tautology, length 4 ≤ 16. 4 > 4 → skip var 1.
+    const src =
+        \\p cnf 9 4
+        \\1 2 3 0
+        \\1 4 5 0
+        \\-1 6 7 0
+        \\-1 8 9 0
+    ;
+    const gpa = testing.allocator;
+    const formula = try parser.parse(gpa, src);
+    var solver = try solver_mod.Solver.init(gpa, formula);
+    defer solver.deinit();
+
+    _ = try solver.propagate();
+
+    const r = try solver.preprocessBVE();
+    try testing.expect(r == null);
+
+    try testing.expect(!hasEliminated(&solver, 0));
+}
+
+test "bve: length cap — resolvent would exceed max_resolvent_len, skip" {
+    // Pair one +1 clause of length 9 with one -1 clause of length 9,
+    // all variables distinct, so the unique resolvent has length 16.
+    // That's ≤ 16, still allowed. Bump to length 10 × length 9 → 17,
+    // which trips the cap and forces abandonment.
+    const src =
+        \\p cnf 19 2
+        \\1 2 3 4 5 6 7 8 9 10 0
+        \\-1 11 12 13 14 15 16 17 18 19 0
+    ;
+    const gpa = testing.allocator;
+    const formula = try parser.parse(gpa, src);
+    var solver = try solver_mod.Solver.init(gpa, formula);
+    defer solver.deinit();
+
+    _ = try solver.propagate();
+
+    const r = try solver.preprocessBVE();
+    try testing.expect(r == null);
+
+    try testing.expect(!hasEliminated(&solver, 0));
+}
+
+test "bve: unsat — (1), (-1) derives the empty clause" {
+    // Two singleton clauses contradict directly. Either BVE sees both
+    // and returns .unsat, or upstream propagate catches the conflict
+    // before preprocessBVE runs. Both are acceptable outcomes.
+    const src =
+        \\p cnf 1 2
+        \\1 0
+        \\-1 0
+    ;
+    const gpa = testing.allocator;
+    const formula = try parser.parse(gpa, src);
+    var solver = try solver_mod.Solver.init(gpa, formula);
+    defer solver.deinit();
+
+    // Units are unit-propagated during Solver.init; the second unit
+    // either conflicts in init (unsat_at_init), conflicts in the first
+    // propagate, or shows up to BVE as a length-1 resolvent situation.
+    // Any path that terminates in .unsat is correct.
+    if (solver.unsat_at_init) return;
+    const first = try solver.propagate();
+    if (first != null) return;
+    const r = try solver.preprocessBVE();
+    try testing.expectEqual(solver_mod.Result.unsat, r.?);
+}
+
+test "bve: sat reconstruction end-to-end on a formula with an eliminated var" {
+    // Var 1 appears in (1 2) and (-1 3). BVE eliminates it. The rest
+    // of the formula sets x2 = false, x3 = false. After solve() the
+    // reconstruction step must pick an x1 value that satisfies the
+    // two original clauses under the final x2=false, x3=false — only
+    // x1 = true works (satisfies (1 2) via x1 = true and (-1 3) is
+    // unsatisfiable under x1=true ∧ x3=false, wait no: -1 3 needs
+    // x1=false OR x3=true, both fail → so we must pick x1=false,
+    // which satisfies (-1 3) via -1; then (1 2) needs x2=true, but
+    // we force x2=false ... let's actually reshuffle.
+    //
+    // A cleaner case: vars 2 and 3 set to true. Then (1,2) is already
+    // satisfied by x2; (-1,3) is already satisfied by x3. Either
+    // polarity of x1 works. Pick pivot=true if -1-side clauses are
+    // already satisfied without the pivot: (-1 3) has x3=true in it,
+    // so yes, pivot_true_ok → x1 = true.
+    //
+    // Forcing: set x2=true and x3=true via unit clauses.
+    const src =
+        \\p cnf 3 4
+        \\1 2 0
+        \\-1 3 0
+        \\2 0
+        \\3 0
+    ;
+    const gpa = testing.allocator;
+    const formula = try parser.parse(gpa, src);
+    var solver = try solver_mod.Solver.init(gpa, formula);
+    defer solver.deinit();
+
+    const result = try solver.solve();
+    try testing.expectEqual(solver_mod.Result.sat, result);
+    solver.reconstructEliminatedVars();
+    try testing.expect(solver.verifyModel());
+}
+
+test "bve: locked protection — a clause that reasons a level-0 unit stays untouched" {
+    // Setup: (1 2 3), unit (-2), unit (-3). BCP forces x1=true with
+    // reason = cref(1 2 3). That clause is locked and must not be
+    // eliminated away. Variable 1 has +1 only in the locked clause,
+    // no -1 clauses, so the elimination attempt would normally succeed
+    // with 0 resolvents; the locked gate must stop it.
+    const src =
+        \\p cnf 3 3
+        \\1 2 3 0
+        \\-2 0
+        \\-3 0
+    ;
+    const gpa = testing.allocator;
+    const formula = try parser.parse(gpa, src);
+    var solver = try solver_mod.Solver.init(gpa, formula);
+    defer solver.deinit();
+
+    const conflict = try solver.propagate();
+    try testing.expect(conflict == null);
+
+    const v0_info = solver.assignment.vars[0];
+    try testing.expectEqual(assignment_mod.Value.@"true", v0_info.value);
+    try testing.expectEqual(@as(u32, 0), v0_info.level);
+    try testing.expect(!v0_info.reason.isNone());
+    try testing.expect(!v0_info.reason.isBinary());
+
+    const r = try solver.bve();
+    try testing.expect(r == null);
+    try testing.expect(!hasEliminated(&solver, 0));
 }

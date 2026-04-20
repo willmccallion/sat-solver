@@ -162,7 +162,7 @@ pub fn main() !void {
     }
 
     try stdout.print(
-        "stats: decisions={d} conflicts={d} propagations={d} restarts={d} reductions={d} learned={d} rephases={d} chronos={d} probings={d} flp_units={d} vivifies={d} vivified={d} subsumes={d} subsumed={d} strengthened={d} mode_switches={d} compactions={d}\n",
+        "stats: decisions={d} conflicts={d} propagations={d} restarts={d} reductions={d} learned={d} rephases={d} chronos={d} probings={d} flp_units={d} vivifies={d} vivified={d} subsumes={d} subsumed={d} strengthened={d} mode_switches={d} compactions={d} bves={d} eliminated={d} resolvents_added={d}\n",
         .{
             agg_stats.decisions,
             agg_stats.conflicts,
@@ -181,6 +181,9 @@ pub fn main() !void {
             agg_stats.strengthened,
             agg_stats.mode_switches,
             agg_stats.compactions,
+            agg_stats.bves,
+            agg_stats.eliminated,
+            agg_stats.resolvents_added,
         },
     );
 
@@ -283,6 +286,7 @@ fn runDirectory(
         total.* += 1;
         switch (result) {
             .sat => {
+                solver.reconstructEliminatedVars();
                 if (!solver.verifyModel()) {
                     try stderr.print("sat-bench: BUG: model verification failed on {s}\n", .{name});
                     try stderr.flush();
@@ -324,4 +328,7 @@ fn accumulate(dst: *solver_mod.Stats, src: *const solver_mod.Stats) void {
     dst.strengthened += src.strengthened;
     dst.mode_switches += src.mode_switches;
     dst.compactions += src.compactions;
+    dst.bves += src.bves;
+    dst.eliminated += src.eliminated;
+    dst.resolvents_added += src.resolvents_added;
 }

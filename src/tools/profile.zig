@@ -77,6 +77,9 @@ const Stats = struct {
     solver_strengthened: u64 = 0,
     solver_mode_switches: u64 = 0,
     solver_compactions: u64 = 0,
+    solver_bves: u64 = 0,
+    solver_eliminated: u64 = 0,
+    solver_resolvents_added: u64 = 0,
     peak_rss_kb: u64 = 0,
     par2_s: f64 = 0,
     timeout_s: u64 = 0,
@@ -382,6 +385,9 @@ fn parseBenchOutput(output: []const u8, stats: *Stats) void {
                     if (std.mem.eql(u8, key, "strengthened")) dst.solver_strengthened = n;
                     if (std.mem.eql(u8, key, "mode_switches")) dst.solver_mode_switches = n;
                     if (std.mem.eql(u8, key, "compactions")) dst.solver_compactions = n;
+                    if (std.mem.eql(u8, key, "bves")) dst.solver_bves = n;
+                    if (std.mem.eql(u8, key, "eliminated")) dst.solver_eliminated = n;
+                    if (std.mem.eql(u8, key, "resolvents_added")) dst.solver_resolvents_added = n;
                 }
             }.apply, stats);
         } else if (std.mem.startsWith(u8, line, "peak_rss_kb:")) {
@@ -893,6 +899,9 @@ fn printReport(
     try solverRow(w, "strengthened", stats.solver_strengthened, stats.instance_count);
     try solverRow(w, "mode switches", stats.solver_mode_switches, stats.instance_count);
     try solverRow(w, "compactions", stats.solver_compactions, stats.instance_count);
+    try solverRow(w, "bve passes", stats.solver_bves, stats.instance_count);
+    try solverRow(w, "eliminated", stats.solver_eliminated, stats.instance_count);
+    try solverRow(w, "resolvents added", stats.solver_resolvents_added, stats.instance_count);
     try blankRow(w);
 
     // --- throughput ---

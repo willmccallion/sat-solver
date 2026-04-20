@@ -45,6 +45,25 @@ pub const Stats = struct {
     strengthened: u64 = 0,
     mode_switches: u64 = 0,
     compactions: u64 = 0,
+    bves: u64 = 0,
+    eliminated: u64 = 0,
+    resolvents_added: u64 = 0,
+};
+
+// BVE witness frame. Records the original clauses touching an eliminated
+// variable so the .sat reconstruction path in main.zig can pick a value
+// that satisfies all of them in reverse elimination order.
+//
+// Layout inside bve_witness_lits (length-prefixed runs):
+//   [pos_start .. neg_start)  — clauses containing +pivot
+//   [neg_start .. end)        — clauses containing -pivot
+// Each run starts with a `Literal` whose `.raw` is the clause length,
+// followed by that many literal slots.
+pub const WitnessFrame = struct {
+    pivot: u32,
+    pos_start: u32,
+    neg_start: u32,
+    end: u32,
 };
 
 pub const Solver = struct {
@@ -123,6 +142,20 @@ pub const Solver = struct {
     subsume_interval: u64,
     props_at_last_subsume: u64,
 
+    // BVE — bit-indexed by variable. Eliminated variables must never be
+    // branched on (pickBranching filters them), must never reappear as a
+    // literal in a learned clause, and must have their values filled in
+    // during the .sat reconstruction path by main.zig.
+    eliminated: std.DynamicBitSet,
+    // Flat buffer of length-prefixed literal runs recording the original
+    // clauses touching every eliminated variable. Each frame in
+    // bve_witness_frames names the pivot and slices into this buffer.
+    bve_witness_lits: std.ArrayList(Literal),
+    bve_witness_frames: std.ArrayList(WitnessFrame),
+    next_bve: u64,
+    bve_interval: u64,
+    props_at_last_bve: u64,
+
     // Focused/stable alternation.
     mode: mode_mod.Solve,
     mode_budget: u64,
@@ -148,6 +181,9 @@ pub const Solver = struct {
     pub const vivify = @import("inprocess/vivify.zig").vivify;
     pub const subsume = @import("inprocess/subsume.zig").subsume;
     pub const preprocessSubsume = @import("inprocess/subsume.zig").preprocessSubsume;
+    pub const bve = @import("inprocess/bve.zig").bve;
+    pub const preprocessBVE = @import("inprocess/bve.zig").preprocessBVE;
+    pub const reconstructEliminatedVars = @import("inprocess/bve.zig").reconstructEliminatedVars;
     pub const reduceDB = @import("inprocess/reduce.zig").reduceDB;
     pub const compact = @import("inprocess/reduce.zig").compact;
 
@@ -196,6 +232,12 @@ pub const Solver = struct {
             .next_subsume = @import("inprocess/subsume.zig").inprocess_initial_interval,
             .subsume_interval = @import("inprocess/subsume.zig").inprocess_initial_interval,
             .props_at_last_subsume = 0,
+            .eliminated = try std.DynamicBitSet.initEmpty(allocator, formula.num_vars),
+            .bve_witness_lits = .empty,
+            .bve_witness_frames = .empty,
+            .next_bve = @import("inprocess/bve.zig").inprocess_initial_interval,
+            .bve_interval = @import("inprocess/bve.zig").inprocess_initial_interval,
+            .props_at_last_bve = 0,
             .mode = .focused,
             .mode_budget = mode_mod.stable_initial_budget,
             .next_mode_switch = mode_mod.stable_initial_budget,
@@ -322,6 +364,9 @@ pub const Solver = struct {
         self.analyze_stack.deinit(self.allocator);
         self.learned_clauses.deinit(self.allocator);
         self.order_heap.deinit(self.allocator);
+        self.eliminated.deinit();
+        self.bve_witness_lits.deinit(self.allocator);
+        self.bve_witness_frames.deinit(self.allocator);
         self.assignment.deinit();
         self.* = undefined;
     }
@@ -402,6 +447,11 @@ pub const Solver = struct {
     pub fn pickBranching(self: *Solver) ?Literal {
         while (!self.order_heap.isEmpty()) {
             const v = self.order_heap.popMax();
+            // Eliminated variables must never become decision literals:
+            // their witness frame owns the only correct assignment, and
+            // any branch would re-trigger analyze against clauses that
+            // no longer exist.
+            if (self.eliminated.isSet(v)) continue;
             if (self.assignment.vars[v].value == .unassigned) {
                 const neg = !self.assignment.saved_phases[v];
                 return Literal.init(v, neg);
