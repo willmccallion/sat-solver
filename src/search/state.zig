@@ -48,6 +48,8 @@ pub const Stats = struct {
     bves: u64 = 0,
     eliminated: u64 = 0,
     resolvents_added: u64 = 0,
+    equivs: u64 = 0,
+    equiv_eliminated: u64 = 0,
 };
 
 // BVE witness frame. Records the original clauses touching an eliminated
@@ -64,6 +66,14 @@ pub const WitnessFrame = struct {
     pos_start: u32,
     neg_start: u32,
     end: u32,
+};
+
+// Equivalent-literal substitution witness. One frame per variable folded
+// into a representative during equiv(). Reconstruction sets the eliminated
+// variable's value equal to the representative literal's current value.
+pub const EquivFrame = struct {
+    eliminated_var: u32,
+    rep_lit: cnf.Literal,
 };
 
 pub const Solver = struct {
@@ -156,6 +166,11 @@ pub const Solver = struct {
     bve_interval: u64,
     props_at_last_bve: u64,
 
+    // Equivalent-literal substitution cadence + witness.
+    equiv_witness: std.ArrayList(EquivFrame),
+    next_equiv: u64,
+    equiv_interval: u64,
+
     // Focused/stable alternation.
     mode: mode_mod.Solve,
     mode_budget: u64,
@@ -184,6 +199,9 @@ pub const Solver = struct {
     pub const bve = @import("inprocess/bve.zig").bve;
     pub const preprocessBVE = @import("inprocess/bve.zig").preprocessBVE;
     pub const reconstructEliminatedVars = @import("inprocess/bve.zig").reconstructEliminatedVars;
+    pub const equiv = @import("inprocess/equiv.zig").equiv;
+    pub const preprocessEquiv = @import("inprocess/equiv.zig").preprocessEquiv;
+    pub const reconstructEquivVars = @import("inprocess/equiv.zig").reconstructEquivVars;
     pub const reduceDB = @import("inprocess/reduce.zig").reduceDB;
     pub const compact = @import("inprocess/reduce.zig").compact;
 
@@ -238,6 +256,9 @@ pub const Solver = struct {
             .next_bve = @import("inprocess/bve.zig").inprocess_initial_interval,
             .bve_interval = @import("inprocess/bve.zig").inprocess_initial_interval,
             .props_at_last_bve = 0,
+            .equiv_witness = .empty,
+            .next_equiv = @import("inprocess/equiv.zig").inprocess_initial_interval,
+            .equiv_interval = @import("inprocess/equiv.zig").inprocess_initial_interval,
             .mode = .focused,
             .mode_budget = mode_mod.stable_initial_budget,
             .next_mode_switch = mode_mod.stable_initial_budget,
@@ -367,6 +388,7 @@ pub const Solver = struct {
         self.eliminated.deinit();
         self.bve_witness_lits.deinit(self.allocator);
         self.bve_witness_frames.deinit(self.allocator);
+        self.equiv_witness.deinit(self.allocator);
         self.assignment.deinit();
         self.* = undefined;
     }

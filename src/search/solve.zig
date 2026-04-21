@@ -18,6 +18,7 @@ const probe_mod = @import("inprocess/probe.zig");
 const vivify_mod = @import("inprocess/vivify.zig");
 const subsume_mod = @import("inprocess/subsume.zig");
 const bve_mod = @import("inprocess/bve.zig");
+const equiv_mod = @import("inprocess/equiv.zig");
 
 pub fn solve(self: *Solver) !Result {
     if (self.unsat_at_init) {
@@ -29,6 +30,8 @@ pub fn solve(self: *Solver) !Result {
         return .unsat;
     }
 
+    if (try self.preprocessSubsume()) |r| return r;
+    if (try self.preprocessEquiv()) |r| return r;
     if (try self.preprocessSubsume()) |r| return r;
     if (try self.preprocessBVE()) |r| return r;
 
@@ -165,11 +168,12 @@ pub fn solve(self: *Solver) !Result {
             const should_vivify = self.stats.conflicts >= self.next_vivify;
             const should_subsume = self.stats.conflicts >= self.next_subsume;
             const should_bve = self.stats.conflicts >= self.next_bve;
+            const should_equiv = self.stats.conflicts >= self.next_equiv;
             const should_flip_mode = self.stats.conflicts >= self.next_mode_switch;
 
             if (should_restart or should_reduce or should_rephase or
                 should_probe or should_vivify or should_subsume or
-                should_bve or should_flip_mode)
+                should_bve or should_equiv or should_flip_mode)
             {
                 if (should_restart) {
                     self.stats.restarts += 1;
@@ -216,6 +220,12 @@ pub fn solve(self: *Solver) !Result {
                     self.bve_interval =
                         (self.bve_interval * bve_mod.grow_num) / bve_mod.grow_den;
                     self.next_bve = self.stats.conflicts + self.bve_interval;
+                }
+                if (should_equiv) {
+                    if (try self.equiv()) |r| return r;
+                    self.equiv_interval =
+                        (self.equiv_interval * equiv_mod.grow_num) / equiv_mod.grow_den;
+                    self.next_equiv = self.stats.conflicts + self.equiv_interval;
                 }
                 if (should_flip_mode) {
                     self.mode = switch (self.mode) {

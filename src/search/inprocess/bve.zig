@@ -261,6 +261,13 @@ fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
                     pos_live_count += 1;
                 },
                 .binary => |other| {
+                    // Binary entries in occ go stale when `other.variable()`
+                    // is itself eliminated: the binary was removed from
+                    // bin_watchers during that variable's commit, but the
+                    // mirror entry in this lit's occ was never cleaned. Treat
+                    // such ghosts as no-ops — including them as a source would
+                    // produce resolvents poisoned with an eliminated literal.
+                    if (self.eliminated.isSet(other.variable())) continue;
                     // Binary clause {pos_lit, other}.
                     const off: u32 = @intCast(pos_lits_buf.items.len);
                     try pos_runs.append(self.allocator, off);
@@ -292,6 +299,7 @@ fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
                     neg_live_count += 1;
                 },
                 .binary => |other| {
+                    if (self.eliminated.isSet(other.variable())) continue;
                     const off: u32 = @intCast(neg_lits_buf.items.len);
                     try neg_runs.append(self.allocator, off);
                     try neg_lits_buf.append(self.allocator, .{ .raw = 2 });
@@ -375,6 +383,30 @@ fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
                     continue;
                 }
                 resolvent_buf.shrinkRetainingCapacity(w);
+
+                // Level-0 simplification: drop false-at-level-0 literals and
+                // skip this resolvent entirely if any literal is true-at-
+                // level-0. Without this, attachWatches can land on a false
+                // literal whose negation is already past qhead on the trail,
+                // orphaning the clause (watchers never fire).
+                var sat_at_l0 = false;
+                var sw: usize = 0;
+                for (resolvent_buf.items) |lit| {
+                    const val = self.assignment.valueOfLiteral(lit);
+                    switch (val) {
+                        .@"true" => {
+                            sat_at_l0 = true;
+                            break;
+                        },
+                        .@"false" => {},
+                        .unassigned => {
+                            resolvent_buf.items[sw] = lit;
+                            sw += 1;
+                        },
+                    }
+                }
+                if (sat_at_l0) continue;
+                resolvent_buf.shrinkRetainingCapacity(sw);
 
                 const r_len = resolvent_buf.items.len;
                 if (r_len > max_resolvent_len) {

@@ -173,6 +173,7 @@ pub fn main() !u8 {
     switch (result) {
         .sat => {
             solver.reconstructEliminatedVars();
+            solver.reconstructEquivVars();
             if (!solver.verifyModel()) {
                 try stdout.writeAll("c BUG: model verification failed\n");
                 try stdout.writeAll("s UNKNOWN\n");
