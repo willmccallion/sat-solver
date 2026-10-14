@@ -183,43 +183,40 @@ fn subsumeImpl(self: *Solver, is_preprocess: bool) !?Result {
     // --- Binary subsumers pass --------------------------------------------
     // For each binary (a, b), try to subsume/strengthen long clauses that
     // contain a and b (subsumption), or long clauses that contain a and
-    // ¬b (SSR — strengthen by removing ¬b), etc. Only processes each
-    // binary once via the a.raw < b.raw filter.
+    // ¬b (SSR — strengthen by removing ¬b), etc. Strengthening removes
+    // and appends bin_watchers entries, so the binaries are snapshotted
+    // first and each is re-checked for presence before use.
     if (!unsat_derived) {
+        var binaries: std.ArrayList([2]Literal) = .empty;
+        defer binaries.deinit(self.allocator);
         var l_raw: u32 = 0;
         while (l_raw < num_lits) : (l_raw += 1) {
+            const a = (Literal{ .raw = l_raw }).negate();
+            for (self.bin_watchers[l_raw].items) |entry| {
+                if (a.raw < entry.other.raw) try binaries.append(self.allocator, .{ a, entry.other });
+            }
+        }
+
+        for (binaries.items) |pair| {
             if (unsat_derived) break;
             if (op_count > budget) {
                 @branchHint(.cold);
                 break;
             }
-            const w = Literal{ .raw = l_raw };
-            const neg_w = w.negate();
-            const entries = self.bin_watchers[l_raw].items;
-            var bi: usize = 0;
-            while (bi < entries.len) : (bi += 1) {
-                if (unsat_derived) break;
-                if (op_count > budget) {
-                    @branchHint(.cold);
-                    break;
-                }
-                const other = entries[bi].other;
-                // Emit each binary (neg_w, other) exactly once via raw ordering.
-                if (neg_w.raw >= other.raw) continue;
-                try processSubsumerBinary(
-                    self,
-                    neg_w,
-                    other,
-                    occ,
-                    &abstracts,
-                    &revisits,
-                    &queue,
-                    &scratch,
-                    &op_count,
-                    &any_deleted,
-                    &unsat_derived,
-                );
-            }
+            if (!hasBinaryClause(self, pair[0], pair[1])) continue;
+            try processSubsumerBinary(
+                self,
+                pair[0],
+                pair[1],
+                occ,
+                &abstracts,
+                &revisits,
+                &queue,
+                &scratch,
+                &op_count,
+                &any_deleted,
+                &unsat_derived,
+            );
         }
     }
 
@@ -259,6 +256,13 @@ fn subsumeImpl(self: *Solver, is_preprocess: bool) !?Result {
     }
 
     return null;
+}
+
+fn hasBinaryClause(self: *const Solver, a: Literal, b: Literal) bool {
+    for (self.bin_watchers[a.negate().raw].items) |entry| {
+        if (entry.other.eql(b)) return true;
+    }
+    return false;
 }
 
 // Returns true when `cref` is currently the reason for a level-0 literal.
