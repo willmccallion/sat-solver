@@ -249,12 +249,11 @@ fn runDirectory(
         defer file.close(io);
 
         var file_buffer: [64 * 1024]u8 = undefined;
-        var file_reader = file.reader(io, &file_buffer);
-        const source = try file_reader.interface.allocRemaining(gpa, .unlimited);
-        defer gpa.free(source);
+        var file_reader = file.readerStreaming(io, &file_buffer);
+        var formula = try parser.parse(gpa, &file_reader.interface);
+        defer formula.deinit();
 
-        const formula = try parser.parse(gpa, source);
-        var solver = try solver_mod.Solver.init(gpa, formula);
+        var solver = try solver_mod.Solver.init(gpa, &formula);
         defer solver.deinit();
 
         // Per-instance: reset the global interrupt flag, arm a watchdog
@@ -290,9 +289,9 @@ fn runDirectory(
         total.* += 1;
         switch (result) {
             .sat => {
-                solver.reconstructEliminatedVars();
-                if (!solver.verifyModel()) {
-                    try stderr.print("sat-bench: BUG: model verification failed on {s}\n", .{name});
+                solver.extendModel();
+                if (solver.findFalsifiedClause(&formula)) |index| {
+                    try stderr.print("sat-bench: BUG: model falsifies clause {d} of {s}\n", .{ index + 1, name });
                     try stderr.flush();
                     std.process.exit(2);
                 }

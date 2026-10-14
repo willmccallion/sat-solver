@@ -92,11 +92,6 @@ pub const Solver = struct {
     // there is no "find a different literal to watch" step for a 2-clause.
     bin_watchers: []std.ArrayList(BinaryWatch),
 
-    // Input-provided 2-literal clauses, kept verbatim for verifyModel.
-    // They are NOT in the arena — verifying a binary via bin_watchers
-    // would double-count (each clause appears as two watcher entries).
-    original_binaries: std.ArrayList([2]Literal),
-
     assignment: Assignment,
 
     activities: []f64,
@@ -191,31 +186,26 @@ pub const Solver = struct {
     pub const computeLbd = @import("analyze.zig").computeLbd;
     pub const backtrack = @import("backtrack.zig").backtrack;
     pub const solve = @import("solve.zig").solve;
-    pub const verifyModel = @import("verify.zig").verifyModel;
+    pub const extendModel = @import("model.zig").extendModel;
+    pub const findFalsifiedClause = @import("model.zig").findFalsifiedClause;
     pub const probe = @import("inprocess/probe.zig").probe;
     pub const vivify = @import("inprocess/vivify.zig").vivify;
     pub const subsume = @import("inprocess/subsume.zig").subsume;
     pub const preprocessSubsume = @import("inprocess/subsume.zig").preprocessSubsume;
     pub const bve = @import("inprocess/bve.zig").bve;
     pub const preprocessBVE = @import("inprocess/bve.zig").preprocessBVE;
-    pub const reconstructEliminatedVars = @import("inprocess/bve.zig").reconstructEliminatedVars;
     pub const equiv = @import("inprocess/equiv.zig").equiv;
     pub const preprocessEquiv = @import("inprocess/equiv.zig").preprocessEquiv;
-    pub const reconstructEquivVars = @import("inprocess/equiv.zig").reconstructEquivVars;
     pub const reduceDB = @import("inprocess/reduce.zig").reduceDB;
     pub const compact = @import("inprocess/reduce.zig").compact;
 
-    pub fn init(allocator: Allocator, formula_in: Formula) !Solver {
-        var formula = formula_in;
-        defer formula.deinit();
-
+    pub fn init(allocator: Allocator, formula: *const Formula) !Solver {
         var self: Solver = .{
             .allocator = allocator,
             .num_vars = formula.num_vars,
             .arena = .empty,
             .watchers = &.{},
             .bin_watchers = &.{},
-            .original_binaries = .empty,
             .assignment = try Assignment.init(allocator, formula.num_vars),
             .activities = &.{},
             .var_inc = 1.0,
@@ -226,7 +216,7 @@ pub const Solver = struct {
             .analyze_to_clear = .empty,
             .analyze_stack = .empty,
             .learned_clauses = .empty,
-            .max_learned = @max(formula.clauses.items.len, 1000),
+            .max_learned = @max(formula.clauseCount(), 1000),
             .proof = io.drat.Writer.none(),
             .lbd_fast = 0,
             .lbd_fast_bc = 0,
@@ -281,7 +271,6 @@ pub const Solver = struct {
             for (self.bin_watchers) |*w| w.deinit(allocator);
             allocator.free(self.bin_watchers);
         }
-        errdefer self.original_binaries.deinit(allocator);
 
         self.activities = try allocator.alloc(f64, formula.num_vars);
         @memset(self.activities, 0);
@@ -310,32 +299,31 @@ pub const Solver = struct {
         }
 
         // Reserve a tight upper bound for the arena. Binaries live in
-        // bin_watchers (and original_binaries for verifyModel), not in
-        // the arena, so only length-3+ originals contribute here. Along
+        // bin_watchers, not in the arena, so only length-3+ originals
+        // contribute here. Along
         // the way, tally how many long-clause watchers each literal will
         // receive so we can pre-size watcher lists and skip the initial
         // zero→8 growth alloc on first attach.
         var total_slots: usize = 0;
-        var original_binary_count: usize = 0;
         const watch_counts = try allocator.alloc(u32, @as(usize, formula.num_vars) * 2);
         defer allocator.free(watch_counts);
         @memset(watch_counts, 0);
-        for (formula.clauses.items) |lits| {
+        for (0..formula.clauseCount()) |i| {
+            const lits = formula.clause(i);
             if (lits.len >= 3) {
                 total_slots += lits.len + header_slots;
                 watch_counts[lits[0].negate().raw] += 1;
                 watch_counts[lits[1].negate().raw] += 1;
             }
-            if (lits.len == 2) original_binary_count += 1;
         }
         try self.arena.ensureTotalCapacity(allocator, total_slots);
         errdefer self.arena.deinit(allocator);
-        try self.original_binaries.ensureTotalCapacity(allocator, original_binary_count);
         for (self.watchers, watch_counts) |*w, n| {
             if (n > 0) try w.ensureTotalCapacity(allocator, n);
         }
 
-        for (formula.clauses.items) |lits| {
+        for (0..formula.clauseCount()) |i| {
+            const lits = formula.clause(i);
             if (self.unsat_at_init) continue;
             if (lits.len == 0) {
                 self.unsat_at_init = true;
@@ -352,7 +340,6 @@ pub const Solver = struct {
                 continue;
             }
             if (lits.len == 2) {
-                self.original_binaries.appendAssumeCapacity(.{ lits[0], lits[1] });
                 try self.bin_watchers[lits[0].negate().raw].append(
                     allocator,
                     .{ .other = lits[1] },
@@ -376,7 +363,6 @@ pub const Solver = struct {
         self.allocator.free(self.watchers);
         for (self.bin_watchers) |*w| w.deinit(self.allocator);
         self.allocator.free(self.bin_watchers);
-        self.original_binaries.deinit(self.allocator);
         self.allocator.free(self.activities);
         self.allocator.free(self.analyze_seen);
         self.analyze_learned.deinit(self.allocator);

@@ -4,6 +4,10 @@ const Allocator = std.mem.Allocator;
 pub const ClauseRef = u32;
 pub const null_clause: ClauseRef = std.math.maxInt(u32);
 
+// Literal.raw is var*2+sign and binary reasons tag it with bit 31, so
+// every variable index must stay below 2^30.
+pub const max_vars: u32 = 1 << 30;
+
 pub const Literal = struct {
     raw: u32,
 
@@ -44,37 +48,48 @@ pub const Literal = struct {
     }
 };
 
-pub const Clause = []Literal;
-
-// Every stored clause is free of duplicate literals and is not a
-// tautology. Inprocessing (subsumption, SSR, BVE) relies on both.
+// Clauses are stored back to back in one literal buffer; clause i spans
+// literals[clause_ends[i - 1] .. clause_ends[i]]. Every stored clause is
+// free of duplicate literals and is not a tautology. Inprocessing
+// (subsumption, SSR, BVE) relies on both.
 pub const Formula = struct {
     allocator: Allocator,
     num_vars: u32,
-    clauses: std.ArrayList(Clause),
+    literals: std.ArrayList(Literal),
+    clause_ends: std.ArrayList(u32),
     sort_scratch: std.ArrayList(Literal),
 
-    pub fn init(allocator: Allocator) Formula {
+    pub const AddClauseError = error{ OutOfMemory, FormulaTooLarge };
+
+    pub fn init(allocator: Allocator, num_vars: u32) Formula {
         return .{
             .allocator = allocator,
-            .num_vars = 0,
-            .clauses = .empty,
+            .num_vars = num_vars,
+            .literals = .empty,
+            .clause_ends = .empty,
             .sort_scratch = .empty,
         };
     }
 
     pub fn deinit(self: *Formula) void {
-        for (self.clauses.items) |clause| {
-            self.allocator.free(clause);
-        }
-        self.clauses.deinit(self.allocator);
+        self.literals.deinit(self.allocator);
+        self.clause_ends.deinit(self.allocator);
         self.sort_scratch.deinit(self.allocator);
         self.* = undefined;
     }
 
+    pub fn clauseCount(self: *const Formula) usize {
+        return self.clause_ends.items.len;
+    }
+
+    pub fn clause(self: *const Formula, index: usize) []const Literal {
+        const start: usize = if (index == 0) 0 else self.clause_ends.items[index - 1];
+        return self.literals.items[start..self.clause_ends.items[index]];
+    }
+
     // Stores `literals` with duplicates merged. A tautology (x and ¬x both
     // present) is satisfied by every assignment, so it is not stored.
-    pub fn addClause(self: *Formula, literals: []const Literal) !void {
+    pub fn addClause(self: *Formula, literals: []const Literal) AddClauseError!void {
         const sorted = &self.sort_scratch;
         try sorted.resize(self.allocator, literals.len);
         @memcpy(sorted.items, literals);
@@ -92,9 +107,12 @@ pub const Formula = struct {
         }
 
         const kept = if (has_duplicate) dedupeSorted(sorted.items) else literals;
-        const owned = try self.allocator.dupe(Literal, kept);
-        errdefer self.allocator.free(owned);
-        try self.clauses.append(self.allocator, owned);
+        const end = std.math.add(usize, self.literals.items.len, kept.len) catch
+            return error.FormulaTooLarge;
+        if (end > std.math.maxInt(u32)) return error.FormulaTooLarge;
+        try self.clause_ends.ensureUnusedCapacity(self.allocator, 1);
+        try self.literals.appendSlice(self.allocator, kept);
+        self.clause_ends.appendAssumeCapacity(@intCast(end));
     }
 };
 

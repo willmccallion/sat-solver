@@ -122,26 +122,22 @@ pub fn main(init: std.process.Init) !u8 {
         t.detach();
     }
 
-    const source = blk: {
-        if (input_path) |p| {
-            break :blk readInputFile(gpa, io, p) catch |err| {
-                try stderr.print("sat: cannot read {s}: {s}\n", .{ p, @errorName(err) });
+    var formula = blk: {
+        if (input_path) |path| {
+            const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
+                try stderr.print("sat: cannot open {s}: {s}\n", .{ path, @errorName(err) });
                 return 1;
             };
-        } else {
-            break :blk readStdin(gpa, io) catch |err| {
-                try stderr.print("sat: cannot read stdin: {s}\n", .{@errorName(err)});
-                return 1;
-            };
+            defer file.close(io);
+            break :blk parseFile(gpa, io, file, std.mem.endsWith(u8, path, ".gz"));
         }
-    };
-    defer gpa.free(source);
-
-    const formula = parser.parse(gpa, source) catch |err| {
+        break :blk parseFile(gpa, io, std.Io.File.stdin(), false);
+    } catch |err| {
         try stdout.print("c parse error: {s}\n", .{@errorName(err)});
         try stdout.writeAll("s UNKNOWN\n");
         return 0;
     };
+    defer formula.deinit();
 
     // Open the DRAT proof file if requested. The file handle + writer
     // state live in this scope so the `defer` flush + close both fire
@@ -163,18 +159,25 @@ pub fn main(init: std.process.Init) !u8 {
         proof_interface = &proof_file_writer.interface;
     }
 
-    var solver = try solver_mod.Solver.init(gpa, formula);
+    var solver = solver_mod.Solver.init(gpa, &formula) catch |err| {
+        try stdout.print("c error: {s}\n", .{@errorName(err)});
+        try stdout.writeAll("s UNKNOWN\n");
+        return 0;
+    };
     defer solver.deinit();
 
     if (proof_interface) |w| solver.setProofWriter(w);
 
-    const result = try solver.solve();
+    const result = solver.solve() catch |err| {
+        try stdout.print("c error: {s}\n", .{@errorName(err)});
+        try stdout.writeAll("s UNKNOWN\n");
+        return 0;
+    };
     switch (result) {
         .sat => {
-            solver.reconstructEliminatedVars();
-            solver.reconstructEquivVars();
-            if (!solver.verifyModel()) {
-                try stdout.writeAll("c BUG: model verification failed\n");
+            solver.extendModel();
+            if (solver.findFalsifiedClause(&formula)) |index| {
+                try stdout.print("c BUG: model falsifies input clause {d}\n", .{index + 1});
                 try stdout.writeAll("s UNKNOWN\n");
                 return 0;
             }
@@ -193,31 +196,32 @@ pub fn main(init: std.process.Init) !u8 {
     }
 }
 
-// Read an input CNF, transparently decompressing .gz files.
-fn readInputFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ![]u8 {
-    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
-    defer file.close(io);
+const InputError = parser.ParseError || std.Io.File.Reader.Error || flate.Decompress.Error;
 
-    var file_buf: [4096]u8 = undefined;
-    var file_reader = file.reader(io, &file_buf);
-    if (std.mem.endsWith(u8, path, ".gz")) {
-
-        var decomp_buf: [flate.max_window_len]u8 = undefined;
-        var decomp = flate.Decompress.init(
-            &file_reader.interface,
-            .gzip,
-            &decomp_buf,
-        );
-        return decomp.reader.allocRemaining(gpa, .unlimited);
+// Streams `file` through the DIMACS parser, gunzipping when `gzipped`.
+// A read failure is reported as the underlying I/O or gzip error.
+fn parseFile(gpa: std.mem.Allocator, io: std.Io, file: std.Io.File, gzipped: bool) InputError!cnf.Formula {
+    var file_buffer: [64 * 1024]u8 = undefined;
+    var file_reader = file.readerStreaming(io, &file_buffer);
+    if (!gzipped) {
+        return parser.parse(gpa, &file_reader.interface) catch |err| switch (err) {
+            error.ReadFailed => {
+            if (file_reader.err) |read_err| return read_err;
+            return err;
+        },
+            else => return err,
+        };
     }
-
-    return file_reader.interface.allocRemaining(gpa, .unlimited);
-}
-
-fn readStdin(gpa: std.mem.Allocator, io: std.Io) ![]u8 {
-    var buf: [4096]u8 = undefined;
-    var reader = std.Io.File.stdin().readerStreaming(io, &buf);
-    return reader.interface.allocRemaining(gpa, .unlimited);
+    var window: [flate.max_window_len]u8 = undefined;
+    var decompress = flate.Decompress.init(&file_reader.interface, .gzip, &window);
+    return parser.parse(gpa, &decompress.reader) catch |err| switch (err) {
+        error.ReadFailed => {
+            if (file_reader.err) |read_err| return read_err;
+            if (decompress.err) |gzip_err| return gzip_err;
+            return err;
+        },
+        else => return err,
+    };
 }
 
 fn writeModel(out: *std.Io.Writer, solver: *solver_mod.Solver) !void {

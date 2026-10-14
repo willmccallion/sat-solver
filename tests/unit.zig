@@ -11,17 +11,22 @@ const Literal = cnf.Literal;
 const ClauseRef = cnf.ClauseRef;
 const Reason = assignment_mod.Reason;
 
+fn parseSource(source: []const u8) !cnf.Formula {
+    var reader: std.Io.Reader = .fixed(source);
+    return parser.parse(testing.allocator, &reader);
+}
+
 // `verified` checks the model against every clause of `source` as
-// written, independently of the solver's own clause database.
+// written, independently of the parser and the solver's clause database.
 fn solveSource(source: []const u8) !struct { result: solver_mod.Result, verified: bool } {
     const gpa = testing.allocator;
-    const formula = try parser.parse(gpa, source);
-    var solver = try solver_mod.Solver.init(gpa, formula);
+    var formula = try parseSource(source);
+    defer formula.deinit();
+    var solver = try solver_mod.Solver.init(gpa, &formula);
     defer solver.deinit();
     const result = try solver.solve();
     if (result != .sat) return .{ .result = result, .verified = true };
-    solver.reconstructEliminatedVars();
-    solver.reconstructEquivVars();
+    solver.extendModel();
     return .{ .result = result, .verified = modelSatisfiesSource(&solver, source) };
 }
 
@@ -69,28 +74,43 @@ test "literal fromDimacs / toDimacs round-trip" {
 }
 
 test "parser: trivial_sat fixture" {
-    var formula = try parser.parse(testing.allocator, trivial_sat_src);
+    var formula = try parseSource(trivial_sat_src);
     defer formula.deinit();
     try testing.expectEqual(@as(u32, 2), formula.num_vars);
-    try testing.expectEqual(@as(usize, 1), formula.clauses.items.len);
-    try testing.expectEqual(@as(usize, 2), formula.clauses.items[0].len);
+    try testing.expectEqual(@as(usize, 1), formula.clauseCount());
+    try testing.expectEqual(@as(usize, 2), formula.clause(0).len);
 }
 
 test "parser: trivial_unsat fixture" {
-    var formula = try parser.parse(testing.allocator, trivial_unsat_src);
+    var formula = try parseSource(trivial_unsat_src);
     defer formula.deinit();
     try testing.expectEqual(@as(u32, 1), formula.num_vars);
-    try testing.expectEqual(@as(usize, 2), formula.clauses.items.len);
-    try testing.expectEqual(@as(usize, 1), formula.clauses.items[0].len);
-    try testing.expectEqual(@as(i32, 1), formula.clauses.items[0][0].toDimacs());
-    try testing.expectEqual(@as(i32, -1), formula.clauses.items[1][0].toDimacs());
+    try testing.expectEqual(@as(usize, 2), formula.clauseCount());
+    try testing.expectEqual(@as(usize, 1), formula.clause(0).len);
+    try testing.expectEqual(@as(i32, 1), formula.clause(0)[0].toDimacs());
+    try testing.expectEqual(@as(i32, -1), formula.clause(1)[0].toDimacs());
 }
 
 test "parser: small_sat fixture" {
-    var formula = try parser.parse(testing.allocator, small_sat_src);
+    var formula = try parseSource(small_sat_src);
     defer formula.deinit();
     try testing.expectEqual(@as(u32, 10), formula.num_vars);
-    try testing.expectEqual(@as(usize, 20), formula.clauses.items.len);
+    try testing.expectEqual(@as(usize, 20), formula.clauseCount());
+}
+
+test "parser: tokens split across reader refills parse the same as one buffer" {
+    var buffer: [16]u8 = undefined;
+    var chunked: std.testing.Reader = .init(&buffer, &.{.{ .buffer = small_sat_src }});
+    chunked.artificial_limit = .limited(3);
+    var expected = try parseSource(small_sat_src);
+    defer expected.deinit();
+
+    var formula = try parser.parse(testing.allocator, &chunked.interface);
+    defer formula.deinit();
+
+    try testing.expectEqual(expected.num_vars, formula.num_vars);
+    try testing.expectEqualSlices(u32, expected.clause_ends.items, formula.clause_ends.items);
+    try testing.expectEqualSlices(Literal, expected.literals.items, formula.literals.items);
 }
 
 test "parser: clauses span multiple lines" {
@@ -101,20 +121,20 @@ test "parser: clauses span multiple lines" {
         \\-1
         \\-2 -3 0
     ;
-    var formula = try parser.parse(testing.allocator, src);
+    var formula = try parseSource(src);
     defer formula.deinit();
-    try testing.expectEqual(@as(usize, 2), formula.clauses.items.len);
-    try testing.expectEqual(@as(usize, 3), formula.clauses.items[0].len);
-    try testing.expectEqual(@as(usize, 3), formula.clauses.items[1].len);
+    try testing.expectEqual(@as(usize, 2), formula.clauseCount());
+    try testing.expectEqual(@as(usize, 3), formula.clause(0).len);
+    try testing.expectEqual(@as(usize, 3), formula.clause(1).len);
 }
 
 test "parser: tolerates blank lines, tabs, CRLF, extra whitespace" {
     const src = "c leading comment\r\n\r\np cnf 2 1\r\n\t1  \t -2 \t0 \r\n";
-    var formula = try parser.parse(testing.allocator, src);
+    var formula = try parseSource(src);
     defer formula.deinit();
     try testing.expectEqual(@as(u32, 2), formula.num_vars);
-    try testing.expectEqual(@as(usize, 1), formula.clauses.items.len);
-    try testing.expectEqual(@as(usize, 2), formula.clauses.items[0].len);
+    try testing.expectEqual(@as(usize, 1), formula.clauseCount());
+    try testing.expectEqual(@as(usize, 2), formula.clause(0).len);
 }
 
 test "parser: rejects missing p cnf header" {
@@ -122,7 +142,7 @@ test "parser: rejects missing p cnf header" {
         \\c just a comment
         \\1 2 0
     ;
-    try testing.expectError(error.MissingHeader, parser.parse(testing.allocator, src));
+    try testing.expectError(error.MissingHeader, parseSource(src));
 }
 
 test "parser: rejects unterminated clause" {
@@ -130,7 +150,7 @@ test "parser: rejects unterminated clause" {
         \\p cnf 3 1
         \\1 2 3
     ;
-    try testing.expectError(error.UnterminatedClause, parser.parse(testing.allocator, src));
+    try testing.expectError(error.UnterminatedClause, parseSource(src));
 }
 
 test "parser: rejects non-integer token" {
@@ -138,7 +158,7 @@ test "parser: rejects non-integer token" {
         \\p cnf 2 1
         \\1 foo 0
     ;
-    try testing.expectError(error.InvalidToken, parser.parse(testing.allocator, src));
+    try testing.expectError(error.InvalidToken, parseSource(src));
 }
 
 test "parser: rejects variable out of range" {
@@ -146,7 +166,7 @@ test "parser: rejects variable out of range" {
         \\p cnf 2 1
         \\1 7 0
     ;
-    try testing.expectError(error.VariableOutOfRange, parser.parse(testing.allocator, src));
+    try testing.expectError(error.VariableOutOfRange, parseSource(src));
 }
 
 test "parser: stops at SATLIB % end-of-content marker" {
@@ -156,10 +176,10 @@ test "parser: stops at SATLIB % end-of-content marker" {
         \\%
         \\0
     ;
-    var formula = try parser.parse(testing.allocator, src);
+    var formula = try parseSource(src);
     defer formula.deinit();
     try testing.expectEqual(@as(u32, 2), formula.num_vars);
-    try testing.expectEqual(@as(usize, 1), formula.clauses.items.len);
+    try testing.expectEqual(@as(usize, 1), formula.clauseCount());
 }
 
 test "parser: rejects clause count mismatch > 5% (malformed DIMACS)" {
@@ -171,7 +191,7 @@ test "parser: rejects clause count mismatch > 5% (malformed DIMACS)" {
         \\1 2 0
         \\-1 -2 0
     ;
-    try testing.expectError(error.ClauseCountMismatch, parser.parse(testing.allocator, src));
+    try testing.expectError(error.ClauseCountMismatch, parseSource(src));
 }
 
 test "parser: accepts small clause count discrepancy (within slack)" {
@@ -180,9 +200,9 @@ test "parser: accepts small clause count discrepancy (within slack)" {
         \\p cnf 2 1
         \\1 2 0
     ;
-    var formula = try parser.parse(testing.allocator, src);
+    var formula = try parseSource(src);
     defer formula.deinit();
-    try testing.expectEqual(@as(usize, 1), formula.clauses.items.len);
+    try testing.expectEqual(@as(usize, 1), formula.clauseCount());
 }
 
 test "parser: drops tautological clauses but counts them against the header" {
@@ -191,10 +211,10 @@ test "parser: drops tautological clauses but counts them against the header" {
         \\1 -1 3 0
         \\2 3 0
     ;
-    var formula = try parser.parse(testing.allocator, src);
+    var formula = try parseSource(src);
     defer formula.deinit();
-    try testing.expectEqual(@as(usize, 1), formula.clauses.items.len);
-    try testing.expectEqual(@as(usize, 2), formula.clauses.items[0].len);
+    try testing.expectEqual(@as(usize, 1), formula.clauseCount());
+    try testing.expectEqual(@as(usize, 2), formula.clause(0).len);
 }
 
 test "parser: merges duplicate literals within a clause" {
@@ -202,9 +222,9 @@ test "parser: merges duplicate literals within a clause" {
         \\p cnf 3 1
         \\2 -3 2 2 0
     ;
-    var formula = try parser.parse(testing.allocator, src);
+    var formula = try parseSource(src);
     defer formula.deinit();
-    const clause = formula.clauses.items[0];
+    const clause = formula.clause(0);
     try testing.expectEqual(@as(usize, 2), clause.len);
     try testing.expect(clause[0].eql(Literal.fromDimacs(2)));
     try testing.expect(clause[1].eql(Literal.fromDimacs(-3)));
@@ -215,7 +235,7 @@ test "parser: rejects malformed p line" {
         \\p cnf 2
         \\1 0
     ;
-    try testing.expectError(error.InvalidHeader, parser.parse(testing.allocator, src));
+    try testing.expectError(error.InvalidHeader, parseSource(src));
 }
 
 test "solver: trivial_sat returns sat with verified model" {
@@ -330,8 +350,9 @@ test "subsume: trivial — (1 2 3) subsumed by (1 2)" {
         \\1 2 0
     ;
     const gpa = testing.allocator;
-    const formula = try parser.parse(gpa, src);
-    var solver = try solver_mod.Solver.init(gpa, formula);
+    var formula = try parseSource(src);
+    defer formula.deinit();
+    var solver = try solver_mod.Solver.init(gpa, &formula);
     defer solver.deinit();
 
     _ = try solver.propagate();
@@ -350,8 +371,9 @@ test "subsume: learned clause that subsumes an irredundant clause survives reduc
         \\1 2 3 4 0
     ;
     const gpa = testing.allocator;
-    const formula = try parser.parse(gpa, src);
-    var solver = try solver_mod.Solver.init(gpa, formula);
+    var formula = try parseSource(src);
+    defer formula.deinit();
+    var solver = try solver_mod.Solver.init(gpa, &formula);
     defer solver.deinit();
     // reduceDB drops the worse half by LBD, so with the subsumer at LBD 9
     // and a bystander at LBD 3 the subsumer is the one it would pick.
@@ -383,8 +405,9 @@ test "subsume: SSR to unit — (1 2) and (1 -2) derive unit 1" {
         \\1 -2 0
     ;
     const gpa = testing.allocator;
-    const formula = try parser.parse(gpa, src);
-    var solver = try solver_mod.Solver.init(gpa, formula);
+    var formula = try parseSource(src);
+    defer formula.deinit();
+    var solver = try solver_mod.Solver.init(gpa, &formula);
     defer solver.deinit();
 
     _ = try solver.propagate();
@@ -426,8 +449,9 @@ test "subsume: SSR to binary — long clause strengthened to a new binary" {
         \\-2 5 6 0
     ;
     const gpa = testing.allocator;
-    const formula = try parser.parse(gpa, src);
-    var solver = try solver_mod.Solver.init(gpa, formula);
+    var formula = try parseSource(src);
+    defer formula.deinit();
+    var solver = try solver_mod.Solver.init(gpa, &formula);
     defer solver.deinit();
 
     // Locate the cref of (1 2 -34) before subsume — it's the first
@@ -482,8 +506,9 @@ test "subsume: deleted-skip — two calls don't re-process deleted clauses" {
         \\1 2 0
     ;
     const gpa = testing.allocator;
-    const formula = try parser.parse(gpa, src);
-    var solver = try solver_mod.Solver.init(gpa, formula);
+    var formula = try parseSource(src);
+    defer formula.deinit();
+    var solver = try solver_mod.Solver.init(gpa, &formula);
     defer solver.deinit();
 
     _ = try solver.propagate();
@@ -511,8 +536,9 @@ test "subsume: a level-0 reason clause is never a subsumption target" {
         \\-4 0
     ;
     const gpa = testing.allocator;
-    const formula = try parser.parse(gpa, src);
-    var solver = try solver_mod.Solver.init(gpa, formula);
+    var formula = try parseSource(src);
+    defer formula.deinit();
+    var solver = try solver_mod.Solver.init(gpa, &formula);
     defer solver.deinit();
 
     const locked_cref: ClauseRef = 0;
@@ -549,8 +575,9 @@ test "subsume: unsat — (1 2), (1 -2), (-1) derives contradiction" {
         \\-1 0
     ;
     const gpa = testing.allocator;
-    const formula = try parser.parse(gpa, src);
-    var solver = try solver_mod.Solver.init(gpa, formula);
+    var formula = try parseSource(src);
+    defer formula.deinit();
+    var solver = try solver_mod.Solver.init(gpa, &formula);
     defer solver.deinit();
 
     // Propagate the (-1) unit first so BCP is at fixpoint before
@@ -578,8 +605,9 @@ test "bve: resolves (1 2) and (-1 3) into (2 3)" {
         \\-3 10 11 0
     ;
     const gpa = testing.allocator;
-    const formula = try parser.parse(gpa, src);
-    var solver = try solver_mod.Solver.init(gpa, formula);
+    var formula = try parseSource(src);
+    defer formula.deinit();
+    var solver = try solver_mod.Solver.init(gpa, &formula);
     defer solver.deinit();
 
     _ = try solver.propagate();
@@ -608,8 +636,9 @@ test "bve: growth skip — eliminating a var would create more resolvents than o
         \\-1 8 9 0
     ;
     const gpa = testing.allocator;
-    const formula = try parser.parse(gpa, src);
-    var solver = try solver_mod.Solver.init(gpa, formula);
+    var formula = try parseSource(src);
+    defer formula.deinit();
+    var solver = try solver_mod.Solver.init(gpa, &formula);
     defer solver.deinit();
 
     _ = try solver.propagate();
@@ -631,8 +660,9 @@ test "bve: length cap — resolvent would exceed max_resolvent_len, skip" {
         \\-1 11 12 13 14 15 16 17 18 19 0
     ;
     const gpa = testing.allocator;
-    const formula = try parser.parse(gpa, src);
-    var solver = try solver_mod.Solver.init(gpa, formula);
+    var formula = try parseSource(src);
+    defer formula.deinit();
+    var solver = try solver_mod.Solver.init(gpa, &formula);
     defer solver.deinit();
 
     _ = try solver.propagate();
@@ -653,8 +683,9 @@ test "bve: unsat — (1), (-1) derives the empty clause" {
         \\-1 0
     ;
     const gpa = testing.allocator;
-    const formula = try parser.parse(gpa, src);
-    var solver = try solver_mod.Solver.init(gpa, formula);
+    var formula = try parseSource(src);
+    defer formula.deinit();
+    var solver = try solver_mod.Solver.init(gpa, &formula);
     defer solver.deinit();
 
     // Units are unit-propagated during Solver.init; the second unit
@@ -694,14 +725,15 @@ test "bve: sat reconstruction end-to-end on a formula with an eliminated var" {
         \\3 0
     ;
     const gpa = testing.allocator;
-    const formula = try parser.parse(gpa, src);
-    var solver = try solver_mod.Solver.init(gpa, formula);
+    var formula = try parseSource(src);
+    defer formula.deinit();
+    var solver = try solver_mod.Solver.init(gpa, &formula);
     defer solver.deinit();
 
     const result = try solver.solve();
     try testing.expectEqual(solver_mod.Result.sat, result);
-    solver.reconstructEliminatedVars();
-    try testing.expect(solver.verifyModel());
+    solver.extendModel();
+    try testing.expectEqual(@as(?usize, null), solver.findFalsifiedClause(&formula));
 }
 
 test "bve: locked protection — a clause that reasons a level-0 unit stays untouched" {
@@ -717,8 +749,9 @@ test "bve: locked protection — a clause that reasons a level-0 unit stays unto
         \\-3 0
     ;
     const gpa = testing.allocator;
-    const formula = try parser.parse(gpa, src);
-    var solver = try solver_mod.Solver.init(gpa, formula);
+    var formula = try parseSource(src);
+    defer formula.deinit();
+    var solver = try solver_mod.Solver.init(gpa, &formula);
     defer solver.deinit();
 
     const conflict = try solver.propagate();
