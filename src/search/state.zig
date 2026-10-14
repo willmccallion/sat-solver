@@ -413,6 +413,9 @@ pub const Solver = struct {
         learned: bool,
         lbd: u32,
     ) !ClauseRef {
+        if (self.arena.items.len + header_slots + lits.len > clause_mod.max_arena_slots) {
+            return error.ClauseArenaFull;
+        }
         const ref: ClauseRef = @intCast(self.arena.items.len);
         const header_raw: u32 = @as(u32, @intCast(lits.len)) |
             (if (learned) learned_bit else 0);

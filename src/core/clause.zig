@@ -12,12 +12,13 @@ const ClauseRef = cnf.ClauseRef;
 //   arena[cref + 2..] literals
 //
 // The header reserves bits 30–31 for the learned and deleted flags, which
-// caps live ClauseRef indices below 2^30. Reason encodings in
-// assignment.Reason rely on this — binary reasons use the top bit as a
-// discriminator that must not collide with a clause index.
+// caps clause length below 2^30 (guaranteed by cnf.max_vars, since no
+// clause repeats a variable). assignment.Reason tags binary reasons with
+// bit 31, so every ClauseRef must stay below max_arena_slots.
 pub const learned_bit: u32 = 0x8000_0000;
 pub const deleted_bit: u32 = 0x4000_0000;
 pub const len_mask: u32 = 0x3fff_ffff;
+pub const max_arena_slots: usize = 1 << 31;
 pub const header_slots: u32 = 2;
 
 // Long-clause watcher. `blocker` is a literal from the same clause that
