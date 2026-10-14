@@ -87,6 +87,16 @@ while IFS= read -r row; do
         rm -f "$target/dubois100.cnf"
     fi
 
+    # SATLIB's pret*.cnf files end with a stray lone `0` line after the
+    # last clause. DIMACS reads it as an empty clause, which would make
+    # every instance UNSAT without any solving; drop it.
+    if [[ "$name" == "dimacs-pret" ]]; then
+        for f in "$target"/*.cnf; do
+            sed '${/^[[:space:]]*0[[:space:]]*$/d;}' "$f" > "$f.tmp"
+            mv "$f.tmp" "$f"
+        done
+    fi
+
     count=$(find "$target" -maxdepth 1 -type f -name '*.cnf' | wc -l)
     if [[ "$count" != "$expected_count" ]]; then
         printf '  WARN: %s has %s instances, expected %s\n' "$name" "$count" "$expected_count"
