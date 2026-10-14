@@ -505,20 +505,19 @@ test "subsume: unsat — (1 2), (1 -2), (-1) derives contradiction" {
 
 // ---- BVE tests -----------------------------------------------------------
 
-test "bve: trivial elimination — (1 2), (-1 3) resolves to (2 3)" {
-    // One clause containing +1 and one containing -1. Resolving on var
-    // 1 yields (2, 3). After that, vars 2 and 3 are pure (only one
-    // polarity remains) so they get eliminated too — a pure literal's
-    // opposite-polarity side is empty, producing zero resolvents, and
-    // the growth check trivially passes. All three vars end up
-    // eliminated by the end of the pass.
-    //
-    // Stats: resolvents_added = 1 (from var 0's pass; pure literals
-    // add zero resolvents). eliminated ≥ 1.
+test "bve: resolves (1 2) and (-1 3) into (2 3)" {
+    // Vars 2 and 3 each occur in two -2 / -3 clauses, so var 1 has the
+    // smallest occurrence product among the non-pure variables and is
+    // resolved before 2 and 3 become pure. Vars 4..11 are pure from the
+    // start and go first with zero resolvents.
     const src =
-        \\p cnf 3 2
+        \\p cnf 11 6
         \\1 2 0
         \\-1 3 0
+        \\-2 4 5 0
+        \\-2 6 7 0
+        \\-3 8 9 0
+        \\-3 10 11 0
     ;
     const gpa = testing.allocator;
     const formula = try parser.parse(gpa, src);
@@ -531,7 +530,6 @@ test "bve: trivial elimination — (1 2), (-1 3) resolves to (2 3)" {
     try testing.expect(r == null);
 
     try testing.expect(hasEliminated(&solver, 0));
-    try testing.expect(solver.stats.eliminated >= 1);
     try testing.expectEqual(@as(u64, 1), solver.stats.resolvents_added);
 }
 
