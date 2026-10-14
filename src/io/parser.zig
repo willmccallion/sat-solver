@@ -28,6 +28,7 @@ pub fn parse(allocator: Allocator, source: []const u8) ParseError!Formula {
 
     var header_seen = false;
     var declared_clauses: u32 = 0;
+    var parsed_clauses: u32 = 0;
     var i: usize = 0;
 
     while (i < source.len) {
@@ -78,6 +79,7 @@ pub fn parse(allocator: Allocator, source: []const u8) ParseError!Formula {
         if (n == 0) {
             try formula.addClause(current.items);
             current.clearRetainingCapacity();
+            parsed_clauses += 1;
         } else {
             const magnitude: u32 = @intCast(if (n < 0) -n else n);
             if (magnitude == 0 or magnitude > formula.num_vars) return error.VariableOutOfRange;
@@ -93,12 +95,11 @@ pub fn parse(allocator: Allocator, source: []const u8) ParseError!Formula {
     // lines that got silently joined into giant clauses), as seen in
     // SATLIB's dubois100.cnf. We accept a 5 % slack because some real
     // files have off-by-one header errors but are otherwise fine.
-    const parsed: u32 = @intCast(formula.clauses.items.len);
     if (declared_clauses > 0) {
-        const delta = if (parsed >= declared_clauses)
-            parsed - declared_clauses
+        const delta = if (parsed_clauses >= declared_clauses)
+            parsed_clauses - declared_clauses
         else
-            declared_clauses - parsed;
+            declared_clauses - parsed_clauses;
         const slack = (declared_clauses + 19) / 20; // 5 %
         if (delta > slack) return error.ClauseCountMismatch;
     }

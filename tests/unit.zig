@@ -11,15 +11,38 @@ const Literal = cnf.Literal;
 const ClauseRef = cnf.ClauseRef;
 const Reason = assignment_mod.Reason;
 
+// `verified` checks the model against every clause of `source` as
+// written, independently of the solver's own clause database.
 fn solveSource(source: []const u8) !struct { result: solver_mod.Result, verified: bool } {
     const gpa = testing.allocator;
     const formula = try parser.parse(gpa, source);
     var solver = try solver_mod.Solver.init(gpa, formula);
     defer solver.deinit();
     const result = try solver.solve();
-    if (result == .sat) solver.reconstructEliminatedVars();
-    const verified = if (result == .sat) solver.verifyModel() else true;
-    return .{ .result = result, .verified = verified };
+    if (result != .sat) return .{ .result = result, .verified = true };
+    solver.reconstructEliminatedVars();
+    solver.reconstructEquivVars();
+    return .{ .result = result, .verified = modelSatisfiesSource(&solver, source) };
+}
+
+fn modelSatisfiesSource(solver: *solver_mod.Solver, source: []const u8) bool {
+    var clause_satisfied = false;
+    var lines = std.mem.tokenizeScalar(u8, source, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0 or line[0] == 'c' or line[0] == 'p') continue;
+        var tokens = std.mem.tokenizeAny(u8, line, " \t\r");
+        while (tokens.next()) |token| {
+            const dimacs = std.fmt.parseInt(i32, token, 10) catch return false;
+            if (dimacs == 0) {
+                if (!clause_satisfied) return false;
+                clause_satisfied = false;
+                continue;
+            }
+            const value = solver.assignment.valueOfLiteral(Literal.fromDimacs(dimacs));
+            if (value == .@"true") clause_satisfied = true;
+        }
+    }
+    return true;
 }
 
 const trivial_sat_src = @embedFile("fixtures/trivial_sat.cnf");
@@ -162,6 +185,31 @@ test "parser: accepts small clause count discrepancy (within slack)" {
     try testing.expectEqual(@as(usize, 1), formula.clauses.items.len);
 }
 
+test "parser: drops tautological clauses but counts them against the header" {
+    const src =
+        \\p cnf 3 2
+        \\1 -1 3 0
+        \\2 3 0
+    ;
+    var formula = try parser.parse(testing.allocator, src);
+    defer formula.deinit();
+    try testing.expectEqual(@as(usize, 1), formula.clauses.items.len);
+    try testing.expectEqual(@as(usize, 2), formula.clauses.items[0].len);
+}
+
+test "parser: merges duplicate literals within a clause" {
+    const src =
+        \\p cnf 3 1
+        \\2 -3 2 2 0
+    ;
+    var formula = try parser.parse(testing.allocator, src);
+    defer formula.deinit();
+    const clause = formula.clauses.items[0];
+    try testing.expectEqual(@as(usize, 2), clause.len);
+    try testing.expect(clause[0].eql(Literal.fromDimacs(2)));
+    try testing.expect(clause[1].eql(Literal.fromDimacs(-3)));
+}
+
 test "parser: rejects malformed p line" {
     const src =
         \\p cnf 2
@@ -189,6 +237,21 @@ test "solver: small_sat returns sat with verified model" {
 
 test "solver: empty formula is trivially sat" {
     const out = try solveSource("p cnf 0 0\n");
+    try testing.expectEqual(solver_mod.Result.sat, out.result);
+    try testing.expect(out.verified);
+}
+
+test "solver: tautological and duplicate-literal clauses yield a correct model" {
+    // Fuzzer-minimized. Treating (-2 1 2) as a subsumer once produced the
+    // model -1 -2 -3, which falsifies (2 3 1).
+    const src =
+        \\p cnf 3 4
+        \\3 -1 -1 0
+        \\-2 1 2 0
+        \\2 3 1 0
+        \\-3 -3 2 0
+    ;
+    const out = try solveSource(src);
     try testing.expectEqual(solver_mod.Result.sat, out.result);
     try testing.expect(out.verified);
 }
