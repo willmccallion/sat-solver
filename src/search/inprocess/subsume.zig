@@ -125,7 +125,21 @@ fn subsumeImpl(self: *Solver, is_preprocess: bool) !?Result {
 
     // --- Build initial occurrence lists and queue from arena ---------------
     {
+        const counts = try self.allocator.alloc(u32, num_lits);
+        defer self.allocator.free(counts);
+        @memset(counts, 0);
         var cref: ClauseRef = 0;
+        while (cref < self.arena.items.len) {
+            const header = self.arena.items[cref].raw;
+            const len = header & clause_mod.len_mask;
+            if ((header & clause_mod.deleted_bit) == 0 and len >= 3) {
+                for (self.clauseLits(cref)) |lit| counts[lit.raw] += 1;
+            }
+            cref += clause_mod.header_slots + len;
+        }
+        for (occ, counts) |*o, n| try o.ensureTotalCapacityPrecise(self.allocator, n);
+
+        cref = 0;
         while (cref < self.arena.items.len) {
             const header = self.arena.items[cref].raw;
             const len = header & clause_mod.len_mask;
@@ -135,7 +149,7 @@ fn subsumeImpl(self: *Solver, is_preprocess: bool) !?Result {
                 var abs: u64 = 0;
                 for (lits) |lit| {
                     abs |= @as(u64, 1) << @intCast(lit.raw & 63);
-                    try occ[lit.raw].append(self.allocator, cref);
+                    occ[lit.raw].appendAssumeCapacity(cref);
                 }
                 try abstracts.put(cref, abs);
                 try queue.append(self.allocator, cref);
@@ -656,16 +670,7 @@ fn strengthenLongClause(
     if (new_len == 2) {
         const a = new_lits.items[0];
         const bb = new_lits.items[1];
-        const w0 = &self.bin_watchers[a.negate().raw];
-        const w1 = &self.bin_watchers[bb.negate().raw];
-        if (w0.items.len == w0.capacity) {
-            try w0.ensureTotalCapacity(self.allocator, @max(w0.capacity * 2, 16));
-        }
-        if (w1.items.len == w1.capacity) {
-            try w1.ensureTotalCapacity(self.allocator, @max(w1.capacity * 2, 16));
-        }
-        w0.appendAssumeCapacity(.{ .other = bb });
-        w1.appendAssumeCapacity(.{ .other = a });
+        try self.addBinary(a, bb);
         return;
     }
 
@@ -682,7 +687,8 @@ fn strengthenLongClause(
     var new_abs: u64 = 0;
     for (new_lits.items) |lit| {
         new_abs |= @as(u64, 1) << @intCast(lit.raw & 63);
-        try occ[lit.raw].append(self.allocator, new_cref);
+        try clause_mod.reserveSlot(ClauseRef, &occ[lit.raw], self.allocator);
+        occ[lit.raw].appendAssumeCapacity(new_cref);
     }
     try abstracts.put(new_cref, new_abs);
 

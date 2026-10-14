@@ -477,16 +477,7 @@ fn equivImpl(self: *Solver, is_preprocess: bool) !?Result {
         if (lw.new_len == 2) {
             const a = new_lits[0];
             const b = new_lits[1];
-            const w0 = &self.bin_watchers[a.negate().raw];
-            const w1 = &self.bin_watchers[b.negate().raw];
-            if (w0.items.len == w0.capacity) {
-                try w0.ensureTotalCapacity(self.allocator, @max(w0.capacity * 2, 16));
-            }
-            if (w1.items.len == w1.capacity) {
-                try w1.ensureTotalCapacity(self.allocator, @max(w1.capacity * 2, 16));
-            }
-            w0.appendAssumeCapacity(.{ .other = b });
-            w1.appendAssumeCapacity(.{ .other = a });
+            try self.addBinary(a, b);
             continue;
         }
 
@@ -523,16 +514,7 @@ fn equivImpl(self: *Solver, is_preprocess: bool) !?Result {
                 }
             },
             .rebind => {
-                const w0 = &self.bin_watchers[bw.new_a.negate().raw];
-                const w1 = &self.bin_watchers[bw.new_b.negate().raw];
-                if (w0.items.len == w0.capacity) {
-                    try w0.ensureTotalCapacity(self.allocator, @max(w0.capacity * 2, 16));
-                }
-                if (w1.items.len == w1.capacity) {
-                    try w1.ensureTotalCapacity(self.allocator, @max(w1.capacity * 2, 16));
-                }
-                w0.appendAssumeCapacity(.{ .other = bw.new_b });
-                w1.appendAssumeCapacity(.{ .other = bw.new_a });
+                try self.addBinary(bw.new_a, bw.new_b);
             },
         }
     }

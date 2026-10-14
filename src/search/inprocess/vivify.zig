@@ -164,14 +164,7 @@ pub fn vivify(self: *Solver) !?Result {
                 try self.assignment.assign(unit, Reason.none);
             }
         } else if (new_len == 2) {
-            try self.bin_watchers[new_lits[0].negate().raw].append(
-                self.allocator,
-                .{ .other = new_lits[1] },
-            );
-            try self.bin_watchers[new_lits[1].negate().raw].append(
-                self.allocator,
-                .{ .other = new_lits[0] },
-            );
+            try self.addBinary(new_lits[0], new_lits[1]);
         } else {
             const new_lbd = self.computeLbd(new_lits);
             const new_cref = try self.addClauseToArena(new_lits, true, new_lbd);

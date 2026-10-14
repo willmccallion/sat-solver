@@ -106,16 +106,7 @@ pub fn solve(self: *Solver) !Result {
                 try self.proof.addClause(self.analyze_learned.items);
                 const uip = self.analyze_learned.items[0];
                 const other = self.analyze_learned.items[1];
-                const b0 = &self.bin_watchers[uip.negate().raw];
-                const b1 = &self.bin_watchers[other.negate().raw];
-                if (b0.items.len == b0.capacity) {
-                    try b0.ensureTotalCapacity(self.allocator, @max(b0.capacity * 2, 16));
-                }
-                if (b1.items.len == b1.capacity) {
-                    try b1.ensureTotalCapacity(self.allocator, @max(b1.capacity * 2, 16));
-                }
-                b0.appendAssumeCapacity(.{ .other = other });
-                b1.appendAssumeCapacity(.{ .other = uip });
+                try self.addBinary(uip, other);
                 try self.assignment.assignAtLevel(
                     uip,
                     Reason.fromBinary(other),

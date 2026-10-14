@@ -105,6 +105,27 @@ fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
     }
 
     // --- Build occurrence lists --------------------------------------------
+    // Sized exactly first: a literal x occurs in its long clauses plus one
+    // binary per entry of bin_watchers[¬x].
+    {
+        const long_counts = try self.allocator.alloc(u32, num_lits);
+        defer self.allocator.free(long_counts);
+        @memset(long_counts, 0);
+        var cref: ClauseRef = 0;
+        while (cref < self.arena.items.len) {
+            const header = self.arena.items[cref].raw;
+            const len = header & clause_mod.len_mask;
+            if ((header & clause_mod.deleted_bit) == 0) {
+                for (self.clauseLits(cref)) |lit| long_counts[lit.raw] += 1;
+            }
+            cref += clause_mod.header_slots + len;
+        }
+        for (occ, long_counts, 0..) |*o, n, lit_raw| {
+            const binary_count = self.bin_watchers[lit_raw ^ 1].items.len;
+            try o.ensureTotalCapacityPrecise(self.allocator, n + binary_count);
+        }
+    }
+
     // Long clauses from the arena.
     {
         var cref: ClauseRef = 0;
@@ -112,13 +133,9 @@ fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
             const header = self.arena.items[cref].raw;
             const len = header & clause_mod.len_mask;
             const span = clause_mod.header_slots + len;
-            if ((header & clause_mod.deleted_bit) == 0 and len >= 1) {
-                const lits = self.clauseLits(cref);
-                for (lits) |lit| {
-                    try occ[lit.raw].append(
-                        self.allocator,
-                        .{ .long = cref },
-                    );
+            if ((header & clause_mod.deleted_bit) == 0) {
+                for (self.clauseLits(cref)) |lit| {
+                    occ[lit.raw].appendAssumeCapacity(.{ .long = cref });
                 }
             }
             cref += span;
@@ -132,20 +149,12 @@ fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
     {
         var l_raw: u32 = 0;
         while (l_raw < num_lits) : (l_raw += 1) {
-            const watcher_lit = Literal{ .raw = l_raw };
-            const a = watcher_lit.negate();
+            const a = (Literal{ .raw = l_raw }).negate();
             for (self.bin_watchers[l_raw].items) |entry| {
                 const b = entry.other;
-                // a < b to ensure one-way visit.
                 if (a.raw >= b.raw) continue;
-                try occ[a.raw].append(
-                    self.allocator,
-                    .{ .binary = b },
-                );
-                try occ[b.raw].append(
-                    self.allocator,
-                    .{ .binary = a },
-                );
+                occ[a.raw].appendAssumeCapacity(.{ .binary = b });
+                occ[b.raw].appendAssumeCapacity(.{ .binary = a });
             }
         }
     }
@@ -666,19 +675,12 @@ fn commitElimination(
         } else if (r_len == 2) {
             const a = r_lits[0];
             const b = r_lits[1];
-            const w0 = &self.bin_watchers[a.negate().raw];
-            const w1 = &self.bin_watchers[b.negate().raw];
-            if (w0.items.len == w0.capacity) {
-                try w0.ensureTotalCapacity(self.allocator, @max(w0.capacity * 2, 16));
-            }
-            if (w1.items.len == w1.capacity) {
-                try w1.ensureTotalCapacity(self.allocator, @max(w1.capacity * 2, 16));
-            }
-            w0.appendAssumeCapacity(.{ .other = b });
-            w1.appendAssumeCapacity(.{ .other = a });
+            try self.addBinary(a, b);
             // Extend occ[a] and occ[b] so subsequent pops see this clause.
-            try occ[a.raw].append(self.allocator, .{ .binary = b });
-            try occ[b.raw].append(self.allocator, .{ .binary = a });
+            try clause_mod.reserveSlot(Occurrence, &occ[a.raw], self.allocator);
+            try clause_mod.reserveSlot(Occurrence, &occ[b.raw], self.allocator);
+            occ[a.raw].appendAssumeCapacity(.{ .binary = b });
+            occ[b.raw].appendAssumeCapacity(.{ .binary = a });
         } else {
             const lbd = self.computeLbd(r_lits);
             const new_cref = try self.addClauseToArena(r_lits, false, lbd);
@@ -690,7 +692,8 @@ fn commitElimination(
             // addClauseToArena may have reallocated the arena.
             const new_lits = self.clauseLits(new_cref);
             for (new_lits) |lit| {
-                try occ[lit.raw].append(self.allocator, .{ .long = new_cref });
+                try clause_mod.reserveSlot(Occurrence, &occ[lit.raw], self.allocator);
+                occ[lit.raw].appendAssumeCapacity(.{ .long = new_cref });
             }
         }
     }

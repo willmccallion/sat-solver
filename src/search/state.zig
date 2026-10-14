@@ -298,28 +298,29 @@ pub const Solver = struct {
             }
         }
 
-        // Reserve a tight upper bound for the arena. Binaries live in
-        // bin_watchers, not in the arena, so only length-3+ originals
-        // contribute here. Along
-        // the way, tally how many long-clause watchers each literal will
-        // receive so we can pre-size watcher lists and skip the initial
-        // zero→8 growth alloc on first attach.
+        // Reserve the arena and every watch list at its exact final size.
+        // Binaries live in bin_watchers, not in the arena.
         var total_slots: usize = 0;
-        const watch_counts = try allocator.alloc(u32, @as(usize, formula.num_vars) * 2);
+        const WatchCounts = struct { long: u32 = 0, binary: u32 = 0 };
+        const watch_counts = try allocator.alloc(WatchCounts, @as(usize, formula.num_vars) * 2);
         defer allocator.free(watch_counts);
-        @memset(watch_counts, 0);
+        @memset(watch_counts, .{});
         for (0..formula.clauseCount()) |i| {
             const lits = formula.clause(i);
-            if (lits.len >= 3) {
+            if (lits.len == 2) {
+                watch_counts[lits[0].negate().raw].binary += 1;
+                watch_counts[lits[1].negate().raw].binary += 1;
+            } else if (lits.len >= 3) {
                 total_slots += lits.len + header_slots;
-                watch_counts[lits[0].negate().raw] += 1;
-                watch_counts[lits[1].negate().raw] += 1;
+                watch_counts[lits[0].negate().raw].long += 1;
+                watch_counts[lits[1].negate().raw].long += 1;
             }
         }
-        try self.arena.ensureTotalCapacity(allocator, total_slots);
+        try self.arena.ensureTotalCapacityPrecise(allocator, total_slots);
         errdefer self.arena.deinit(allocator);
-        for (self.watchers, watch_counts) |*w, n| {
-            if (n > 0) try w.ensureTotalCapacity(allocator, n);
+        for (self.watchers, self.bin_watchers, watch_counts) |*w, *bw, counts| {
+            try w.ensureTotalCapacityPrecise(allocator, counts.long);
+            try bw.ensureTotalCapacityPrecise(allocator, counts.binary);
         }
 
         for (0..formula.clauseCount()) |i| {
@@ -340,14 +341,7 @@ pub const Solver = struct {
                 continue;
             }
             if (lits.len == 2) {
-                try self.bin_watchers[lits[0].negate().raw].append(
-                    allocator,
-                    .{ .other = lits[1] },
-                );
-                try self.bin_watchers[lits[1].negate().raw].append(
-                    allocator,
-                    .{ .other = lits[0] },
-                );
+                try self.addBinary(lits[0], lits[1]);
                 continue;
             }
             const cref = try self.addClauseToArena(lits, false, 0);
@@ -433,14 +427,20 @@ pub const Solver = struct {
         std.debug.assert(lits.len >= 3);
         const w0 = &self.watchers[lits[0].negate().raw];
         const w1 = &self.watchers[lits[1].negate().raw];
-        if (w0.items.len == w0.capacity) {
-            try w0.ensureTotalCapacity(self.allocator, @max(w0.capacity * 2, 16));
-        }
-        if (w1.items.len == w1.capacity) {
-            try w1.ensureTotalCapacity(self.allocator, @max(w1.capacity * 2, 16));
-        }
+        try clause_mod.reserveSlot(Watcher, w0, self.allocator);
+        try clause_mod.reserveSlot(Watcher, w1, self.allocator);
         w0.appendAssumeCapacity(.{ .clause = cref, .blocker = lits[1] });
         w1.appendAssumeCapacity(.{ .clause = cref, .blocker = lits[0] });
+    }
+
+    // Installs the 2-clause (a ∨ b) into both binary watch lists.
+    pub fn addBinary(self: *Solver, a: Literal, b: Literal) !void {
+        const w0 = &self.bin_watchers[a.negate().raw];
+        const w1 = &self.bin_watchers[b.negate().raw];
+        try clause_mod.reserveSlot(BinaryWatch, w0, self.allocator);
+        try clause_mod.reserveSlot(BinaryWatch, w1, self.allocator);
+        w0.appendAssumeCapacity(.{ .other = b });
+        w1.appendAssumeCapacity(.{ .other = a });
     }
 
     // --- VSIDS branching --------------------------------------------------

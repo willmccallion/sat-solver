@@ -106,13 +106,7 @@ pub fn propagate(self: *Solver) !?Conflict {
                     lits[1] = lits[k];
                     lits[k] = false_lit;
                     const target = &self.watchers[lits[1].negate().raw];
-                    if (target.items.len == target.capacity) {
-                        @branchHint(.cold);
-                        try target.ensureTotalCapacity(
-                            self.allocator,
-                            @max(target.capacity * 2, 16),
-                        );
-                    }
+                    try clause_mod.reserveSlot(Watcher, target, self.allocator);
                     target.appendAssumeCapacity(.{
                         .clause = w.clause,
                         .blocker = other,

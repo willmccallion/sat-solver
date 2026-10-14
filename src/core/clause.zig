@@ -1,3 +1,5 @@
+const std = @import("std");
+const Allocator = std.mem.Allocator;
 const cnf = @import("cnf.zig");
 const Literal = cnf.Literal;
 const ClauseRef = cnf.ClauseRef;
@@ -33,6 +35,20 @@ pub const Watcher = struct {
 pub const BinaryWatch = struct {
     other: Literal,
 };
+
+// Ensures room for one more entry in a per-literal list (watches,
+// occurrences), doubling from a small minimum. ArrayList's own policy
+// reserves a full cache line (128 bytes on x86-64) on top of every
+// growth, which across millions of short per-literal lists costs
+// gigabytes.
+pub inline fn reserveSlot(comptime T: type, list: *std.ArrayList(T), allocator: Allocator) Allocator.Error!void {
+    if (list.items.len == list.capacity) {
+        @branchHint(.cold);
+        try list.ensureTotalCapacityPrecise(allocator, @max(list.capacity * 2, min_slot_capacity));
+    }
+}
+
+const min_slot_capacity: usize = 4;
 
 // Propagate's result on conflict. The long-clause variant references an
 // arena clause ref. The binary variant inlines the two literals of the
