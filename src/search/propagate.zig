@@ -38,7 +38,7 @@ pub fn propagate(self: *Solver) !?Conflict {
         // For long clauses we compute the max when we hit the unit case.
         const p_level = self.assignment.vars[p.variable()].level;
 
-        // --- Binary fast path ------------------------------------------
+        // Binary fast path
         const bws = self.bin_watchers[p.raw].items;
         for (bws) |b| {
             const v = lit_values[b.other.raw];
@@ -55,7 +55,7 @@ pub fn propagate(self: *Solver) !?Conflict {
             );
         }
 
-        // --- Long-clause path ------------------------------------------
+        // Long-clause path
         const ws = &self.watchers[p.raw];
         var i: usize = 0;
         var j: usize = 0;

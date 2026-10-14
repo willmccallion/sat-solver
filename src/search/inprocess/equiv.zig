@@ -149,7 +149,7 @@ pub fn equiv(self: *Solver) !?Result {
         }
     }
 
-    // --- UNSAT detection and representative selection --------------------
+    // UNSAT detection and representative selection
     {
         var v: u32 = 0;
         while (v < num_vars) : (v += 1) {
@@ -188,7 +188,7 @@ pub fn equiv(self: *Solver) !?Result {
         }
     }
 
-    // --- Early out if nothing to substitute ------------------------------
+    // Early out if nothing to substitute
     {
         var any_substitution = false;
         var v: u32 = 0;
@@ -204,7 +204,7 @@ pub fn equiv(self: *Solver) !?Result {
         if (!any_substitution) return null;
     }
 
-    // --- Collect long-clause work ----------------------------------------
+    // Collect long-clause work
     // We buffer (old_cref, snapshotted old lits, substituted new lits) and
     // emit all adds + all deletes BEFORE mutating state, so every DRAT-add
     // sees the full equivalence-binary set and validates under RUP.
@@ -318,7 +318,7 @@ pub fn equiv(self: *Solver) !?Result {
         }
     }
 
-    // --- Collect binary work ---------------------------------------------
+    // Collect binary work
     const BinKind = enum { tautology, unit, rebind };
     const BinWork = struct {
         old_a: Literal,
@@ -374,7 +374,7 @@ pub fn equiv(self: *Solver) !?Result {
 
     if (long_work.items.len == 0 and bin_work.items.len == 0) return null;
 
-    // --- Record witness frames and mark eliminated -----------------------
+    // Record witness frames and mark eliminated
     {
         var v: u32 = 0;
         while (v < num_vars) : (v += 1) {
@@ -392,7 +392,7 @@ pub fn equiv(self: *Solver) !?Result {
         }
     }
 
-    // --- Rewrite BVE witness under the new remap ------------------------
+    // Rewrite BVE witness under the new remap
     // Earlier BVE passes may have recorded clauses that mention literals
     // we're about to eliminate here. reconstructEliminatedVars walks those
     // clauses before reconstructEquivVars fills in equiv-eliminated values,
@@ -414,7 +414,7 @@ pub fn equiv(self: *Solver) !?Result {
         }
     }
 
-    // --- Phase A: emit all DRAT adds -------------------------------------
+    // Phase A: emit all DRAT adds
     for (long_work.items) |lw| {
         if (lw.new_len == 0) continue;
         const new_lits = work_new_lits.items[lw.new_off .. lw.new_off + lw.new_len];
@@ -428,7 +428,7 @@ pub fn equiv(self: *Solver) !?Result {
         }
     }
 
-    // --- Phase B: emit all DRAT deletes ----------------------------------
+    // Phase B: emit all DRAT deletes
     for (long_work.items) |lw| {
         const old_lits = work_old_lits.items[lw.old_off .. lw.old_off + lw.old_len];
         try self.proof.deleteClause(old_lits);
@@ -437,7 +437,7 @@ pub fn equiv(self: *Solver) !?Result {
         try self.proof.deleteClause(&[_]Literal{ bw.old_a, bw.old_b });
     }
 
-    // --- Phase C: mutate state for long clauses --------------------------
+    // Phase C: mutate state for long clauses
     var any_deleted = false;
     var unsat_derived = false;
 
@@ -487,7 +487,7 @@ pub fn equiv(self: *Solver) !?Result {
         return .unsat;
     }
 
-    // --- Phase D: mutate state for binaries ------------------------------
+    // Phase D: mutate state for binaries
     for (bin_work.items) |bw| {
         if (unsat_derived) break;
         removeBinary(self, bw.old_a, bw.old_b);
@@ -514,7 +514,7 @@ pub fn equiv(self: *Solver) !?Result {
         return .unsat;
     }
 
-    // --- Watcher and learned-clauses sweep -------------------------------
+    // Watcher and learned-clauses sweep
     if (any_deleted) {
         for (self.watchers) |*wlist| {
             var j: usize = 0;

@@ -115,7 +115,7 @@ fn subsumeImpl(self: *Solver, is_preprocess: bool) !?Result {
     var scratch: std.ArrayList(Literal) = .empty;
     defer scratch.deinit(self.allocator);
 
-    // --- Build initial occurrence lists and queue from arena ---------------
+    // Build initial occurrence lists and queue from arena
     {
         const counts = try self.allocator.alloc(u32, num_lits);
         defer self.allocator.free(counts);
@@ -179,7 +179,7 @@ fn subsumeImpl(self: *Solver, is_preprocess: bool) !?Result {
         );
     }
 
-    // --- Binary subsumers pass --------------------------------------------
+    // Binary subsumers pass
     // For each binary (a, b), try to subsume/strengthen long clauses that
     // contain a and b (subsumption), or long clauses that contain a and
     // ¬b (SSR — strengthen by removing ¬b), etc. Strengthening removes

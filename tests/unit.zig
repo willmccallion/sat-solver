@@ -309,8 +309,6 @@ test "solver: chained implications propagate to sat" {
     try testing.expect(out.verified);
 }
 
-// ---- subsume / SSR tests ------------------------------------------------
-
 // Count non-deleted clauses in the arena by walking headers.
 fn countLiveLongClauses(solver: *solver_mod.Solver) usize {
     var live: usize = 0;
@@ -587,8 +585,6 @@ test "subsume: unsat — (1 2), (1 -2), (-1) derives contradiction" {
     const r = try solver.preprocessSubsume();
     try testing.expectEqual(solver_mod.Result.unsat, r.?);
 }
-
-// ---- BVE tests -----------------------------------------------------------
 
 test "bve: resolves (1 2) and (-1 3) into (2 3)" {
     // Vars 2 and 3 each occur in two -2 / -3 clauses, so var 1 has the

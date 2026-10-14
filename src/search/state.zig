@@ -376,8 +376,6 @@ pub const Solver = struct {
         self.proof = io.drat.Writer.wrap(w);
     }
 
-    // --- clause accessors -------------------------------------------------
-
     pub inline fn clauseLen(self: *const Solver, cref: ClauseRef) u32 {
         return self.arena.items[cref].raw & len_mask;
     }
@@ -444,8 +442,6 @@ pub const Solver = struct {
         w0.appendAssumeCapacity(.{ .other = b });
         w1.appendAssumeCapacity(.{ .other = a });
     }
-
-    // --- VSIDS branching --------------------------------------------------
 
     pub fn bumpVarActivity(self: *Solver, var_idx: u32) void {
         self.activities[var_idx] += self.var_inc;

@@ -18,11 +18,9 @@ const Allocator = std.mem.Allocator;
 // The published reference is hard-coded at the top of this file. If
 // a future SAT Competition shifts the numbers, update them here.
 
-// ---------------------------------------------------------------------------
 // Published reference — SAT Competition 2025 Main Track (sequential).
 // Source: https://satcompetition.github.io/2025/satcomp25slides.pdf
 //         Codel, Fazekas, Heule, Iser — SAT 2025, Glasgow, August 2025
-// ---------------------------------------------------------------------------
 const ref_total_instances: u32 = 400;
 const ref_timeout_seconds: u32 = 5000;
 const ref_scoring: []const u8 = "PAR-2 (penalizes slow solves)";
@@ -82,10 +80,6 @@ const Capacity = struct {
 };
 
 const width: usize = 72;
-
-// ---------------------------------------------------------------------------
-// main
-// ---------------------------------------------------------------------------
 
 pub fn main(init: std.process.Init) !u8 {
     const gpa = init.gpa;
@@ -150,10 +144,6 @@ pub fn main(init: std.process.Init) !u8 {
     }
     return 0;
 }
-
-// ---------------------------------------------------------------------------
-// checks
-// ---------------------------------------------------------------------------
 
 fn checkBinary(gpa: Allocator, io: std.Io, name: []const u8, path: []const u8) !Check {
     const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
@@ -444,10 +434,6 @@ fn checkDratOutput(gpa: Allocator, io: std.Io, sat_path: []const u8) !Check {
     };
 }
 
-// ---------------------------------------------------------------------------
-// perf collection
-// ---------------------------------------------------------------------------
-
 fn collectPerf(gpa: Allocator, io: std.Io, bench_path: []const u8, out: *Perf) !void {
     // Light perf probe on uf100 + uuf100 — a few seconds total, long
     // enough to get stable counter values without the 40-second deep
@@ -591,10 +577,6 @@ fn stripEvent(event_in: []const u8) []const u8 {
     return e;
 }
 
-// ---------------------------------------------------------------------------
-// capacity probe
-// ---------------------------------------------------------------------------
-
 // Runs the solver on a sample of uf250 instances with a short time
 // limit and reports how many finished. This is the highest-tier
 // classical random 3-SAT set; modern solvers blast through it in
@@ -654,10 +636,6 @@ fn collectCapacity(gpa: Allocator, io: std.Io, sat_path: []const u8, out: *Capac
     out.limit_s = per_inst_limit_s;
     out.available = sample_count > 0;
 }
-
-// ---------------------------------------------------------------------------
-// report printing
-// ---------------------------------------------------------------------------
 
 const box_tl = "╭";
 const box_tr = "╮";
@@ -819,7 +797,6 @@ fn printReport(
     try endRow(w, "satcompetition.github.io/2025/satcomp25slides.pdf".len);
     try blankRow(w);
 
-    // --- Submittability section ---
     try sectionHeader(w, "submittability (required for competition entry)");
     for (checks) |c| {
         var cc = c;
@@ -847,7 +824,6 @@ fn printReport(
     }
     try blankRow(w);
 
-    // --- Perf comparison section ---
     try sectionHeader(w, "competitive scoreboard");
     try startRow(w);
     var ref_line_buf: [96]u8 = undefined;

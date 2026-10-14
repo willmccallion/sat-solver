@@ -104,7 +104,7 @@ fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
         self.allocator.free(occ);
     }
 
-    // --- Build occurrence lists --------------------------------------------
+    // Build occurrence lists
     // Sized exactly first: a literal x occurs in its long clauses plus one
     // binary per entry of bin_watchers[¬x].
     {
@@ -159,7 +159,7 @@ fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
         }
     }
 
-    // --- Priority heap over variables by |occ(+v)| * |occ(-v)| ----------
+    // Priority heap over variables by |occ(+v)| * |occ(-v)|
     const Entry = struct {
         product: u64,
         var_idx: u32,
@@ -239,7 +239,7 @@ fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
             continue;
         }
 
-        // --- Gather pos and neg clause literals into scratch ---------------
+        // Gather pos and neg clause literals into scratch
         pos_lits_buf.clearRetainingCapacity();
         neg_lits_buf.clearRetainingCapacity();
         pos_runs.clearRetainingCapacity();
@@ -323,7 +323,7 @@ fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
         // BVE on them is a no-op that still costs bookkeeping.
         if (pos_live_count == 0 and neg_live_count == 0) continue;
 
-        // --- Enumerate resolvents --------------------------------------
+        // Enumerate resolvents
         resolvents_flat.clearRetainingCapacity();
         resolvents_offsets.clearRetainingCapacity();
 
@@ -461,7 +461,6 @@ fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
         const resolvent_count: i64 = @intCast(non_taut_count);
         if (resolvent_count > original_count + growth_slack) continue;
 
-        // --- Commit --------------------------------------------------------
         try commitElimination(
             self,
             v,
@@ -501,7 +500,7 @@ fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
         return .unsat;
     }
 
-    // --- Watcher / learned sweep -------------------------------------------
+    // Watcher / learned sweep
     if (any_deleted) {
         for (self.watchers) |*wlist| {
             var j: usize = 0;

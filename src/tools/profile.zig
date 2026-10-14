@@ -179,7 +179,7 @@ pub fn main(init: std.process.Init) !void {
 
     var stats: Stats = .{};
 
-    // --- perf stat pass (counters + TopdownL1) ---------------------------
+    // Perf stat pass (counters + TopdownL1)
     {
         var argv: std.ArrayList([]const u8) = .empty;
         defer argv.deinit(gpa);
@@ -229,7 +229,7 @@ pub fn main(init: std.process.Init) !void {
         hot_insns.deinit(gpa);
     }
 
-    // --- perf record pass ------------------------------------------------
+    // Perf record pass
     {
         var argv: std.ArrayList([]const u8) = .empty;
         defer argv.deinit(gpa);
@@ -257,7 +257,7 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    // --- perf report (hotspot extraction) --------------------------------
+    // Perf report (hotspot extraction)
     {
         const result = try std.process.run(gpa, io, .{
             .argv = &.{
@@ -280,7 +280,7 @@ pub fn main(init: std.process.Init) !void {
         try parsePerfReport(gpa, result.stdout, &hotspots);
     }
 
-    // --- perf annotate on top hot function -------------------------------
+    // Perf annotate on top hot function
     if (hotspots.items.len > 0) {
         try stdout.print(
             "{s}[3/3] perf annotate `{s}`...{s}\n",
@@ -310,10 +310,6 @@ pub fn main(init: std.process.Init) !void {
     try stdout.writeAll("\n");
     try printReport(stdout, dirs, &stats, hotspots.items, hot_insns.items);
 }
-
-// =======================================================================
-// process + counter helpers
-// =======================================================================
 
 fn readPerfEventParanoid(io: std.Io) ?i32 {
     var buf: [16]u8 = undefined;
@@ -614,10 +610,6 @@ fn parsePerfAnnotate(
     }
 }
 
-// =======================================================================
-// verdicts
-// =======================================================================
-
 fn ipcVerdict(ipc: f64) Verdict {
     if (ipc >= 2.5) return .good;
     if (ipc >= 1.5) return .warn;
@@ -649,10 +641,6 @@ fn verdictLabel(v: Verdict) []const u8 {
         .bad => "BAD ",
     };
 }
-
-// =======================================================================
-// report printing
-// =======================================================================
 
 const box_tl = "╭";
 const box_tr = "╮";
@@ -739,7 +727,6 @@ fn printReport(
 
     const effective_ghz: f64 = if (elapsed_ns_f > 0) cycles / elapsed_ns_f else 0;
 
-    // --- top border + header
     try hrule(w, box_tl, box_tr);
     try startRow(w);
     try w.print("{s}{s}sat-bench perf baseline{s}", .{ Color.bold, Color.cyan, Color.reset });
@@ -817,7 +804,7 @@ fn printReport(
     }
     try blankRow(w);
 
-    // --- per-instance distribution ---
+    // Per-instance distribution
     try sectionHeader(w, "per-instance distribution");
     try distRow(w, "min", stats.dist_min_ms);
     try distRow(w, "p50", stats.dist_p50_ms);
@@ -826,7 +813,7 @@ fn printReport(
     try distRow(w, "max", stats.dist_max_ms);
     try blankRow(w);
 
-    // --- CPU topdown ---
+    // CPU topdown
     if (hasTopdown(stats)) {
         try sectionHeader(w, "cpu (intel topdown L1)");
         try topdownRow(w, "retiring", stats.topdown_retiring, "doing useful work");
@@ -836,7 +823,7 @@ fn printReport(
         try blankRow(w);
     }
 
-    // --- hardware metrics ---
+    // Hardware metrics
     try sectionHeader(w, "hardware metrics");
     try metricRow(w, "IPC", "{d:.2}", .{ipc}, ipcVerdict(ipc), stats.instructions, stats.cycles);
     {
@@ -877,7 +864,7 @@ fn printReport(
     }
     try blankRow(w);
 
-    // --- solver activity ---
+    // Solver activity
     try sectionHeader(w, "solver activity");
     try solverRow(w, "decisions", stats.solver_decisions, stats.instance_count);
     try solverRow(w, "conflicts", stats.solver_conflicts, stats.instance_count);
@@ -901,14 +888,14 @@ fn printReport(
     try solverRow(w, "resolvents added", stats.solver_resolvents_added, stats.instance_count);
     try blankRow(w);
 
-    // --- throughput ---
+    // Throughput
     try sectionHeader(w, "throughput (wall time / event)");
     try throughputRow(w, "per decision", elapsed_ns_f, stats.solver_decisions);
     try throughputRow(w, "per conflict", elapsed_ns_f, stats.solver_conflicts);
     try throughputRow(w, "per propagation", elapsed_ns_f, stats.solver_propagations);
     try blankRow(w);
 
-    // --- hotspots (self time) ---
+    // Hotspots (self time)
     try sectionHeader(w, "hotspots (self time)");
     if (hotspots.len == 0) {
         try startRow(w);
@@ -919,7 +906,7 @@ fn printReport(
     }
     try blankRow(w);
 
-    // --- hot instructions inside top function ---
+    // Hot instructions inside top function
     if (hotspots.len > 0 and hot_insns.len > 0) {
         var title_buf: [128]u8 = undefined;
         const title = try std.fmt.bufPrint(&title_buf, "hot instructions in {s}", .{hotspots[0].symbol});
