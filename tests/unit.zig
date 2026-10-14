@@ -696,23 +696,9 @@ test "bve: unsat — (1), (-1) derives the empty clause" {
 }
 
 test "bve: sat reconstruction end-to-end on a formula with an eliminated var" {
-    // Var 1 appears in (1 2) and (-1 3). BVE eliminates it. The rest
-    // of the formula sets x2 = false, x3 = false. After solve() the
-    // reconstruction step must pick an x1 value that satisfies the
-    // two original clauses under the final x2=false, x3=false — only
-    // x1 = true works (satisfies (1 2) via x1 = true and (-1 3) is
-    // unsatisfiable under x1=true ∧ x3=false, wait no: -1 3 needs
-    // x1=false OR x3=true, both fail → so we must pick x1=false,
-    // which satisfies (-1 3) via -1; then (1 2) needs x2=true, but
-    // we force x2=false ... let's actually reshuffle.
-    //
-    // A cleaner case: vars 2 and 3 set to true. Then (1,2) is already
-    // satisfied by x2; (-1,3) is already satisfied by x3. Either
-    // polarity of x1 works. Pick pivot=true if -1-side clauses are
-    // already satisfied without the pivot: (-1 3) has x3=true in it,
-    // so yes, pivot_true_ok → x1 = true.
-    //
-    // Forcing: set x2=true and x3=true via unit clauses.
+    // BVE eliminates var 1 (its clauses are satisfied at level 0 by the
+    // units, so the only resolvent is dropped); the reconstructed value
+    // must still satisfy (1 2) and (-1 3).
     const src =
         \\p cnf 3 4
         \\1 2 0
