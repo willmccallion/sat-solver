@@ -21,11 +21,10 @@ const Result = solver_mod.Result;
 //                ⊆ D  ⇒  D can be strengthened to D \ {¬ℓ} (equivalent to
 //                resolving C with D on ℓ and the result subsumes D).
 //
-// Each long clause carries a 64-bit abstract — a Bloom-style OR of
-// (1 << (lit.raw & 63)) over its literals. The classical subsumption
-// fast-reject `(abstract(C) & ~abstract(D)) != 0` kills the overwhelming
-// majority of candidate pairs without a subset-check and keeps the
-// algorithm near linear on sparse formulas.
+// A clause's 64-bit abstract is a Bloom-style OR of (1 << (lit.raw & 63))
+// over its literals, computed on demand rather than cached per clause.
+// The classical fast-reject `(abstract(C) & ~abstract(D)) != 0` kills the
+// overwhelming majority of candidate pairs without a subset check.
 //
 // Binaries in bin_watchers ARE used as subsumers and can be strengthened
 // to units via SSR. They are NOT themselves subsumable or strengthenable
@@ -103,13 +102,6 @@ fn subsumeImpl(self: *Solver, is_preprocess: bool) !?Result {
         self.allocator.free(occ);
     }
 
-    // Abstract cache keyed by arena ClauseRef. Populated lazily as long
-    // clauses are visited; invalidated (entry removed and recomputed) on
-    // strengthening. Subsumed (deleted) clauses are left with stale
-    // entries — the deleted_bit check prevents them being used.
-    var abstracts: std.AutoHashMap(ClauseRef, u64) = .init(self.allocator);
-    defer abstracts.deinit();
-
     // Revisit counter. Capped by max_revisits_per_clause.
     var revisits: std.AutoHashMap(ClauseRef, u8) = .init(self.allocator);
     defer revisits.deinit();
@@ -145,13 +137,7 @@ fn subsumeImpl(self: *Solver, is_preprocess: bool) !?Result {
             const len = header & clause_mod.len_mask;
             const span = clause_mod.header_slots + len;
             if ((header & clause_mod.deleted_bit) == 0 and len >= 3) {
-                const lits = self.clauseLits(cref);
-                var abs: u64 = 0;
-                for (lits) |lit| {
-                    abs |= @as(u64, 1) << @intCast(lit.raw & 63);
-                    occ[lit.raw].appendAssumeCapacity(cref);
-                }
-                try abstracts.put(cref, abs);
+                for (self.clauseLits(cref)) |lit| occ[lit.raw].appendAssumeCapacity(cref);
                 try queue.append(self.allocator, cref);
             }
             cref += span;
@@ -183,7 +169,6 @@ fn subsumeImpl(self: *Solver, is_preprocess: bool) !?Result {
             self,
             c_cref,
             occ,
-            &abstracts,
             &revisits,
             &queue,
             &scratch,
@@ -223,8 +208,7 @@ fn subsumeImpl(self: *Solver, is_preprocess: bool) !?Result {
                 pair[0],
                 pair[1],
                 occ,
-                &abstracts,
-                &revisits,
+                    &revisits,
                 &queue,
                 &scratch,
                 &op_count,
@@ -302,7 +286,6 @@ fn processSubsumerLong(
     self: *Solver,
     c_cref: ClauseRef,
     occ: []std.ArrayList(ClauseRef),
-    abstracts: *std.AutoHashMap(ClauseRef, u64),
     revisits: *std.AutoHashMap(ClauseRef, u8),
     queue: *std.ArrayList(ClauseRef),
     scratch: *std.ArrayList(Literal),
@@ -314,13 +297,7 @@ fn processSubsumerLong(
     // Snapshot C's literals and abstract; we hold no arena slices past
     // the first allocation below.
     const c_lits_snapshot = self.clauseLits(c_cref);
-    const c_abs_opt = abstracts.get(c_cref);
-    const c_abs: u64 = c_abs_opt orelse blk: {
-        var a: u64 = 0;
-        for (c_lits_snapshot) |lit| a |= @as(u64, 1) << @intCast(lit.raw & 63);
-        try abstracts.put(c_cref, a);
-        break :blk a;
-    };
+    const c_abs = clauseAbstract(c_lits_snapshot);
 
     // Pick ℓ ∈ C with the shortest occurrence list.
     var pivot: Literal = c_lits_snapshot[0];
@@ -353,15 +330,7 @@ fn processSubsumerLong(
         if (d_cref == c_cref) continue;
         if (self.clauseIsDeleted(d_cref)) continue;
 
-        // Fast-reject via abstracts.
-        const d_abs: u64 = abstracts.get(d_cref) orelse blk: {
-            const d_lits_tmp = self.clauseLits(d_cref);
-            var a: u64 = 0;
-            for (d_lits_tmp) |lit| a |= @as(u64, 1) << @intCast(lit.raw & 63);
-            try abstracts.put(d_cref, a);
-            break :blk a;
-        };
-        if ((c_abs & ~d_abs) != 0) {
+        if ((c_abs & ~clauseAbstract(self.clauseLits(d_cref))) != 0) {
             op_count.* += 1;
             continue;
         }
@@ -391,7 +360,6 @@ fn processSubsumerLong(
                     d_cref,
                     neg_lit,
                     occ,
-                    abstracts,
                     revisits,
                     queue,
                     any_deleted,
@@ -409,7 +377,6 @@ fn processSubsumerBinary(
     a: Literal,
     b: Literal,
     occ: []std.ArrayList(ClauseRef),
-    abstracts: *std.AutoHashMap(ClauseRef, u64),
     revisits: *std.AutoHashMap(ClauseRef, u8),
     queue: *std.ArrayList(ClauseRef),
     scratch: *std.ArrayList(Literal),
@@ -422,8 +389,7 @@ fn processSubsumerBinary(
     scratch.appendAssumeCapacity(a);
     scratch.appendAssumeCapacity(b);
 
-    const c_abs: u64 = (@as(u64, 1) << @intCast(a.raw & 63)) |
-        (@as(u64, 1) << @intCast(b.raw & 63));
+    const c_abs = clauseAbstract(scratch.items);
 
     // Pivot = shorter occ list.
     const pivot: Literal = if (occ[a.raw].items.len <= occ[b.raw].items.len) a else b;
@@ -435,14 +401,7 @@ fn processSubsumerBinary(
         const d_cref = occ[pivot.raw].items[i];
         if (self.clauseIsDeleted(d_cref)) continue;
 
-        const d_abs: u64 = abstracts.get(d_cref) orelse blk: {
-            const d_lits_tmp = self.clauseLits(d_cref);
-            var aa: u64 = 0;
-            for (d_lits_tmp) |lit| aa |= @as(u64, 1) << @intCast(lit.raw & 63);
-            try abstracts.put(d_cref, aa);
-            break :blk aa;
-        };
-        if ((c_abs & ~d_abs) != 0) {
+        if ((c_abs & ~clauseAbstract(self.clauseLits(d_cref))) != 0) {
             op_count.* += 1;
             continue;
         }
@@ -466,7 +425,6 @@ fn processSubsumerBinary(
                     d_cref,
                     neg_lit,
                     occ,
-                    abstracts,
                     revisits,
                     queue,
                     any_deleted,
@@ -549,6 +507,13 @@ fn binarySSRAgainstBinaries(
     }
 }
 
+// Bloom-style OR of one bit per literal; C ⊆ D requires abs(C) ⊆ abs(D).
+fn clauseAbstract(lits: []const Literal) u64 {
+    var abstract: u64 = 0;
+    for (lits) |lit| abstract |= @as(u64, 1) << @intCast(lit.raw & 63);
+    return abstract;
+}
+
 const CheckResult = union(enum) {
     none,
     subsumed,
@@ -609,14 +574,13 @@ fn subsumeClause(
 //   2  → install into bin_watchers.
 //   ≥3 → create a fresh arena clause, attach watches, push to learned_
 //        clauses if applicable, enqueue for further subsumption.
-// Old D is marked deleted. occ / abstracts maps are updated for any new
-// long clause so subsequent subsumers can reach it.
+// Old D is marked deleted. occ lists are updated for any new long clause
+// so subsequent subsumers can reach it.
 fn strengthenLongClause(
     self: *Solver,
     d_cref: ClauseRef,
     neg_lit: Literal,
     occ: []std.ArrayList(ClauseRef),
-    abstracts: *std.AutoHashMap(ClauseRef, u64),
     revisits: *std.AutoHashMap(ClauseRef, u8),
     queue: *std.ArrayList(ClauseRef),
     any_deleted: *bool,
@@ -683,14 +647,11 @@ fn strengthenLongClause(
         try self.learned_clauses.append(self.allocator, new_cref);
     }
 
-    // Register in occ lists and abstracts so subsequent subsumers find it.
-    var new_abs: u64 = 0;
+    // Register in occ lists so subsequent subsumers find it.
     for (new_lits.items) |lit| {
-        new_abs |= @as(u64, 1) << @intCast(lit.raw & 63);
         try clause_mod.reserveSlot(ClauseRef, &occ[lit.raw], self.allocator);
         occ[lit.raw].appendAssumeCapacity(new_cref);
     }
-    try abstracts.put(new_cref, new_abs);
 
     // Cap revisits so pathological chains (each strengthening produces
     // the next subsumer that strengthens the next arena slot) terminate.
