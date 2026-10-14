@@ -344,6 +344,35 @@ test "subsume: trivial — (1 2 3) subsumed by (1 2)" {
     try testing.expectEqual(@as(u64, 1), solver.stats.subsumed);
 }
 
+test "subsume: learned clause that subsumes an irredundant clause survives reduceDB" {
+    const src =
+        \\p cnf 4 1
+        \\1 2 3 4 0
+    ;
+    const gpa = testing.allocator;
+    const formula = try parser.parse(gpa, src);
+    var solver = try solver_mod.Solver.init(gpa, formula);
+    defer solver.deinit();
+    // reduceDB drops the worse half by LBD, so with the subsumer at LBD 9
+    // and a bystander at LBD 3 the subsumer is the one it would pick.
+    const subsumer_lits = [_]Literal{ Literal.fromDimacs(1), Literal.fromDimacs(2), Literal.fromDimacs(3) };
+    const bystander_lits = [_]Literal{ Literal.fromDimacs(-1), Literal.fromDimacs(-2), Literal.fromDimacs(-4) };
+    const subsumer = try solver.addClauseToArena(&subsumer_lits, true, 9);
+    const bystander = try solver.addClauseToArena(&bystander_lits, true, 3);
+    try solver.learned_clauses.appendSlice(gpa, &.{ subsumer, bystander });
+    try solver.attachWatches(subsumer);
+    try solver.attachWatches(bystander);
+    _ = try solver.propagate();
+
+    const r = try solver.preprocessSubsume();
+    try solver.reduceDB();
+
+    try testing.expect(r == null);
+    try testing.expect(!solver.clauseIsDeleted(subsumer));
+    try testing.expect(!solver.clauseIsLearned(subsumer));
+    try testing.expectEqual(@as(usize, 2), countLiveLongClauses(&solver));
+}
+
 test "subsume: SSR to unit — (1 2) and (1 -2) derive unit 1" {
     // Binary subsumer (1, 2) resolves with its sibling (1, -2) on 2 to
     // derive the level-0 unit (1). Both binaries should leave

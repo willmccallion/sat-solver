@@ -245,7 +245,7 @@ fn subsumeImpl(self: *Solver, is_preprocess: bool) !?Result {
 
         var j: usize = 0;
         for (self.learned_clauses.items) |cref| {
-            if (!self.clauseIsDeleted(cref)) {
+            if (!self.clauseIsDeleted(cref) and self.clauseIsLearned(cref)) {
                 self.learned_clauses.items[j] = cref;
                 j += 1;
             }
@@ -363,6 +363,7 @@ fn processSubsumerLong(
         switch (outcome) {
             .none => {},
             .subsumed => {
+                if (!self.clauseIsLearned(d_cref)) self.promoteToIrredundant(c_cref);
                 try subsumeClause(self, d_cref, any_deleted);
             },
             .strengthen => |neg_lit| {

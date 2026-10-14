@@ -421,6 +421,12 @@ pub const Solver = struct {
         return self.arena.items[start .. start + len];
     }
 
+    // A learned clause that subsumes an irredundant one takes over its
+    // role in the formula, so it must no longer be eligible for reduceDB.
+    pub fn promoteToIrredundant(self: *Solver, cref: ClauseRef) void {
+        self.arena.items[cref].raw &= ~learned_bit;
+    }
+
     pub fn addClauseToArena(
         self: *Solver,
         lits: []const Literal,
