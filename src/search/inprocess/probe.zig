@@ -64,6 +64,7 @@ pub fn probe(self: *Solver) !?Result {
     var probed: usize = 0;
     while (probed < k) : (probed += 1) {
         if (budget > 0 and self.stats.propagations - props_start > budget) break;
+        if (solver_mod.interruptRequested()) break;
 
         const v = candidates.items[probed];
 

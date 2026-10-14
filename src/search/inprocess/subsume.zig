@@ -156,7 +156,7 @@ fn subsumeImpl(self: *Solver, is_preprocess: bool) !?Result {
     var qi: usize = 0;
     while (qi < queue.items.len) : (qi += 1) {
         if (unsat_derived) break;
-        if (op_count > budget) {
+        if (op_count > budget or solver_mod.interruptRequested()) {
             @branchHint(.cold);
             break;
         }
@@ -198,7 +198,7 @@ fn subsumeImpl(self: *Solver, is_preprocess: bool) !?Result {
 
         for (binaries.items) |pair| {
             if (unsat_derived) break;
-            if (op_count > budget) {
+            if (op_count > budget or solver_mod.interruptRequested()) {
                 @branchHint(.cold);
                 break;
             }

@@ -9,5 +9,11 @@ pub const Result = enum { sat, unsat, unknown };
 // boundary so main falls through to `s UNKNOWN`.
 pub var interrupted: std.atomic.Value(bool) = .init(false);
 
+// Long preprocessing and inprocessing loops poll this alongside their
+// budgets, so a SIGTERM or --time-limit is honoured outside search too.
+pub fn interruptRequested() bool {
+    return interrupted.load(.monotonic);
+}
+
 pub const Solver = state.Solver;
 pub const Stats = state.Stats;

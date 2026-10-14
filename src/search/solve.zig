@@ -30,13 +30,14 @@ pub fn solve(self: *Solver) !Result {
         return .unsat;
     }
 
-    if (try self.preprocessSubsume()) |r| return r;
-    if (try self.preprocessEquiv()) |r| return r;
-    if (try self.preprocessSubsume()) |r| return r;
-    if (try self.preprocessBVE()) |r| return r;
+    const preprocess_passes = .{ Solver.preprocessSubsume, Solver.preprocessEquiv, Solver.preprocessSubsume, Solver.preprocessBVE };
+    inline for (preprocess_passes) |pass| {
+        if (try pass(self)) |r| return r;
+        if (solver_mod.interruptRequested()) return .unknown;
+    }
 
     while (true) {
-        if (solver_mod.interrupted.load(.monotonic)) return .unknown;
+        if (solver_mod.interruptRequested()) return .unknown;
 
         if (try self.propagate()) |conflict| {
             self.stats.conflicts += 1;

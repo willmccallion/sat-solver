@@ -217,7 +217,7 @@ fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
 
     outer: while (heap.pop()) |entry| {
         if (unsat_derived) break;
-        if (op_count > budget) {
+        if (op_count > budget or solver_mod.interruptRequested()) {
             @branchHint(.cold);
             break;
         }
