@@ -36,21 +36,11 @@ const Result = solver_mod.Result;
 // and copies each variable's value from the current valueOfLiteral of
 // its representative.
 
-pub const preprocess_cap: u64 = 50_000_000;
 pub const inprocess_initial_interval: u64 = 10_000;
 pub const grow_num: u64 = 3;
 pub const grow_den: u64 = 2;
 
 pub fn equiv(self: *Solver) !?Result {
-    return equivImpl(self, false);
-}
-
-pub fn preprocessEquiv(self: *Solver) !?Result {
-    return equivImpl(self, true);
-}
-
-fn equivImpl(self: *Solver, is_preprocess: bool) !?Result {
-    _ = is_preprocess;
     std.debug.assert(self.assignment.level == 0);
 
     const num_vars = self.num_vars;

@@ -77,7 +77,7 @@ pub const Assignment = struct {
     // down to one load + one compare. This is *the* reason propagate's
     // bad-speculation stall budget dropped.
     //
-    // Invariant maintained by `assign` and `popToLevel`:
+    // Invariant maintained by `assignAtLevel` and Solver.backtrack:
     //   lit_values[v*2 + 0]  is the truth value of the positive literal  v
     //   lit_values[v*2 + 1]  is the truth value of the negative literal ¬v
     // When v is unassigned, both slots are .unassigned.
@@ -181,25 +181,5 @@ pub const Assignment = struct {
     pub fn pushDecisionLevel(self: *Assignment) !void {
         try self.trail_lim.append(self.allocator, @intCast(self.trail.items.len));
         self.level += 1;
-    }
-
-    pub fn popToLevel(self: *Assignment, target_level: u32) void {
-        if (self.level <= target_level) return;
-        const trail_start: usize = self.trail_lim.items[target_level];
-        var i: usize = self.trail.items.len;
-        while (i > trail_start) {
-            i -= 1;
-            const lit = self.trail.items[i];
-            const v = lit.variable();
-            self.saved_phases[v] = (self.vars[v].value == .@"true");
-            self.vars[v] = .{};
-            const pos_slot = v << 1;
-            self.lit_values[pos_slot] = .unassigned;
-            self.lit_values[pos_slot | 1] = .unassigned;
-        }
-        self.trail.shrinkRetainingCapacity(trail_start);
-        self.trail_lim.shrinkRetainingCapacity(target_level);
-        self.level = target_level;
-        if (self.propagation_head > trail_start) self.propagation_head = trail_start;
     }
 };

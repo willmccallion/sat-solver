@@ -195,7 +195,6 @@ pub const Solver = struct {
     pub const bve = @import("inprocess/bve.zig").bve;
     pub const preprocessBVE = @import("inprocess/bve.zig").preprocessBVE;
     pub const equiv = @import("inprocess/equiv.zig").equiv;
-    pub const preprocessEquiv = @import("inprocess/equiv.zig").preprocessEquiv;
     pub const reduceDB = @import("inprocess/reduce.zig").reduceDB;
     pub const compact = @import("inprocess/reduce.zig").compact;
 

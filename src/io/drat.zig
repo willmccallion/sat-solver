@@ -41,10 +41,3 @@ pub const Writer = struct {
         try w.writeAll("0\n");
     }
 };
-
-// Open a DRAT proof output file. Caller owns the returned file handle
-// and is responsible for closing it (and flushing the writer interface
-// via the caller-held buffer).
-pub fn openFile(path: []const u8) !std.fs.File {
-    return std.fs.cwd().createFile(path, .{});
-}

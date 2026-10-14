@@ -99,9 +99,6 @@ pub fn reduceDB(self: *Solver) !void {
 pub fn compact(self: *Solver) !void {
     std.debug.assert(self.assignment.level == 0);
 
-    const Literal_T = Literal;
-    _ = Literal_T;
-
     var lbd_stash: std.ArrayList(u32) = .empty;
     defer lbd_stash.deinit(self.allocator);
 

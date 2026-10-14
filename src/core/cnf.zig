@@ -2,7 +2,6 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 pub const ClauseRef = u32;
-pub const null_clause: ClauseRef = std.math.maxInt(u32);
 
 // Literal.raw is var*2+sign and binary reasons tag it with bit 31, so
 // every variable index must stay below 2^30.

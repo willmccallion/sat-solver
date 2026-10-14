@@ -30,7 +30,7 @@ pub fn solve(self: *Solver) !Result {
         return .unsat;
     }
 
-    const preprocess_passes = .{ Solver.preprocessSubsume, Solver.preprocessEquiv, Solver.preprocessSubsume, Solver.preprocessBVE };
+    const preprocess_passes = .{ Solver.preprocessSubsume, Solver.equiv, Solver.preprocessSubsume, Solver.preprocessBVE };
     inline for (preprocess_passes) |pass| {
         if (try pass(self)) |r| return r;
         if (solver_mod.interruptRequested()) return .unknown;
