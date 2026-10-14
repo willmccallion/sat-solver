@@ -500,57 +500,25 @@ test "subsume: deleted-skip — two calls don't re-process deleted clauses" {
     try testing.expectEqual(subsumed_after_first, solver.stats.subsumed);
 }
 
-test "subsume: locked clause is not deleted or strengthened" {
-    // A long clause becomes the reason for a level-0 unit via BCP:
-    // (1 2 3) with units -2, -3 forces 1 through the long-clause
-    // watcher with reason=cref(1 2 3). That clause is therefore locked
-    // and must survive the subsume pass untouched — analyze() can walk
-    // this reason during later search, so mutating it would break
-    // invariants.
-    //
-    // The clause (1 3 4) is added to provide a subsumer that would
-    // target (1 2 3 4)-style clauses, but for our purpose it mainly
-    // exercises the locked-clause gate: if the gate weren't there,
-    // (1 2 3) would be a valid subsumption / SSR candidate against its
-    // own shadow. Without (1 3 4), the subsumer work queue is trivial
-    // and never attempts a touch on cref_123 at all.
+test "subsume: a level-0 reason clause is never a subsumption target" {
+    // The units make (1 2 3 4) the reason for 1; (1 2 3) subsumes it.
     const src =
-        \\p cnf 4 4
+        \\p cnf 4 5
+        \\1 2 3 4 0
         \\1 2 3 0
-        \\1 3 4 0
         \\-2 0
         \\-3 0
+        \\-4 0
     ;
     const gpa = testing.allocator;
     const formula = try parser.parse(gpa, src);
     var solver = try solver_mod.Solver.init(gpa, formula);
     defer solver.deinit();
 
-    // Find cref of (1 2 3) before subsume. The arena is populated in
-    // clause-order by Solver.init, and both length-3 clauses live in it.
-    var cref_123: ClauseRef = std.math.maxInt(u32);
-    {
-        var cref: ClauseRef = 0;
-        while (cref < solver.arena.items.len) {
-            const header = solver.arena.items[cref].raw;
-            const len = header & clause_mod.len_mask;
-            const span = clause_mod.header_slots + len;
-            if ((header & clause_mod.deleted_bit) == 0 and len == 3) {
-                const lits = solver.clauseLits(cref);
-                if (lits[0].toDimacs() == 1 and
-                    lits[1].toDimacs() == 2 and
-                    lits[2].toDimacs() == 3)
-                {
-                    cref_123 = cref;
-                    break;
-                }
-            }
-            cref += span;
-        }
-    }
-    try testing.expect(cref_123 != std.math.maxInt(u32));
+    const locked_cref: ClauseRef = 0;
+    try testing.expectEqual(@as(u32, 4), solver.clauseLen(locked_cref));
 
-    // Propagate the units so BCP locks (1 2 3) as the reason for 1.
+    // Propagate the units so BCP locks (1 2 3 4) as the reason for 1.
     const conflict = try solver.propagate();
     try testing.expect(conflict == null);
 
@@ -562,14 +530,12 @@ test "subsume: locked clause is not deleted or strengthened" {
     try testing.expectEqual(@as(u32, 0), v0_info.level);
     try testing.expect(!v0_info.reason.isNone());
     try testing.expect(!v0_info.reason.isBinary());
-    try testing.expectEqual(cref_123, v0_info.reason.clauseRef());
+    try testing.expectEqual(locked_cref, v0_info.reason.clauseRef());
 
     const r = try solver.preprocessSubsume();
     try testing.expect(r == null);
 
-    // The locked clause must NOT be deleted or strengthened.
-    try testing.expect(!solver.clauseIsDeleted(cref_123));
-    try testing.expectEqual(@as(u32, 3), solver.clauseLen(cref_123));
+    try testing.expect(!solver.clauseIsDeleted(locked_cref));
 }
 
 test "subsume: unsat — (1 2), (1 -2), (-1) derives contradiction" {

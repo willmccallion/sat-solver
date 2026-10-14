@@ -359,6 +359,7 @@ fn processSubsumerLong(
 
         const outcome = checkSubsumeOrSSR(scratch.items, d_lits);
         op_count.* += 1;
+        if (outcome != .none and clauseIsLockedAtLevel0(self, d_cref)) continue;
 
         switch (outcome) {
             .none => {},
@@ -435,6 +436,7 @@ fn processSubsumerBinary(
         }
         const outcome = checkSubsumeOrSSR(scratch.items, d_lits);
         op_count.* += 1;
+        if (outcome != .none and clauseIsLockedAtLevel0(self, d_cref)) continue;
         switch (outcome) {
             .none => {},
             .subsumed => {
