@@ -97,23 +97,21 @@ const HotInsn = struct {
 
 const Verdict = enum { good, warn, bad };
 
-pub fn main() !void {
-    var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = debug_allocator.deinit();
-    const gpa = debug_allocator.allocator();
+pub fn main(init: std.process.Init) !void {
+    const gpa = init.gpa;
+    const io = init.io;
 
     var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
     defer stdout.flush() catch {};
 
     var stderr_buffer: [1024]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    var stderr_writer = std.Io.File.stderr().writer(io, &stderr_buffer);
     const stderr = &stderr_writer.interface;
     defer stderr.flush() catch {};
 
-    const args = try std.process.argsAlloc(gpa);
-    defer std.process.argsFree(gpa, args);
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
 
     if (args.len < 3) {
         try stderr.writeAll("usage: sat-profile <sat-bench-binary> <dir> [dir ...]\n");
@@ -153,7 +151,7 @@ pub fn main() !void {
     }
     const dirs = dirs_list.items;
 
-    if (!try perfAvailable(gpa)) {
+    if (!perfAvailable(gpa, io)) {
         try stderr.writeAll(
             "error: `perf` not found. install it (`perf` or `linux-tools` package) and retry.\n",
         );
@@ -161,7 +159,7 @@ pub fn main() !void {
         std.process.exit(1);
     }
 
-    if (readPerfEventParanoid()) |paranoid| {
+    if (readPerfEventParanoid(io)) |paranoid| {
         if (paranoid > 1) {
             try stderr.print(
                 "error: /proc/sys/kernel/perf_event_paranoid = {d} (hardware counters require ≤ 1)\n" ++
@@ -195,15 +193,15 @@ pub fn main() !void {
         try argv.appendSlice(gpa, bench_args.items);
         try argv.appendSlice(gpa, dirs);
 
-        const result = try std.process.Child.run(.{
-            .allocator = gpa,
+        const result = try std.process.run(gpa, io, .{
             .argv = argv.items,
-            .max_output_bytes = 1 << 22,
+            .stdout_limit = .limited(1 << 22),
+            .stderr_limit = .limited(1 << 22),
         });
         defer gpa.free(result.stdout);
         defer gpa.free(result.stderr);
 
-        if (result.term != .Exited or result.term.Exited != 0) {
+        if (result.term != .exited or result.term.exited != 0) {
             try stderr.print("perf stat failed (exit code): \n{s}\n", .{result.stderr});
             try stderr.flush();
             std.process.exit(1);
@@ -217,7 +215,7 @@ pub fn main() !void {
     try stdout.flush();
 
     const perf_data = "bench/.cache/perf.data";
-    try std.fs.cwd().makePath("bench/.cache");
+    try std.Io.Dir.cwd().createDirPath(io, "bench/.cache");
 
     var hotspots: std.ArrayList(Hotspot) = .empty;
     defer {
@@ -245,13 +243,14 @@ pub fn main() !void {
         try argv.appendSlice(gpa, bench_args.items);
         try argv.appendSlice(gpa, dirs);
 
-        var child = std.process.Child.init(argv.items, gpa);
-        child.stdin_behavior = .Ignore;
-        child.stdout_behavior = .Inherit;
-        child.stderr_behavior = .Inherit;
-        try child.spawn();
-        const term = try child.wait();
-        if (term != .Exited or term.Exited != 0) {
+        var child = try std.process.spawn(io, .{
+            .argv = argv.items,
+            .stdin = .ignore,
+            .stdout = .inherit,
+            .stderr = .inherit,
+        });
+        const term = try child.wait(io);
+        if (term != .exited or term.exited != 0) {
             try stderr.writeAll("perf record exited non-zero\n");
             try stderr.flush();
             std.process.exit(1);
@@ -260,8 +259,7 @@ pub fn main() !void {
 
     // --- perf report (hotspot extraction) --------------------------------
     {
-        const result = try std.process.Child.run(.{
-            .allocator = gpa,
+        const result = try std.process.run(gpa, io, .{
             .argv = &.{
                 "perf",            "report",
                 "-i",              perf_data,
@@ -269,11 +267,12 @@ pub fn main() !void {
                 "--no-children",
                 "--percent-limit", "0.5",
             },
-            .max_output_bytes = 1 << 22,
+            .stdout_limit = .limited(1 << 22),
+            .stderr_limit = .limited(1 << 22),
         });
         defer gpa.free(result.stdout);
         defer gpa.free(result.stderr);
-        if (result.term != .Exited or result.term.Exited != 0) {
+        if (result.term != .exited or result.term.exited != 0) {
             try stderr.print("perf report failed:\n{s}\n", .{result.stderr});
             try stderr.flush();
             std.process.exit(1);
@@ -289,8 +288,7 @@ pub fn main() !void {
         );
         try stdout.flush();
 
-        const result = try std.process.Child.run(.{
-            .allocator = gpa,
+        const result = try std.process.run(gpa, io, .{
             .argv = &.{
                 "perf",      "annotate",
                 "-i",        perf_data,
@@ -299,11 +297,12 @@ pub fn main() !void {
                 "--percent-limit", "0.5",
                 hotspots.items[0].symbol,
             },
-            .max_output_bytes = 1 << 23,
+            .stdout_limit = .limited(1 << 23),
+            .stderr_limit = .limited(1 << 23),
         });
         defer gpa.free(result.stdout);
         defer gpa.free(result.stderr);
-        if (result.term == .Exited and result.term.Exited == 0) {
+        if (result.term == .exited and result.term.exited == 0) {
             try parsePerfAnnotate(gpa, result.stdout, &hot_insns);
         }
     }
@@ -316,24 +315,22 @@ pub fn main() !void {
 // process + counter helpers
 // =======================================================================
 
-fn readPerfEventParanoid() ?i32 {
-    const f = std.fs.openFileAbsolute("/proc/sys/kernel/perf_event_paranoid", .{}) catch return null;
-    defer f.close();
+fn readPerfEventParanoid(io: std.Io) ?i32 {
     var buf: [16]u8 = undefined;
-    const n = f.read(&buf) catch return null;
-    const trimmed = std.mem.trim(u8, buf[0..n], " \t\r\n");
+    const contents = std.Io.Dir.cwd().readFile(io, "/proc/sys/kernel/perf_event_paranoid", &buf) catch return null;
+    const trimmed = std.mem.trim(u8, contents, " \t\r\n");
     return std.fmt.parseInt(i32, trimmed, 10) catch null;
 }
 
-fn perfAvailable(gpa: Allocator) !bool {
-    const r = std.process.Child.run(.{
-        .allocator = gpa,
+fn perfAvailable(gpa: Allocator, io: std.Io) bool {
+    const r = std.process.run(gpa, io, .{
         .argv = &.{ "perf", "--version" },
-        .max_output_bytes = 1024,
+        .stdout_limit = .limited(1024),
+        .stderr_limit = .limited(1024),
     }) catch return false;
     defer gpa.free(r.stdout);
     defer gpa.free(r.stderr);
-    return r.term == .Exited and r.term.Exited == 0;
+    return r.term == .exited and r.term.exited == 0;
 }
 
 fn parseBenchOutput(output: []const u8, stats: *Stats) void {
@@ -543,7 +540,7 @@ fn parsePerfReport(
         if (!section_is_core) continue;
         if (line.len == 0 or line[0] == '#') continue;
 
-        const trimmed = std.mem.trimLeft(u8, line, " \t");
+        const trimmed = std.mem.trimStart(u8, line, " \t");
         const pct_end = std.mem.indexOfScalar(u8, trimmed, '%') orelse continue;
         const pct = std.fmt.parseFloat(f64, trimmed[0..pct_end]) catch continue;
 

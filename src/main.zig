@@ -1,8 +1,7 @@
 const std = @import("std");
 const core = @import("core");
-const io = @import("io");
 const search = @import("search");
-const parser = io.parser;
+const parser = @import("io").parser;
 const cnf = core.cnf;
 const solver_mod = search.solver;
 const flate = std.compress.flate;
@@ -28,30 +27,30 @@ const usage =
     \\
 ;
 
-fn signalHandler(_: i32) callconv(.c) void {
+fn signalHandler(_: std.posix.SIG) callconv(.c) void {
     solver_mod.interrupted.store(true, .monotonic);
 }
 
-fn timeoutThreadFn(seconds: u32) void {
-    std.Thread.sleep(@as(u64, seconds) * std.time.ns_per_s);
+fn timeoutThreadFn(io: std.Io, seconds: u32) void {
+    io.sleep(.fromSeconds(seconds), .awake) catch {};
     solver_mod.interrupted.store(true, .monotonic);
 }
 
-pub fn main() !u8 {
-    const gpa = std.heap.smp_allocator;
+pub fn main(init: std.process.Init) !u8 {
+    const gpa = init.gpa;
+    const io = init.io;
 
     var stdout_buffer: [4096]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
     defer stdout.flush() catch {};
 
     var stderr_buffer: [1024]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    var stderr_writer = std.Io.File.stderr().writer(io, &stderr_buffer);
     const stderr = &stderr_writer.interface;
     defer stderr.flush() catch {};
 
-    const args = try std.process.argsAlloc(gpa);
-    defer std.process.argsFree(gpa, args);
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
 
     var input_path: ?[]const u8 = null;
     var proof_path: ?[]const u8 = null;
@@ -119,18 +118,18 @@ pub fn main() !u8 {
     // itimerspec. A single sleep + atomic store is plenty precise for
     // multi-second timeouts, and the thread gets reaped at exit.
     if (time_limit) |secs| {
-        const t = try std.Thread.spawn(.{}, timeoutThreadFn, .{secs});
+        const t = try std.Thread.spawn(.{}, timeoutThreadFn, .{ io, secs });
         t.detach();
     }
 
     const source = blk: {
         if (input_path) |p| {
-            break :blk readInputFile(gpa, p) catch |err| {
+            break :blk readInputFile(gpa, io, p) catch |err| {
                 try stderr.print("sat: cannot read {s}: {s}\n", .{ p, @errorName(err) });
                 return 1;
             };
         } else {
-            break :blk readStdin(gpa) catch |err| {
+            break :blk readStdin(gpa, io) catch |err| {
                 try stderr.print("sat: cannot read stdin: {s}\n", .{@errorName(err)});
                 return 1;
             };
@@ -148,19 +147,19 @@ pub fn main() !u8 {
     // state live in this scope so the `defer` flush + close both fire
     // before process exit. We only wire the writer into the solver if
     // we successfully created it.
-    var proof_file: ?std.fs.File = null;
-    defer if (proof_file) |f| f.close();
-    var proof_file_writer: std.fs.File.Writer = undefined;
+    var proof_file: ?std.Io.File = null;
+    defer if (proof_file) |f| f.close(io);
+    var proof_file_writer: std.Io.File.Writer = undefined;
     var proof_buffer: [8192]u8 = undefined;
     var proof_interface: ?*std.Io.Writer = null;
     defer if (proof_interface) |w| w.flush() catch {};
 
     if (proof_path) |pp| {
-        proof_file = std.fs.cwd().createFile(pp, .{}) catch |err| {
+        proof_file = std.Io.Dir.cwd().createFile(io, pp, .{}) catch |err| {
             try stderr.print("sat: cannot create proof file {s}: {s}\n", .{ pp, @errorName(err) });
             return 1;
         };
-        proof_file_writer = proof_file.?.writer(&proof_buffer);
+        proof_file_writer = proof_file.?.writer(io, &proof_buffer);
         proof_interface = &proof_file_writer.interface;
     }
 
@@ -195,13 +194,13 @@ pub fn main() !u8 {
 }
 
 // Read an input CNF, transparently decompressing .gz files.
-fn readInputFile(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
+fn readInputFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ![]u8 {
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
 
+    var file_buf: [4096]u8 = undefined;
+    var file_reader = file.reader(io, &file_buf);
     if (std.mem.endsWith(u8, path, ".gz")) {
-        var file_buf: [4096]u8 = undefined;
-        var file_reader = file.reader(&file_buf);
 
         var decomp_buf: [flate.max_window_len]u8 = undefined;
         var decomp = flate.Decompress.init(
@@ -212,12 +211,12 @@ fn readInputFile(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
         return decomp.reader.allocRemaining(gpa, .unlimited);
     }
 
-    return file.readToEndAlloc(gpa, 1 << 30);
+    return file_reader.interface.allocRemaining(gpa, .unlimited);
 }
 
-fn readStdin(gpa: std.mem.Allocator) ![]u8 {
+fn readStdin(gpa: std.mem.Allocator, io: std.Io) ![]u8 {
     var buf: [4096]u8 = undefined;
-    var reader = std.fs.File.stdin().readerStreaming(&buf);
+    var reader = std.Io.File.stdin().readerStreaming(io, &buf);
     return reader.interface.allocRemaining(gpa, .unlimited);
 }
 

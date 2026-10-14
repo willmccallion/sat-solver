@@ -161,8 +161,8 @@ fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
         }
     }.f;
 
-    var heap = std.PriorityQueue(Entry, void, lessThan).init(self.allocator, {});
-    defer heap.deinit();
+    var heap: std.PriorityQueue(Entry, void, lessThan) = .empty;
+    defer heap.deinit(self.allocator);
 
     {
         var v: u32 = 0;
@@ -177,7 +177,7 @@ fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
                 @branchHint(.cold);
                 continue;
             }
-            try heap.add(.{ .product = prod, .var_idx = v });
+            try heap.push(self.allocator, .{ .product = prod, .var_idx = v });
         }
     }
 
@@ -206,13 +206,12 @@ fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
     var any_deleted = false;
     var unsat_derived = false;
 
-    outer: while (heap.count() > 0) {
+    outer: while (heap.pop()) |entry| {
         if (unsat_derived) break;
         if (op_count > budget) {
             @branchHint(.cold);
             break;
         }
-        const entry = heap.remove();
         const v = entry.var_idx;
 
         if (self.eliminated.isSet(v)) continue;

@@ -87,23 +87,21 @@ const width: usize = 72;
 // main
 // ---------------------------------------------------------------------------
 
-pub fn main() !u8 {
-    var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = debug_allocator.deinit();
-    const gpa = debug_allocator.allocator();
+pub fn main(init: std.process.Init) !u8 {
+    const gpa = init.gpa;
+    const io = init.io;
 
     var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
     defer stdout.flush() catch {};
 
     var stderr_buffer: [2048]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    var stderr_writer = std.Io.File.stderr().writer(io, &stderr_buffer);
     const stderr = &stderr_writer.interface;
     defer stderr.flush() catch {};
 
-    const args = try std.process.argsAlloc(gpa);
-    defer std.process.argsFree(gpa, args);
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
 
     const sat_path = if (args.len >= 2) args[1] else "./zig-out/bin/sat";
     const bench_path = if (args.len >= 3) args[2] else "./zig-out/bin/sat-bench";
@@ -116,30 +114,30 @@ pub fn main() !u8 {
 
     try stdout.print("{s}[1/5] verifying binaries...{s}\n", .{ Color.dim, Color.reset });
     try stdout.flush();
-    try checks.append(gpa, try checkBinary(gpa, "sat binary", sat_path));
-    try checks.append(gpa, try checkBinary(gpa, "sat-bench binary", bench_path));
+    try checks.append(gpa, try checkBinary(gpa, io, "sat binary", sat_path));
+    try checks.append(gpa, try checkBinary(gpa, io, "sat-bench binary", bench_path));
 
     try stdout.print("{s}[2/5] running SATLIB correctness sweep...{s}\n", .{ Color.dim, Color.reset });
     try stdout.flush();
-    try checks.append(gpa, try checkCorrectness(gpa));
+    try checks.append(gpa, try checkCorrectness(gpa, io));
 
     try stdout.print("{s}[3/5] verifying gzip input + signal + DRAT...{s}\n", .{ Color.dim, Color.reset });
     try stdout.flush();
-    try checks.append(gpa, try checkGzipInput(gpa, sat_path));
-    try checks.append(gpa, try checkSignalHandling(gpa, sat_path));
-    try checks.append(gpa, try checkDratOutput(gpa, sat_path));
+    try checks.append(gpa, try checkGzipInput(gpa, io, sat_path));
+    try checks.append(gpa, try checkSignalHandling(gpa, io, sat_path));
+    try checks.append(gpa, try checkDratOutput(gpa, io, sat_path));
 
     try stdout.print("{s}[4/5] collecting perf baseline (uf100 + uuf100)...{s}\n", .{ Color.dim, Color.reset });
     try stdout.flush();
     var perf: Perf = .{};
-    collectPerf(gpa, bench_path, &perf) catch |err| {
+    collectPerf(gpa, io, bench_path, &perf) catch |err| {
         try stderr.print("warning: perf baseline failed: {s}\n", .{@errorName(err)});
     };
 
     try stdout.print("{s}[5/5] capacity probe (uf250 sample, 5 s each)...{s}\n", .{ Color.dim, Color.reset });
     try stdout.flush();
     var capacity: Capacity = .{};
-    collectCapacity(gpa, sat_path, &capacity) catch |err| {
+    collectCapacity(gpa, io, sat_path, &capacity) catch |err| {
         try stderr.print("warning: capacity probe failed: {s}\n", .{@errorName(err)});
     };
 
@@ -157,15 +155,15 @@ pub fn main() !u8 {
 // checks
 // ---------------------------------------------------------------------------
 
-fn checkBinary(gpa: Allocator, name: []const u8, path: []const u8) !Check {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+fn checkBinary(gpa: Allocator, io: std.Io, name: []const u8, path: []const u8) !Check {
+    const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
         return .{
             .name = name,
             .status = .fail,
             .detail = try std.fmt.allocPrint(gpa, "{s}: {s}", .{ path, @errorName(err) }),
         };
     };
-    file.close();
+    file.close(io);
     // Strip the cache prefix so the detail column stays readable.
     const base = std.fs.path.basename(path);
     return .{
@@ -178,11 +176,11 @@ fn checkBinary(gpa: Allocator, name: []const u8, path: []const u8) !Check {
 // Spawns `bench/run.sh` and parses the trailing "all N instances correct"
 // line. Anything else (partial results, mismatches, missing instances)
 // is a fail with the first few mismatch lines quoted in the detail.
-fn checkCorrectness(gpa: Allocator) !Check {
-    const result = std.process.Child.run(.{
-        .allocator = gpa,
+fn checkCorrectness(gpa: Allocator, io: std.Io) !Check {
+    const result = std.process.run(gpa, io, .{
         .argv = &.{ "bash", "bench/run.sh" },
-        .max_output_bytes = 1 << 20,
+        .stdout_limit = .limited(1 << 20),
+        .stderr_limit = .limited(1 << 20),
     }) catch |err| {
         return .{
             .name = "correctness sweep",
@@ -193,7 +191,7 @@ fn checkCorrectness(gpa: Allocator) !Check {
     defer gpa.free(result.stdout);
     defer gpa.free(result.stderr);
 
-    const passed = result.term == .Exited and result.term.Exited == 0;
+    const passed = result.term == .exited and result.term.exited == 0;
     var total: u64 = 0;
     var it = std.mem.splitScalar(u8, result.stdout, '\n');
     while (it.next()) |line| {
@@ -220,7 +218,7 @@ fn checkCorrectness(gpa: Allocator) !Check {
 
 // Gzips the trivial_unsat fixture into /tmp and verifies sat returns
 // the same verdict + exit code for both versions.
-fn checkGzipInput(gpa: Allocator, sat_path: []const u8) !Check {
+fn checkGzipInput(gpa: Allocator, io: std.Io, sat_path: []const u8) !Check {
     const plain_path = "tests/fixtures/trivial_unsat.cnf";
     const gz_path = "/tmp/sat-compete-trivial.cnf.gz";
 
@@ -229,10 +227,10 @@ fn checkGzipInput(gpa: Allocator, sat_path: []const u8) !Check {
     // can't exercise it from here.
     const cmd = try std.fmt.allocPrint(gpa, "gzip -c {s} > {s}", .{ plain_path, gz_path });
     defer gpa.free(cmd);
-    const gz_result = std.process.Child.run(.{
-        .allocator = gpa,
+    const gz_result = std.process.run(gpa, io, .{
         .argv = &.{ "bash", "-c", cmd },
-        .max_output_bytes = 1 << 14,
+        .stdout_limit = .limited(1 << 14),
+        .stderr_limit = .limited(1 << 14),
     }) catch {
         return .{
             .name = "gzip input",
@@ -243,7 +241,7 @@ fn checkGzipInput(gpa: Allocator, sat_path: []const u8) !Check {
     defer gpa.free(gz_result.stdout);
     defer gpa.free(gz_result.stderr);
 
-    if (gz_result.term != .Exited or gz_result.term.Exited != 0) {
+    if (gz_result.term != .exited or gz_result.term.exited != 0) {
         return .{
             .name = "gzip input",
             .status = .warn,
@@ -251,10 +249,10 @@ fn checkGzipInput(gpa: Allocator, sat_path: []const u8) !Check {
         };
     }
 
-    const plain = std.process.Child.run(.{
-        .allocator = gpa,
+    const plain = std.process.run(gpa, io, .{
         .argv = &.{ sat_path, plain_path },
-        .max_output_bytes = 1 << 14,
+        .stdout_limit = .limited(1 << 14),
+        .stderr_limit = .limited(1 << 14),
     }) catch |err| return Check{
         .name = "gzip input",
         .status = .fail,
@@ -263,10 +261,10 @@ fn checkGzipInput(gpa: Allocator, sat_path: []const u8) !Check {
     defer gpa.free(plain.stdout);
     defer gpa.free(plain.stderr);
 
-    const gz_out = std.process.Child.run(.{
-        .allocator = gpa,
+    const gz_out = std.process.run(gpa, io, .{
         .argv = &.{ sat_path, gz_path },
-        .max_output_bytes = 1 << 14,
+        .stdout_limit = .limited(1 << 14),
+        .stderr_limit = .limited(1 << 14),
     }) catch |err| return Check{
         .name = "gzip input",
         .status = .fail,
@@ -275,7 +273,7 @@ fn checkGzipInput(gpa: Allocator, sat_path: []const u8) !Check {
     defer gpa.free(gz_out.stdout);
     defer gpa.free(gz_out.stderr);
 
-    std.fs.cwd().deleteFile(gz_path) catch {};
+    std.Io.Dir.cwd().deleteFile(io, gz_path) catch {};
 
     const same_exit = std.meta.eql(plain.term, gz_out.term);
     const same_out = std.mem.eql(u8, plain.stdout, gz_out.stdout);
@@ -300,7 +298,7 @@ fn checkGzipInput(gpa: Allocator, sat_path: []const u8) !Check {
 
 // Spawns the solver on a long-ish instance, sends SIGTERM after a
 // short delay, verifies it exits 0 with `s UNKNOWN` on stdout.
-fn checkSignalHandling(gpa: Allocator, sat_path: []const u8) !Check {
+fn checkSignalHandling(gpa: Allocator, io: std.Io, sat_path: []const u8) !Check {
     // Prefer uf250 (guaranteed to take at least tens of ms in
     // ReleaseFast) but fall back to uuf100 if the large set isn't
     // downloaded. Either way the instance must run long enough for
@@ -311,8 +309,8 @@ fn checkSignalHandling(gpa: Allocator, sat_path: []const u8) !Check {
     };
     var inst: ?[]const u8 = null;
     for (candidates) |p| {
-        const f = std.fs.cwd().openFile(p, .{}) catch continue;
-        f.close();
+        const f = std.Io.Dir.cwd().openFile(io, p, .{}) catch continue;
+        f.close(io);
         inst = p;
         break;
     }
@@ -324,25 +322,25 @@ fn checkSignalHandling(gpa: Allocator, sat_path: []const u8) !Check {
         };
     }
 
-    var child = std.process.Child.init(&.{ sat_path, inst.? }, gpa);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-    try child.spawn();
+    var child = try std.process.spawn(io, .{
+        .argv = &.{ sat_path, inst.? },
+        .stdin = .ignore,
+        .stdout = .pipe,
+        .stderr = .ignore,
+    });
 
     // Give the solver a few ms to actually start BCP, then kill it.
-    std.Thread.sleep(10 * std.time.ns_per_ms);
-    _ = std.posix.kill(child.id, std.posix.SIG.TERM) catch 0;
+    io.sleep(.fromMilliseconds(10), .awake) catch {};
+    if (child.id) |pid| std.posix.kill(pid, std.posix.SIG.TERM) catch {};
 
-    var stdout_list: std.ArrayList(u8) = .empty;
-    defer stdout_list.deinit(gpa);
-    var stderr_list: std.ArrayList(u8) = .empty;
-    defer stderr_list.deinit(gpa);
-    try child.collectOutput(gpa, &stdout_list, &stderr_list, 1 << 16);
-    const term = try child.wait();
+    var stdout_buffer: [1024]u8 = undefined;
+    var stdout_reader = child.stdout.?.readerStreaming(io, &stdout_buffer);
+    const child_stdout = try stdout_reader.interface.allocRemaining(gpa, .limited(1 << 16));
+    defer gpa.free(child_stdout);
+    const term = try child.wait(io);
 
-    const exit_ok = term == .Exited and term.Exited == 0;
-    const says_unknown = std.mem.indexOf(u8, stdout_list.items, "s UNKNOWN") != null;
+    const exit_ok = term == .exited and term.exited == 0;
+    const says_unknown = std.mem.indexOf(u8, child_stdout, "s UNKNOWN") != null;
     if (exit_ok and says_unknown) {
         return .{
             .name = "signal handling (SIGTERM)",
@@ -356,7 +354,7 @@ fn checkSignalHandling(gpa: Allocator, sat_path: []const u8) !Check {
         .detail = try std.fmt.allocPrint(
             gpa,
             "term={any} stdout=`{s}`",
-            .{ term, std.mem.trim(u8, stdout_list.items, " \t\r\n") },
+            .{ term, std.mem.trim(u8, child_stdout, " \t\r\n") },
         ),
     };
 }
@@ -364,15 +362,15 @@ fn checkSignalHandling(gpa: Allocator, sat_path: []const u8) !Check {
 // Runs `sat --proof ...` on a known UNSAT instance and checks the proof
 // file was created and ends with an empty clause line. If `drat-trim`
 // is on PATH it also does a full proof-check round-trip.
-fn checkDratOutput(gpa: Allocator, sat_path: []const u8) !Check {
+fn checkDratOutput(gpa: Allocator, io: std.Io, sat_path: []const u8) !Check {
     const inst = "tests/fixtures/trivial_unsat.cnf";
     const drat_path = "/tmp/sat-compete.drat";
-    std.fs.cwd().deleteFile(drat_path) catch {};
+    std.Io.Dir.cwd().deleteFile(io, drat_path) catch {};
 
-    const run = std.process.Child.run(.{
-        .allocator = gpa,
+    const run = std.process.run(gpa, io, .{
         .argv = &.{ sat_path, "--proof", drat_path, inst },
-        .max_output_bytes = 1 << 14,
+        .stdout_limit = .limited(1 << 14),
+        .stderr_limit = .limited(1 << 14),
     }) catch |err| return Check{
         .name = "DRAT proof output",
         .status = .fail,
@@ -381,13 +379,11 @@ fn checkDratOutput(gpa: Allocator, sat_path: []const u8) !Check {
     defer gpa.free(run.stdout);
     defer gpa.free(run.stderr);
 
-    const file = std.fs.cwd().openFile(drat_path, .{}) catch |err| return Check{
+    const contents = std.Io.Dir.cwd().readFileAlloc(io, drat_path, gpa, .limited(1 << 16)) catch |err| return Check{
         .name = "DRAT proof output",
         .status = .fail,
         .detail = try std.fmt.allocPrint(gpa, "no proof file: {s}", .{@errorName(err)}),
     };
-    const contents = try file.readToEndAlloc(gpa, 1 << 16);
-    file.close();
     defer gpa.free(contents);
 
     const has_empty_clause = std.mem.indexOf(u8, contents, "0\n") != null;
@@ -400,21 +396,21 @@ fn checkDratOutput(gpa: Allocator, sat_path: []const u8) !Check {
     }
 
     // Optional: round-trip with drat-trim if installed.
-    const drat_trim_check = std.process.Child.run(.{
-        .allocator = gpa,
+    const drat_trim_check = std.process.run(gpa, io, .{
         .argv = &.{ "drat-trim", "--version" },
-        .max_output_bytes = 1 << 14,
+        .stdout_limit = .limited(1 << 14),
+        .stderr_limit = .limited(1 << 14),
     }) catch null;
     if (drat_trim_check) |c| {
         gpa.free(c.stdout);
         gpa.free(c.stderr);
 
-        const verify = std.process.Child.run(.{
-            .allocator = gpa,
+        const verify = std.process.run(gpa, io, .{
             .argv = &.{ "drat-trim", inst, drat_path },
-            .max_output_bytes = 1 << 16,
+            .stdout_limit = .limited(1 << 16),
+            .stderr_limit = .limited(1 << 16),
         }) catch {
-            std.fs.cwd().deleteFile(drat_path) catch {};
+            std.Io.Dir.cwd().deleteFile(io, drat_path) catch {};
             return .{
                 .name = "DRAT proof output",
                 .status = .warn,
@@ -423,7 +419,7 @@ fn checkDratOutput(gpa: Allocator, sat_path: []const u8) !Check {
         };
         defer gpa.free(verify.stdout);
         defer gpa.free(verify.stderr);
-        std.fs.cwd().deleteFile(drat_path) catch {};
+        std.Io.Dir.cwd().deleteFile(io, drat_path) catch {};
 
         const verified = std.mem.indexOf(u8, verify.stdout, "s VERIFIED") != null;
         if (verified) {
@@ -440,7 +436,7 @@ fn checkDratOutput(gpa: Allocator, sat_path: []const u8) !Check {
         };
     }
 
-    std.fs.cwd().deleteFile(drat_path) catch {};
+    std.Io.Dir.cwd().deleteFile(io, drat_path) catch {};
     return .{
         .name = "DRAT proof output",
         .status = .warn,
@@ -452,7 +448,7 @@ fn checkDratOutput(gpa: Allocator, sat_path: []const u8) !Check {
 // perf collection
 // ---------------------------------------------------------------------------
 
-fn collectPerf(gpa: Allocator, bench_path: []const u8, out: *Perf) !void {
+fn collectPerf(gpa: Allocator, io: std.Io, bench_path: []const u8, out: *Perf) !void {
     // Light perf probe on uf100 + uuf100 — a few seconds total, long
     // enough to get stable counter values without the 40-second deep
     // bench. Full profiling lives in `zig build bench`.
@@ -470,10 +466,10 @@ fn collectPerf(gpa: Allocator, bench_path: []const u8, out: *Perf) !void {
         "bench/instances/uuf100-430",
     });
 
-    const result = std.process.Child.run(.{
-        .allocator = gpa,
+    const result = std.process.run(gpa, io, .{
         .argv = argv.items,
-        .max_output_bytes = 1 << 22,
+        .stdout_limit = .limited(1 << 22),
+        .stderr_limit = .limited(1 << 22),
     }) catch |err| {
         if (err == error.FileNotFound) {
             // `perf` not installed; don't hard-fail. Perf is optional
@@ -486,7 +482,7 @@ fn collectPerf(gpa: Allocator, bench_path: []const u8, out: *Perf) !void {
     defer gpa.free(result.stdout);
     defer gpa.free(result.stderr);
 
-    if (result.term != .Exited or result.term.Exited != 0) return;
+    if (result.term != .exited or result.term.exited != 0) return;
 
     parseBench(result.stdout, out);
     parsePerfStat(result.stderr, out);
@@ -605,10 +601,10 @@ fn stripEvent(event_in: []const u8) []const u8 {
 // sub-second per instance. If yours times out on many of these you're
 // nowhere near competitive — but if it clears the sample, it means
 // the CDCL + reduceDB stack is working.
-fn collectCapacity(gpa: Allocator, sat_path: []const u8, out: *Capacity) !void {
+fn collectCapacity(gpa: Allocator, io: std.Io, sat_path: []const u8, out: *Capacity) !void {
     const dir_path = "bench/instances/uf250-1065";
-    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch return;
-    defer dir.close();
+    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return;
+    defer dir.close(io);
 
     const per_inst_limit_s: u32 = 5;
     const max_samples: u32 = 10;
@@ -619,7 +615,7 @@ fn collectCapacity(gpa: Allocator, sat_path: []const u8, out: *Capacity) !void {
         names.deinit(gpa);
     }
     var it = dir.iterate();
-    while (try it.next()) |entry| {
+    while (try it.next(io)) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.name, ".cnf")) continue;
         try names.append(gpa, try gpa.dupe(u8, entry.name));
@@ -631,7 +627,7 @@ fn collectCapacity(gpa: Allocator, sat_path: []const u8, out: *Capacity) !void {
     }.lt);
 
     const sample_count = @min(@as(usize, max_samples), names.items.len);
-    var timer = try std.time.Timer.start();
+    const start = std.Io.Clock.Timestamp.now(io, .awake);
     const limit_arg = try std.fmt.allocPrint(gpa, "{d}", .{per_inst_limit_s});
     defer gpa.free(limit_arg);
 
@@ -639,22 +635,22 @@ fn collectCapacity(gpa: Allocator, sat_path: []const u8, out: *Capacity) !void {
         const path = try std.fs.path.join(gpa, &.{ dir_path, name });
         defer gpa.free(path);
 
-        const result = std.process.Child.run(.{
-            .allocator = gpa,
+        const result = std.process.run(gpa, io, .{
             .argv = &.{ sat_path, "--time-limit", limit_arg, path },
-            .max_output_bytes = 1 << 14,
+            .stdout_limit = .limited(1 << 14),
+            .stderr_limit = .limited(1 << 14),
         }) catch continue;
         defer gpa.free(result.stdout);
         defer gpa.free(result.stderr);
 
         out.tested += 1;
-        if (result.term == .Exited) {
-            const code = result.term.Exited;
+        if (result.term == .exited) {
+            const code = result.term.exited;
             if (code == 10 or code == 20) out.solved += 1;
         }
     }
 
-    out.elapsed_s = @as(f64, @floatFromInt(timer.read())) / 1e9;
+    out.elapsed_s = @as(f64, @floatFromInt(start.untilNow(io).raw.nanoseconds)) / 1e9;
     out.limit_s = per_inst_limit_s;
     out.available = sample_count > 0;
 }

@@ -1,7 +1,6 @@
 const std = @import("std");
-const io = @import("io");
 const search = @import("search");
-const parser = io.parser;
+const parser = @import("io").parser;
 const solver_mod = search.solver;
 
 // sat-bench — batch runner designed to be the perf-record target for
@@ -27,35 +26,39 @@ const solver_mod = search.solver;
 //   timeout_s: T           (0 if no per-instance cap was applied)
 
 const WatchdogCtx = struct {
-    timeout_ns: u64,
-    finished: *std.Thread.ResetEvent,
+    io: std.Io,
+    deadline: std.Io.Clock.Timestamp,
+    finished: *std.Io.Event,
     interrupted: *std.atomic.Value(bool),
 };
 
+// Flips the interrupt only once the deadline has really passed: waitTimeout
+// also returns error.Timeout on spurious wakeups.
 fn watchdogFn(ctx: WatchdogCtx) void {
-    // timedWait returns .timeout if we run out the clock → only then
-    // do we flip the interrupt. If the main thread calls finished.set()
-    // first, timedWait returns normally and we leave the flag alone.
-    ctx.finished.timedWait(ctx.timeout_ns) catch {
-        ctx.interrupted.store(true, .monotonic);
-    };
+    while (!ctx.finished.isSet()) {
+        ctx.finished.waitTimeout(ctx.io, .{ .deadline = ctx.deadline }) catch {};
+        if (ctx.deadline.durationFromNow(ctx.io).raw.nanoseconds <= 0) {
+            if (!ctx.finished.isSet()) ctx.interrupted.store(true, .monotonic);
+            return;
+        }
+    }
 }
 
-pub fn main() !void {
-    const gpa = std.heap.smp_allocator;
+pub fn main(init: std.process.Init) !void {
+    const gpa = init.gpa;
+    const io = init.io;
 
     var stdout_buffer: [4096]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
     defer stdout.flush() catch {};
 
     var stderr_buffer: [1024]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    var stderr_writer = std.Io.File.stderr().writer(io, &stderr_buffer);
     const stderr = &stderr_writer.interface;
     defer stderr.flush() catch {};
 
-    const args = try std.process.argsAlloc(gpa);
-    defer std.process.argsFree(gpa, args);
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
 
     var timeout_sec: u32 = 0;
     var dirs: std.ArrayList([]const u8) = .empty;
@@ -108,11 +111,12 @@ pub fn main() !void {
     var par2_ns: u64 = 0;
     const timeout_ns: u64 = @as(u64, timeout_sec) * std.time.ns_per_s;
 
-    var timer = try std.time.Timer.start();
+    const start = std.Io.Clock.Timestamp.now(io, .awake);
 
     for (dirs.items) |dir_path| {
         try runDirectory(
             gpa,
+            io,
             dir_path,
             timeout_ns,
             &total,
@@ -126,8 +130,7 @@ pub fn main() !void {
         );
     }
 
-    const elapsed_ns = timer.read();
-    const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1e6;
+    const elapsed_ms = @as(f64, @floatFromInt(start.untilNow(io).raw.nanoseconds)) / 1e6;
     const per_inst_ms: f64 = if (total > 0)
         elapsed_ms / @as(f64, @floatFromInt(total))
     else
@@ -202,6 +205,7 @@ fn nsToMs(ns: u64) f64 {
 
 fn runDirectory(
     gpa: std.mem.Allocator,
+    io: std.Io,
     dir_path: []const u8,
     timeout_ns: u64,
     total: *u32,
@@ -213,12 +217,12 @@ fn runDirectory(
     par2_ns: *u64,
     stderr: *std.Io.Writer,
 ) !void {
-    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
+    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| {
         try stderr.print("sat-bench: cannot open {s}: {s}\n", .{ dir_path, @errorName(err) });
         try stderr.flush();
         std.process.exit(1);
     };
-    defer dir.close();
+    defer dir.close(io);
 
     // Collect a sorted list of .cnf names so profiling runs are reproducible.
     var names: std.ArrayList([]u8) = .empty;
@@ -228,7 +232,7 @@ fn runDirectory(
     }
 
     var it = dir.iterate();
-    while (try it.next()) |entry| {
+    while (try it.next(io)) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.name, ".cnf")) continue;
         try names.append(gpa, try gpa.dupe(u8, entry.name));
@@ -241,13 +245,12 @@ fn runDirectory(
     }.lessThan);
 
     for (names.items) |name| {
-        const file = try dir.openFile(name, .{});
-        defer file.close();
+        const file = try dir.openFile(io, name, .{});
+        defer file.close(io);
 
-        // 8 GiB cap: SAT Competition 2025 instances top out around
-        // 1.4 GB uncompressed, and we want headroom for the
-        // occasional outlier rather than a cryptic OOM.
-        const source = try file.readToEndAlloc(gpa, 8 << 30);
+        var file_buffer: [64 * 1024]u8 = undefined;
+        var file_reader = file.reader(io, &file_buffer);
+        const source = try file_reader.interface.allocRemaining(gpa, .unlimited);
         defer gpa.free(source);
 
         const formula = try parser.parse(gpa, source);
@@ -259,24 +262,25 @@ fn runDirectory(
         // the moment solve() returns, so short instances don't pay the
         // full timeout waiting on a detached thread.
         solver_mod.interrupted.store(false, .monotonic);
-        var finished: std.Thread.ResetEvent = .{};
+        var finished: std.Io.Event = .unset;
         const wd_thread: ?std.Thread = if (timeout_ns > 0)
             try std.Thread.spawn(.{}, watchdogFn, .{WatchdogCtx{
-                .timeout_ns = timeout_ns,
+                .io = io,
+                .deadline = .fromNow(io, .{ .raw = .fromNanoseconds(timeout_ns), .clock = .awake }),
                 .finished = &finished,
                 .interrupted = &solver_mod.interrupted,
             }})
         else
             null;
 
-        var inst_timer = try std.time.Timer.start();
+        const inst_start = std.Io.Clock.Timestamp.now(io, .awake);
         const result = try solver.solve();
-        const inst_ns = inst_timer.read();
+        const inst_ns: u64 = @intCast(inst_start.untilNow(io).raw.nanoseconds);
 
         // Signal and join before touching shared state for the next
         // instance, so a late-waking watchdog can never set
         // `interrupted` across the instance boundary.
-        finished.set();
+        finished.set(io);
         if (wd_thread) |t| t.join();
 
         try per_instance_ns.append(gpa, inst_ns);
