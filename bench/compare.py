@@ -549,7 +549,7 @@ def main() -> int:
         if p is None:
             print(f"warning: solver {name!r} not found, skipping", file=sys.stderr)
             if name == "sat-solver":
-                print("  build with: zig build -Doptimize=ReleaseFast",
+                print("  build with: zig build -Drelease=true",
                       file=sys.stderr)
             elif name in ("cadical", "kissat"):
                 print("  build with: bench/build-solvers.sh", file=sys.stderr)

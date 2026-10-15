@@ -20,8 +20,23 @@ BCP, modern clause learning, and SAT Competition-format I/O.
 - **LBD-based clause DB reduction** with glue (LBD ≤ 2) and locked-reason
   protection, on an independent conflict-count budget
 - **VSIDS branching** with exponential activity decay and phase saving
+- **Chronological backtracking** when the backjump would skip many levels
+- **Focused / stable mode alternation** with **rephasing** (best, original,
+  inverted and random phases)
+- **Preprocessing and level-0 inprocessing**, each on a propagation budget:
+  backward subsumption with self-subsuming resolution (in practice mostly
+  between binary clauses; see `subsume.zig`), equivalent-literal
+  substitution (SCCs of the binary implication graph), bounded variable
+  elimination, failed-literal probing, and vivification of low-LBD learned
+  clauses
+- **Arena compaction** to reclaim the holes left by deleted clauses
 - **DRAT proof emission** (`--proof PATH`) for UNSAT verification
-- **Tournament I/O** — DIMACS CNF parsing, transparent `.gz` decompression,
+- **Model check against the input** — eliminated variables are
+  reconstructed and every SAT model is checked against every clause of the
+  original formula before `s SATISFIABLE` is printed; a failure is reported
+  as `s UNKNOWN`
+- **Tournament I/O** — streaming DIMACS CNF parsing (no input size cap),
+  transparent `.gz` decompression,
   stdin input, `SIGINT` / `SIGTERM` / `SIGXCPU` + `--time-limit` handling,
   SAT Competition output format (`s SATISFIABLE` / `s UNSATISFIABLE` /
   `s UNKNOWN`, `v`-prefixed models, exit codes 10 / 20 / 0)
@@ -29,12 +44,12 @@ BCP, modern clause learning, and SAT Competition-format I/O.
 ## Build
 
 ```sh
-zig build                         # debug
-zig build -Doptimize=ReleaseFast  # release
-zig build test                    # unit tests + end-to-end
+zig build                     # debug
+zig build -Drelease=true      # release (ReleaseFast)
+zig build test                # unit tests + end-to-end
 ```
 
-Requires Zig 0.15.2 or newer.
+Requires Zig 0.16.
 
 ## Usage
 
@@ -65,38 +80,42 @@ Exit codes follow SAT Competition convention: **10** = SATISFIABLE,
 -M TopdownL1` + `perf record --call-graph dwarf`, then prints a report
 table with per-instance distribution, hardware counters, Intel Topdown L1
 breakdown, call-graph hotspots, and `perf annotate` output for the hottest
-function. Latest run:
+function. Latest run, on an Intel Core i7-14700K:
 
 ```
-wall time          182 003 ms  (456 ms / instance)
-p50 / p90 / p99    117 ms / 1.30 s / 3.29 s
+wall time          234 930 ms  (589 ms / instance)
+p50 / p90 / p99    129 ms / 1.91 s / 3.98 s
 
-decisions           22.05 M
-conflicts           18.72 M
-propagations       798.36 M
-restarts            17.04 k   (~1 per 1 100 conflicts)
-reductions           4.01 k
-peak RSS               57 MB
+decisions           21.69 M
+conflicts           18.49 M
+propagations       855.02 M
+restarts             8.04 k   (~1 per 2 300 conflicts)
+reductions           3.86 k
+peak RSS               40 MB
 
 topdown L1
-  retiring            18.7 %
-  bad-speculation     53.7 %
-  frontend-bound      19.6 %
-  backend-bound        8.0 %
+  retiring            18.5 %
+  bad-speculation     49.3 %
+  frontend-bound      21.7 %
+  backend-bound       10.4 %
 
-IPC                   1.12
-branch-miss rate     12.0 %
-L1d miss rate         4.90 %
+IPC                   1.27
+branch-miss rate     11.1 %
+L1d miss rate         2.86 %
 ```
 
 `zig build bench-quick` runs the same harness on smaller uf100 / uuf100
 instances (~4 s) for fast iteration during development.
 
 Correctness is checked by `bench/run.sh`, which runs the release binary
-against every downloaded SATLIB / DIMACS instance and verifies exit codes
-against known verdicts. Currently passing **5067 / 5067** instances across
-uf20, uf50, uf100, uuf50, uuf100, and the dimacs-{dubois, pret, bf, ii,
-hanoi} families.
+against the downloaded SATLIB / DIMACS instances and compares exit codes
+with the known verdicts: **5067 / 5067** across uf20, uf50, uf100, uuf50,
+uuf100, and the dimacs-{dubois, pret, bf, ii, hanoi} families.
+
+A stricter sweep over all 5826 instances that `bench/fetch.sh` downloads
+(60 s per instance) solves 5816; the other 10 are the par32 instances.
+Every SAT model was checked against the input CNF and every UNSAT DRAT
+proof was accepted by `drat-trim`.
 
 ## Comparison against reference solvers
 
@@ -112,10 +131,11 @@ bench/build-solvers.sh              # clones + builds CaDiCaL and Kissat
                                     # into bench/solvers/
                                     # MiniSat: apt install minisat2
 
-zig build -Doptimize=ReleaseFast    # our solver
+zig build -Drelease=true            # our solver
 
-bench/compare.py --limit 10         # smoke run, 10 instances per dir
-bench/compare.py                    # full run (300s CPU / 4 GB per instance)
+bench/compare.py --limit 10         # smoke run, this solver only
+bench/compare.py --solvers sat-solver minisat cadical kissat
+                                    # full run (300s CPU / 4 GB per instance)
 ```
 
 Methodology notes (all SAT Competition standard):
@@ -137,53 +157,71 @@ Methodology notes (all SAT Competition standard):
 
 Results go to `bench/compare-results.csv` and `bench/compare-cactus.png`.
 
-*Comparison numbers will be filled in after the first full run.*
+Default run (uf200-860 + uuf200-860, 199 instances, 300 s CPU / 4 GB):
+
+```
+solver            solved  timeouts  errors    avg (solved)         PAR-2
+sat-solver       199/199         0       0         0.08s        16.9s
+minisat          199/199         0       0         0.09s        18.1s
+kissat           199/199         0       0         0.15s        29.4s
+cadical          199/199         0       0         0.18s        35.9s
+```
+
+MiniSat 2.2.1, CaDiCaL 3.0.1, Kissat 4.0.4. These instances take well
+under a second, so per-instance overhead dominates; on large industrial
+instances Kissat and CaDiCaL are far ahead.
 
 ## Implementation notes
 
-The CDCL core lives in `src/solver.zig`. Major subsystems:
+The CDCL core lives in `src/search/`. Major subsystems:
 
-- **`propagate()`** — two-watched-literal BCP with blocker + in-place
-  watcher list compaction. The hot loop dominates runtime (~70 % of wall
-  time); the hot instructions are the watcher store, clause-header load,
-  and the `cmpb` against the literal-indexed value table.
-- **`analyze()`** — 1-UIP walk backward through the trail, followed by
+- **`propagate.zig`** — two-watched-literal BCP with blocker + in-place
+  watcher list compaction, and a separate fast path for binary clauses
+  that never touches the arena. The hot loop dominates runtime; the hot
+  instructions are the watcher store, clause-header load, and the `cmpb`
+  against the literal-indexed value table.
+- **`analyze.zig`** — 1-UIP walk backward through the trail, followed by
   recursive minimization. Each non-asserting literal in the learned clause
   is checked for self-subsuming redundancy via an iterative `litRedundant`
   with a 64-bit `abstract_levels` bitmask fast-reject.
-- **`reduceDB()`** — sorts learned clauses by LBD, deletes the worst half,
-  protects locked-reason and glue (LBD ≤ 2) clauses. Runs on its own
-  conflict-count budget, piggybacking onto the next restart to land at
-  level 0.
-- **`solve()`** — main loop with the Glucose restart decision: bias-
-  corrected fast / slow LBD EMAs (`α = 1/50` and `1/10 000`), restart ratio
-  threshold `1.25`, trail-length blocker at `1.4 × trail_fast`.
+- **`solve.zig`** — preprocessing, then the main loop with the Glucose
+  restart decision: bias-corrected fast / slow LBD EMAs (`α = 1/50` and
+  `1/10 000`), restart ratio threshold `1.25`, trail-length blocker at
+  `1.4 × trail_fast`. Reductions, rephasing, mode switches and every
+  inprocessing pass run at level 0 on their own conflict schedules.
+- **`inprocess/`** — `reduce.zig` (LBD-based reduction, arena compaction),
+  `subsume.zig`, `equiv.zig`, `bve.zig`, `probe.zig` and `vivify.zig`.
+  Each emits DRAT additions before deletions so proofs stay checkable;
+  BVE and equivalence substitution record witnesses that `model.zig`
+  replays to extend a model to the eliminated variables.
 
-`src/assignment.zig` holds the trail, decision levels, and the literal-
-indexed `lit_values` table — updated in pairs of adjacent slots so
+`src/core/assignment.zig` holds the trail, decision levels, and the
+literal-indexed `lit_values` table — updated in pairs of adjacent slots so
 `valueOfLiteral(lit)` is a single load + compare on the caller side.
 
-`src/profile.zig` is the `zig build bench` orchestrator — it spawns the
-solver under `perf stat` and `perf record`, parses the output, and renders
-the box-drawing report with ANSI-colored verdicts for each metric.
+`src/tools/profile.zig` is the `zig build bench` orchestrator — it spawns
+the solver under `perf stat` and `perf record`, parses the output, and
+renders the box-drawing report with ANSI-colored verdicts for each metric.
 
 ## Layout
 
 ```
 src/
 ├── main.zig         CLI entry point
-├── solver.zig       CDCL core — propagate, analyze, reduceDB
-├── assignment.zig   trail, lit_values table, phase saving
-├── cnf.zig          Literal, Clause, Formula types
-├── parser.zig       DIMACS CNF parser (+ gzip handling)
-├── bench.zig        batch runner driven by `zig build bench`
-├── profile.zig      perf-stat + perf-record orchestrator
-├── compete.zig      SAT Competition 2025 readiness checker
-└── root.zig         library entry point for unit tests
+├── root.zig         library entry point for unit tests
+├── core/            Literal / Formula, clause arena layout, assignment trail
+├── io/              streaming DIMACS parser, DRAT writer
+├── heuristics/      VSIDS heap, restart / rephase / mode schedules
+├── search/          CDCL loop, propagate, analyze, backtrack, model extension
+│   └── inprocess/   subsume, equiv, bve, probe, vivify, reduce + compact
+└── tools/           bench (batch runner), profile (perf), compete (readiness)
 
 bench/
 ├── fetch.sh         downloads SATLIB + DIMACS instance sets
+├── fetch_satcomp.sh downloads a SAT Competition 2025 subset
 ├── run.sh           correctness sweep with per-set timing
+├── compare.py       side-by-side comparison against reference solvers
+├── build-solvers.sh builds CaDiCaL and Kissat for compare.py
 └── README.md        bench directory layout + usage
 
 tests/
