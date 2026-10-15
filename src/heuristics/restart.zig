@@ -27,9 +27,3 @@ pub const rescale_threshold: f64 = 1e100;
 pub const reduce_initial: u64 = 2000;
 pub const reduce_grow: u64 = 300;
 
-// Arena compaction cadence. Every N reduceDB calls rebuild the arena
-// without deleted-clause holes — vivify's shrink-then-mark-dead path
-// leaves one hole per vivified clause, and reduceDB doubles that count
-// every few thousand conflicts; without compaction the arena grows
-// unboundedly even as the live-clause set stays bounded.
-pub const compact_every_reductions: u64 = 4;

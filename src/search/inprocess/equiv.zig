@@ -447,7 +447,7 @@ pub fn equiv(self: *Solver) !?Result {
     for (long_work.items) |lw| {
         if (unsat_derived) break;
         // Mark old clause deleted first. We never read it again after this.
-        self.arena.items[lw.old_cref].raw |= clause_mod.deleted_bit;
+        self.markDeleted(lw.old_cref);
         any_deleted = true;
 
         if (lw.new_len == 0) continue; // tautology

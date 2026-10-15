@@ -171,8 +171,9 @@ pub const Solver = struct {
     mode_budget: u64,
     next_mode_switch: u64,
 
-    // Arena compaction cadence.
-    reductions_since_compact: u64,
+    // Arena slots held by deleted clauses; compaction runs once they
+    // make up half the arena.
+    arena_dead_slots: usize,
 
     unsat_at_init: bool,
 
@@ -251,7 +252,7 @@ pub const Solver = struct {
             .mode = .focused,
             .mode_budget = mode_mod.stable_initial_budget,
             .next_mode_switch = mode_mod.stable_initial_budget,
-            .reductions_since_compact = 0,
+            .arena_dead_slots = 0,
             .unsat_at_init = false,
             .stats = .{},
         };
@@ -402,6 +403,16 @@ pub const Solver = struct {
     // role in the formula, so it must no longer be eligible for reduceDB.
     pub fn promoteToIrredundant(self: *Solver, cref: ClauseRef) void {
         self.arena.items[cref].raw &= ~learned_bit;
+    }
+
+    pub fn markDeleted(self: *Solver, cref: ClauseRef) void {
+        std.debug.assert(!self.clauseIsDeleted(cref));
+        self.arena_dead_slots += header_slots + self.clauseLen(cref);
+        self.arena.items[cref].raw |= deleted_bit;
+    }
+
+    pub fn arenaIsMostlyHoles(self: *const Solver) bool {
+        return self.arena_dead_slots * 2 > self.arena.items.len;
     }
 
     pub fn addClauseToArena(

@@ -35,6 +35,7 @@ pub fn solve(self: *Solver) !Result {
         if (try pass(self)) |r| return r;
         if (solver_mod.interruptRequested()) return .unknown;
     }
+    if (self.arenaIsMostlyHoles()) try self.compact();
 
     while (true) {
         if (solver_mod.interruptRequested()) return .unknown;
@@ -177,11 +178,6 @@ pub fn solve(self: *Solver) !Result {
                     self.max_learned = (self.max_learned * 11) / 10;
                     self.reduce_interval += restart.reduce_grow;
                     self.next_reduce = self.stats.conflicts + self.reduce_interval;
-                    self.reductions_since_compact += 1;
-                    if (self.reductions_since_compact >= restart.compact_every_reductions) {
-                        try self.compact();
-                        self.reductions_since_compact = 0;
-                    }
                 }
                 if (should_rephase) {
                     self.rephase();
@@ -234,6 +230,7 @@ pub fn solve(self: *Solver) !Result {
                     self.next_mode_switch = self.stats.conflicts + self.mode_budget;
                     self.stats.mode_switches += 1;
                 }
+                if (self.arenaIsMostlyHoles()) try self.compact();
             }
         } else {
             const lit = self.pickBranching() orelse return .sat;

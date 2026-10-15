@@ -631,7 +631,7 @@ fn commitElimination(
         switch (o) {
             .long => |cref| {
                 if (self.clauseIsDeleted(cref)) continue;
-                self.arena.items[cref].raw |= clause_mod.deleted_bit;
+                self.markDeleted(cref);
                 any_deleted.* = true;
             },
             .binary => |other| {
@@ -644,7 +644,7 @@ fn commitElimination(
         switch (o) {
             .long => |cref| {
                 if (self.clauseIsDeleted(cref)) continue;
-                self.arena.items[cref].raw |= clause_mod.deleted_bit;
+                self.markDeleted(cref);
                 any_deleted.* = true;
             },
             .binary => |other| {

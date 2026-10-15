@@ -131,7 +131,7 @@ pub fn vivify(self: *Solver) !?Result {
 
         if (subsumed) {
             try self.proof.deleteClause(self.clauseLits(cref));
-            self.arena.items[cref].raw |= clause_mod.deleted_bit;
+            self.markDeleted(cref);
             self.stats.vivified += 1;
             any_deleted = true;
             continue :outer;
@@ -150,7 +150,7 @@ pub fn vivify(self: *Solver) !?Result {
 
         try self.proof.addClause(new_lits);
         try self.proof.deleteClause(self.clauseLits(cref));
-        self.arena.items[cref].raw |= clause_mod.deleted_bit;
+        self.markDeleted(cref);
         any_deleted = true;
         self.stats.vivified += 1;
 

@@ -54,7 +54,7 @@ pub fn reduceDB(self: *Solver) !void {
     const to_delete = candidates.items.len / 2;
     for (candidates.items[0..to_delete]) |c| {
         try self.proof.deleteClause(self.clauseLits(c.cref));
-        self.arena.items[c.cref].raw |= clause_mod.deleted_bit;
+        self.markDeleted(c.cref);
     }
     self.stats.reductions += 1;
     self.stats.deleted += to_delete;
@@ -82,9 +82,9 @@ pub fn reduceDB(self: *Solver) !void {
 
 // Arena compaction. Rebuilds `self.arena` without deleted-clause holes
 // and rewrites every ClauseRef consumer so references stay consistent.
-// Only safe at level 0; called from solve() after a reduceDB/vivify pass
-// has already run (so there are holes to reclaim and no in-flight arena
-// slices).
+// Only safe at level 0; solve() calls it after preprocessing and after
+// each level-0 maintenance round once deleted clauses fill half the arena
+// (no arena slices are in flight at those points).
 //
 // Three passes, no hashmap — we piggyback on the doomed arena to store
 // the old→new mapping:
@@ -189,5 +189,6 @@ pub fn compact(self: *Solver) !void {
 
     self.arena.deinit(self.allocator);
     self.arena = new_arena;
+    self.arena_dead_slots = 0;
     self.stats.compactions += 1;
 }

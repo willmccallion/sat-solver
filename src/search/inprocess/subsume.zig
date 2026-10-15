@@ -566,7 +566,7 @@ fn subsumeClause(
     any_deleted: *bool,
 ) !void {
     try self.proof.deleteClause(self.clauseLits(d_cref));
-    self.arena.items[d_cref].raw |= clause_mod.deleted_bit;
+    self.markDeleted(d_cref);
     any_deleted.* = true;
     self.stats.subsumed += 1;
 }
@@ -614,7 +614,7 @@ fn strengthenLongClause(
     try self.proof.deleteClause(old_lits_copy);
 
     // Mark old D deleted.
-    self.arena.items[d_cref].raw |= clause_mod.deleted_bit;
+    self.markDeleted(d_cref);
     any_deleted.* = true;
     self.stats.strengthened += 1;
 
