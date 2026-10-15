@@ -26,6 +26,11 @@ const Result = solver_mod.Result;
 // The classical fast-reject `(abstract(C) & ~abstract(D)) != 0` kills the
 // overwhelming majority of candidate pairs without a subset check.
 //
+// Hashing literals rather than variables also rejects most SSR pairs
+// (ℓ ∈ C, ¬ℓ ∈ D), so long-clause SSR is rare. Hashing variables enables
+// it but measured ~6% slower on uf/uuf200-250 and no better on a SAT
+// Competition 2025 subset (7 vs 8 of 40 solved at 120 s).
+//
 // Binaries in bin_watchers ARE used as subsumers and can be strengthened
 // to units via SSR. They are NOT themselves subsumable or strengthenable
 // into shorter binaries in this pass — doing so correctly would require
