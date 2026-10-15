@@ -333,6 +333,31 @@ fn hasBinary(solver: *solver_mod.Solver, a: Literal, b: Literal) bool {
     return false;
 }
 
+test "equiv: a literal equivalent to its negation is refuted with a RUP unit first" {
+    // 1 ≡ 2 and 1 ≡ ¬2 put 1 and ¬1 in one SCC of the implication graph.
+    const src =
+        \\p cnf 2 4
+        \\-1 2 0
+        \\1 -2 0
+        \\-1 -2 0
+        \\1 2 0
+    ;
+    const gpa = testing.allocator;
+    var formula = try parseSource(src);
+    defer formula.deinit();
+    var solver = try solver_mod.Solver.init(gpa, &formula);
+    defer solver.deinit();
+    var proof_buffer: [64]u8 = undefined;
+    var proof: std.Io.Writer = .fixed(&proof_buffer);
+    solver.setProofWriter(&proof);
+    _ = try solver.propagate();
+
+    const r = try solver.equiv();
+
+    try testing.expectEqual(solver_mod.Result.unsat, r.?);
+    try testing.expectEqualStrings("-1 0\n0\n", proof.buffered());
+}
+
 // True iff the `var_idx`-th variable has been marked eliminated by BVE.
 fn hasEliminated(solver: *solver_mod.Solver, var_idx: u32) bool {
     return solver.eliminated.isSet(var_idx);

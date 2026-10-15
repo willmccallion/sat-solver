@@ -156,6 +156,9 @@ pub fn equiv(self: *Solver) !?Result {
             const pos = v << 1;
             const neg = pos | 1;
             if (scc_id[pos] != unvisited and scc_id[pos] == scc_id[neg]) {
+                // x reaches ¬x, so the unit ¬x is RUP; only after it is
+                // the empty clause RUP as well.
+                try self.proof.addClause(&.{Literal{ .raw = neg }});
                 try self.proof.empty();
                 return .unsat;
             }
