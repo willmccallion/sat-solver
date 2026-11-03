@@ -215,6 +215,13 @@ pub fn build(b: *std.Build) void {
     e2e_small.addFileArg(b.path("tests/fixtures/small_sat.cnf"));
     e2e_small.expectExitCode(10);
 
+    const e2e_proof = b.addRunArtifact(exe);
+    e2e_proof.addArg("--proof");
+    _ = e2e_proof.addOutputFileArg("trivial_unsat.drat");
+    e2e_proof.addFileArg(b.path("tests/fixtures/trivial_unsat.cnf"));
+    e2e_proof.expectExitCode(20);
+    e2e_proof.expectStdOutEqual("s UNSATISFIABLE\n");
+
     const run_sudoku_tests = b.addRunArtifact(b.addTest(.{ .root_module = sudoku_module }));
 
     const e2e_sudoku = b.addRunArtifact(sudoku_exe);
@@ -242,4 +249,15 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&e2e_sat.step);
     test_step.dependOn(&e2e_unsat.step);
     test_step.dependOn(&e2e_small.step);
+    test_step.dependOn(&e2e_proof.step);
+
+    // /dev/full fails every write, standing in for a full disk.
+    if (target.result.os.tag == .linux) {
+        const e2e_proof_write_failure = b.addRunArtifact(exe);
+        e2e_proof_write_failure.addArgs(&.{ "--proof", "/dev/full" });
+        e2e_proof_write_failure.addFileArg(b.path("tests/fixtures/trivial_unsat.cnf"));
+        e2e_proof_write_failure.expectExitCode(0);
+        e2e_proof_write_failure.expectStdOutEqual("c error: cannot write proof: NoSpaceLeft\ns UNKNOWN\n");
+        test_step.dependOn(&e2e_proof_write_failure.step);
+    }
 }

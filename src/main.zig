@@ -139,16 +139,13 @@ pub fn main(init: std.process.Init) !u8 {
     };
     defer formula.deinit();
 
-    // Open the DRAT proof file if requested. The file handle + writer
-    // state live in this scope so the `defer` flush + close both fire
-    // before process exit. We only wire the writer into the solver if
-    // we successfully created it.
+    // Open the DRAT proof file if requested. It is flushed explicitly once
+    // solving ends, so a failed write is reported instead of lost.
     var proof_file: ?std.Io.File = null;
     defer if (proof_file) |f| f.close(io);
     var proof_file_writer: std.Io.File.Writer = undefined;
     var proof_buffer: [8192]u8 = undefined;
     var proof_interface: ?*std.Io.Writer = null;
-    defer if (proof_interface) |w| w.flush() catch {};
 
     if (proof_path) |pp| {
         proof_file = std.Io.Dir.cwd().createFile(io, pp, .{}) catch |err| {
@@ -170,6 +167,12 @@ pub fn main(init: std.process.Init) !u8 {
 
     const result = solver.solve() catch |err| {
         try stdout.print("c error: {s}\n", .{@errorName(err)});
+        try stdout.writeAll("s UNKNOWN\n");
+        return 0;
+    };
+    if (proof_interface) |w| w.flush() catch {
+        const cause = proof_file_writer.err orelse error.WriteFailed;
+        try stdout.print("c error: cannot write proof: {s}\n", .{@errorName(cause)});
         try stdout.writeAll("s UNKNOWN\n");
         return 0;
     };
