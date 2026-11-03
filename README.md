@@ -186,6 +186,22 @@ MiniSat 2.2.1, CaDiCaL 3.0.1, Kissat 4.0.4. These instances take well
 under a second, so per-instance overhead dominates; on large industrial
 instances Kissat and CaDiCaL are far ahead.
 
+## Known limitations
+
+- **Far behind state-of-the-art solvers on industrial instances.** The
+  random 3-SAT results above don't carry over to large structured
+  formulas.
+- **Some hard instances stay unsolved.** The 10 par32 instances time out
+  at 60 s, and `b19_1` from the SAT Competition 2025 set is not solved
+  within an hour.
+- **Bounded variable elimination can blow up memory.** A single
+  inprocessing BVE pass has no bound on the resolvents it adds; on
+  `pj2016_k100` it adds about 450 M arena slots of chained resolvents and
+  peaks at 14 GiB.
+- **One solve per formula.** Search is single-threaded, and there are no
+  assumptions or incremental clause additions between solves, so a caller
+  such as `sat-sudoku` builds a fresh solver for each formula.
+
 ## Implementation notes
 
 The CDCL core lives in `src/search/`. Major subsystems:
