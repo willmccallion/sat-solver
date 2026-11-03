@@ -26,4 +26,3 @@ pub const rescale_threshold: f64 = 1e100;
 // searches don't pay a log-N reduce every few thousand conflicts.
 pub const reduce_initial: u64 = 2000;
 pub const reduce_grow: u64 = 300;
-

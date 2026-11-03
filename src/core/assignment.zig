@@ -4,7 +4,7 @@ const cnf = @import("cnf.zig");
 const Literal = cnf.Literal;
 const ClauseRef = cnf.ClauseRef;
 
-pub const Value = enum(u8) { unassigned, @"true", @"false" };
+pub const Value = enum(u8) { unassigned, true, false };
 
 // Why a literal on the trail was assigned.
 //
@@ -168,13 +168,13 @@ pub const Assignment = struct {
         std.debug.assert(lvl <= self.level);
         const negative = lit.isNegative();
         self.vars[var_index] = .{
-            .value = if (negative) .@"false" else .@"true",
+            .value = if (negative) .false else .true,
             .level = lvl,
             .reason = reason,
         };
         const pos_slot = var_index << 1;
-        self.lit_values[pos_slot] = if (negative) .@"false" else .@"true";
-        self.lit_values[pos_slot | 1] = if (negative) .@"true" else .@"false";
+        self.lit_values[pos_slot] = if (negative) .false else .true;
+        self.lit_values[pos_slot | 1] = if (negative) .true else .false;
         try self.trail.append(self.allocator, lit);
     }
 

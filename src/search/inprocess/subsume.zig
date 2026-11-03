@@ -213,7 +213,7 @@ fn subsumeImpl(self: *Solver, is_preprocess: bool) !?Result {
                 pair[0],
                 pair[1],
                 occ,
-                    &revisits,
+                &revisits,
                 &queue,
                 &scratch,
                 &op_count,
@@ -498,7 +498,7 @@ fn binarySSRAgainstBinaries(
 
         // Assign unit or detect conflict.
         const val = self.assignment.valueOfLiteral(unit);
-        if (val == .@"false") {
+        if (val == .false) {
             unsat_derived.* = true;
             return;
         }
@@ -626,7 +626,7 @@ fn strengthenLongClause(
     if (new_len == 1) {
         const unit = new_lits.items[0];
         const val = self.assignment.valueOfLiteral(unit);
-        if (val == .@"false") {
+        if (val == .false) {
             unsat_derived.* = true;
             return;
         }

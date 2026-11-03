@@ -72,7 +72,7 @@ pub fn solve(self: *Solver) !Result {
                 for (self.assignment.trail.items) |tl| {
                     const v = tl.variable();
                     self.assignment.best_phases[v] =
-                        (self.assignment.vars[v].value == .@"true");
+                        (self.assignment.vars[v].value == .true);
                 }
                 self.best_trail_len = conflict_trail_len;
             }

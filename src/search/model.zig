@@ -20,7 +20,7 @@ pub fn extendModel(self: *Solver) void {
 pub fn findFalsifiedClause(self: *const Solver, formula: *const Formula) ?usize {
     for (0..formula.clauseCount()) |i| {
         const satisfied = for (formula.clause(i)) |lit| {
-            if (self.assignment.valueOfLiteral(lit) == .@"true") break true;
+            if (self.assignment.valueOfLiteral(lit) == .true) break true;
         } else false;
         if (!satisfied) return i;
     }

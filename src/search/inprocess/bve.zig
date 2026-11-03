@@ -402,11 +402,11 @@ fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
                 for (resolvent_buf.items) |lit| {
                     const val = self.assignment.valueOfLiteral(lit);
                     switch (val) {
-                        .@"true" => {
+                        .true => {
                             sat_at_l0 = true;
                             break;
                         },
-                        .@"false" => {},
+                        .false => {},
                         .unassigned => {
                             resolvent_buf.items[sw] = lit;
                             sw += 1;
@@ -664,7 +664,7 @@ fn commitElimination(
         if (r_len == 1) {
             const unit = r_lits[0];
             const val = self.assignment.valueOfLiteral(unit);
-            if (val == .@"false") {
+            if (val == .false) {
                 unsat_derived.* = true;
                 return;
             }
@@ -739,7 +739,7 @@ pub fn reconstructEliminatedVars(self: *Solver) void {
             var clause_satisfied = false;
             for (clause_lits) |lit| {
                 if (lit.variable() == pivot) continue;
-                if (self.assignment.valueOfLiteral(lit) == .@"true") {
+                if (self.assignment.valueOfLiteral(lit) == .true) {
                     clause_satisfied = true;
                     break;
                 }
@@ -752,11 +752,11 @@ pub fn reconstructEliminatedVars(self: *Solver) void {
 
         const pick_true = pivot_true_ok;
         const pos_slot = pivot << 1;
-        self.assignment.vars[pivot].value = if (pick_true) .@"true" else .@"false";
+        self.assignment.vars[pivot].value = if (pick_true) .true else .false;
         self.assignment.lit_values[pos_slot] =
-            if (pick_true) .@"true" else .@"false";
+            if (pick_true) .true else .false;
         self.assignment.lit_values[pos_slot | 1] =
-            if (pick_true) .@"false" else .@"true";
+            if (pick_true) .false else .true;
     }
 }
 

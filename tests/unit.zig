@@ -44,7 +44,7 @@ fn modelSatisfiesSource(solver: *solver_mod.Solver, source: []const u8) bool {
                 continue;
             }
             const value = solver.assignment.valueOfLiteral(Literal.fromDimacs(dimacs));
-            if (value == .@"true") clause_satisfied = true;
+            if (value == .true) clause_satisfied = true;
         }
     }
     return true;
@@ -438,7 +438,7 @@ test "subsume: SSR to unit — (1 2) and (1 -2) derive unit 1" {
     const r = try solver.preprocessSubsume();
     try testing.expect(r == null);
 
-    try testing.expectEqual(assignment_mod.Value.@"true", solver.assignment.valueOfVar(0));
+    try testing.expectEqual(assignment_mod.Value.true, solver.assignment.valueOfVar(0));
     try testing.expect(solver.stats.strengthened >= 1);
 }
 
@@ -575,7 +575,7 @@ test "subsume: a level-0 reason clause is never a subsumption target" {
     // reason. (Binary reasons are tagged differently and wouldn't lock
     // a long clause.)
     const v0_info = solver.assignment.vars[0];
-    try testing.expectEqual(assignment_mod.Value.@"true", v0_info.value);
+    try testing.expectEqual(assignment_mod.Value.true, v0_info.value);
     try testing.expectEqual(@as(u32, 0), v0_info.level);
     try testing.expect(!v0_info.reason.isNone());
     try testing.expect(!v0_info.reason.isBinary());
@@ -765,7 +765,7 @@ test "bve: locked protection — a clause that reasons a level-0 unit stays unto
     try testing.expect(conflict == null);
 
     const v0_info = solver.assignment.vars[0];
-    try testing.expectEqual(assignment_mod.Value.@"true", v0_info.value);
+    try testing.expectEqual(assignment_mod.Value.true, v0_info.value);
     try testing.expectEqual(@as(u32, 0), v0_info.level);
     try testing.expect(!v0_info.reason.isNone());
     try testing.expect(!v0_info.reason.isBinary());

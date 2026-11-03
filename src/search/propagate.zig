@@ -42,8 +42,8 @@ pub fn propagate(self: *Solver) !?Conflict {
         const bws = self.bin_watchers[p.raw].items;
         for (bws) |b| {
             const v = lit_values[b.other.raw];
-            if (v == .@"true") continue;
-            if (v == .@"false") {
+            if (v == .true) continue;
+            if (v == .false) {
                 @branchHint(.cold);
                 self.assignment.propagation_head = self.assignment.trail.items.len;
                 return Conflict{ .binary = .{ p.negate(), b.other } };
@@ -66,7 +66,7 @@ pub fn propagate(self: *Solver) !?Conflict {
             i += 1;
 
             // Blocker-satisfied is the dominant exit on the bench (~70%).
-            if (lit_values[w.blocker.raw] == .@"true") {
+            if (lit_values[w.blocker.raw] == .true) {
                 @branchHint(.likely);
                 ws.items[j] = w;
                 j += 1;
@@ -94,7 +94,7 @@ pub fn propagate(self: *Solver) !?Conflict {
             const other = lits[0];
             const new_w: Watcher = .{ .clause = w.clause, .blocker = other };
 
-            if (!other.eql(w.blocker) and lit_values[other.raw] == .@"true") {
+            if (!other.eql(w.blocker) and lit_values[other.raw] == .true) {
                 ws.items[j] = new_w;
                 j += 1;
                 continue;
@@ -102,7 +102,7 @@ pub fn propagate(self: *Solver) !?Conflict {
 
             var k: usize = 2;
             while (k < lits.len) : (k += 1) {
-                if (lit_values[lits[k].raw] != .@"false") {
+                if (lit_values[lits[k].raw] != .false) {
                     lits[1] = lits[k];
                     lits[k] = false_lit;
                     const target = &self.watchers[lits[1].negate().raw];
@@ -119,7 +119,7 @@ pub fn propagate(self: *Solver) !?Conflict {
             ws.items[j] = new_w;
             j += 1;
 
-            if (lit_values[other.raw] == .@"false") {
+            if (lit_values[other.raw] == .false) {
                 @branchHint(.cold);
                 while (i < end) : ({
                     i += 1;

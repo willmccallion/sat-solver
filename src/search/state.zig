@@ -333,7 +333,7 @@ pub const Solver = struct {
             if (lits.len == 1) {
                 const lit = lits[0];
                 const val = self.assignment.valueOfLiteral(lit);
-                if (val == .@"false") {
+                if (val == .false) {
                     self.unsat_at_init = true;
                 } else if (val == .unassigned) {
                     try self.assignment.assign(lit, Reason.none);

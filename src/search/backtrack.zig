@@ -24,7 +24,7 @@ pub fn backtrack(self: *Solver, target_level: u32) void {
         const lit = trail_items[i];
         const v = lit.variable();
         if (a.vars[v].level > target_level) {
-            a.saved_phases[v] = (a.vars[v].value == .@"true");
+            a.saved_phases[v] = (a.vars[v].value == .true);
             a.vars[v] = .{};
             const pos_slot = v << 1;
             a.lit_values[pos_slot] = .unassigned;

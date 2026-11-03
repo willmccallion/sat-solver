@@ -287,11 +287,11 @@ pub fn equiv(self: *Solver) !?Result {
                 for (scratch.items[0..w]) |lit| {
                     const val = self.assignment.valueOfLiteral(lit);
                     switch (val) {
-                        .@"true" => {
+                        .true => {
                             sat_at_l0 = true;
                             break;
                         },
-                        .@"false" => {},
+                        .false => {},
                         .unassigned => {
                             scratch.items[sw] = lit;
                             sw += 1;
@@ -457,7 +457,7 @@ pub fn equiv(self: *Solver) !?Result {
         if (lw.new_len == 1) {
             const unit = new_lits[0];
             const val = self.assignment.valueOfLiteral(unit);
-            if (val == .@"false") {
+            if (val == .false) {
                 unsat_derived = true;
                 break;
             }
@@ -498,7 +498,7 @@ pub fn equiv(self: *Solver) !?Result {
             .tautology => {},
             .unit => {
                 const val = self.assignment.valueOfLiteral(bw.new_a);
-                if (val == .@"false") {
+                if (val == .false) {
                     unsat_derived = true;
                     break;
                 }
@@ -600,11 +600,11 @@ pub fn reconstructEquivVars(self: *Solver) void {
         const frame = frames[idx];
         const v = frame.eliminated_var;
         var val = self.assignment.valueOfLiteral(frame.rep_lit);
-        if (val == .unassigned) val = .@"true";
+        if (val == .unassigned) val = .true;
         const pos_slot = v << 1;
         self.assignment.vars[v].value = val;
         self.assignment.lit_values[pos_slot] = val;
         self.assignment.lit_values[pos_slot | 1] =
-            if (val == .@"true") .@"false" else .@"true";
+            if (val == .true) .false else .true;
     }
 }

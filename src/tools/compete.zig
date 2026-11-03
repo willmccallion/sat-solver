@@ -443,13 +443,12 @@ fn collectPerf(gpa: Allocator, io: std.Io, bench_path: []const u8, out: *Perf) !
     var argv: std.ArrayList([]const u8) = .empty;
     defer argv.deinit(gpa);
     try argv.appendSlice(gpa, &.{
-        "perf",      "stat",
-        "-x",        ",",
-        "-e",        events,
-        "-M",        "TopdownL1",
-        "--",        bench_path,
-        "bench/instances/uf100-430",
-        "bench/instances/uuf100-430",
+        "perf",                      "stat",
+        "-x",                        ",",
+        "-e",                        events,
+        "-M",                        "TopdownL1",
+        "--",                        bench_path,
+        "bench/instances/uf100-430", "bench/instances/uuf100-430",
     });
 
     const result = std.process.run(gpa, io, .{

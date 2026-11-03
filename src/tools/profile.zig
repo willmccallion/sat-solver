@@ -163,7 +163,7 @@ pub fn main(init: std.process.Init) !void {
         if (paranoid > 1) {
             try stderr.print(
                 "error: /proc/sys/kernel/perf_event_paranoid = {d} (hardware counters require ≤ 1)\n" ++
-                "fix:   echo 1 | sudo tee /proc/sys/kernel/perf_event_paranoid\n",
+                    "fix:   echo 1 | sudo tee /proc/sys/kernel/perf_event_paranoid\n",
                 .{paranoid},
             );
             try stderr.flush();
@@ -184,11 +184,11 @@ pub fn main(init: std.process.Init) !void {
         var argv: std.ArrayList([]const u8) = .empty;
         defer argv.deinit(gpa);
         try argv.appendSlice(gpa, &.{
-            "perf",             "stat",
-            "-x",               ",",
-            "-e",               events_list,
-            "-M",               "TopdownL1",
-            "--",               sat_bench,
+            "perf", "stat",
+            "-x",   ",",
+            "-e",   events_list,
+            "-M",   "TopdownL1",
+            "--",   sat_bench,
         });
         try argv.appendSlice(gpa, bench_args.items);
         try argv.appendSlice(gpa, dirs);
@@ -263,8 +263,7 @@ pub fn main(init: std.process.Init) !void {
             .argv = &.{
                 "perf",            "report",
                 "-i",              perf_data,
-                "--stdio",
-                "--no-children",
+                "--stdio",         "--no-children",
                 "--percent-limit", "0.5",
             },
             .stdout_limit = .limited(1 << 22),
@@ -290,11 +289,10 @@ pub fn main(init: std.process.Init) !void {
 
         const result = try std.process.run(gpa, io, .{
             .argv = &.{
-                "perf",      "annotate",
-                "-i",        perf_data,
-                "--stdio",
-                "--no-source",
-                "--percent-limit", "0.5",
+                "perf",                   "annotate",
+                "-i",                     perf_data,
+                "--stdio",                "--no-source",
+                "--percent-limit",        "0.5",
                 hotspots.items[0].symbol,
             },
             .stdout_limit = .limited(1 << 23),

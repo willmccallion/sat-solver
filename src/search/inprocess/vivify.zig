@@ -99,7 +99,7 @@ pub fn vivify(self: *Solver) !?Result {
             const vi = self.assignment.vars[lit.variable()];
 
             if (vi.level == 0 and vi.value != .unassigned) {
-                if (self.assignment.valueOfLiteral(lit) == .@"true") {
+                if (self.assignment.valueOfLiteral(lit) == .true) {
                     subsumed = true;
                     break;
                 }
@@ -108,11 +108,11 @@ pub fn vivify(self: *Solver) !?Result {
             }
 
             const cur = self.assignment.valueOfLiteral(lit);
-            if (cur == .@"true") {
+            if (cur == .true) {
                 shrink_len = i + 1;
                 break;
             }
-            if (cur == .@"false") {
+            if (cur == .false) {
                 _ = scratch.swapRemove(i);
                 continue;
             }
@@ -157,7 +157,7 @@ pub fn vivify(self: *Solver) !?Result {
         if (new_len == 1) {
             const unit = new_lits[0];
             const val = self.assignment.valueOfLiteral(unit);
-            if (val == .@"false") {
+            if (val == .false) {
                 try self.proof.empty();
                 return .unsat;
             }
