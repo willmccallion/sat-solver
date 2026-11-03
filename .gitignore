@@ -5,3 +5,6 @@ bench/instances/
 bench/solvers
 bench/.cache/
 *.csv
+result
+result-*
+.direnv

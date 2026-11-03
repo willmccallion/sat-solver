@@ -49,7 +49,8 @@ zig build -Drelease=true      # release (ReleaseFast)
 zig build test                # unit tests + end-to-end
 ```
 
-Requires Zig 0.17.
+Requires Zig 0.17. `flake.nix` provides it (with `zls`) as a dev shell, which
+`direnv` loads through `.envrc`.
 
 ## Usage
 
