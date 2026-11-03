@@ -44,9 +44,9 @@ BCP, modern clause learning, and SAT Competition-format I/O.
 ## Build
 
 ```sh
-zig build                     # debug
-zig build -Drelease=true      # release (ReleaseFast)
-zig build test                # unit tests + end-to-end
+zig build                         # debug
+zig build -Doptimize=ReleaseFast  # release
+zig build test                    # unit tests + end-to-end
 ```
 
 Requires Zig 0.17. `flake.nix` provides it (with `zls`) as a dev shell, which
@@ -132,7 +132,7 @@ bench/build-solvers.sh              # clones + builds CaDiCaL and Kissat
                                     # into bench/solvers/
                                     # MiniSat: apt install minisat2
 
-zig build -Drelease=true            # our solver
+zig build -Doptimize=ReleaseFast    # our solver
 
 bench/compare.py --limit 10         # smoke run, this solver only
 bench/compare.py --solvers sat-solver minisat cadical kissat

@@ -29,7 +29,7 @@ bench/
 bench/fetch.sh
 
 # build the release binary once, then run the correctness sweep
-zig build -Drelease=true
+zig build -Doptimize=ReleaseFast
 bench/run.sh
 ```
 

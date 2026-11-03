@@ -16,7 +16,7 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 SOLVER="$REPO_DIR/zig-out/bin/sat"
 
 if [[ ! -x "$SOLVER" ]]; then
-    printf 'error: %s not found. build first with:\n  zig build -Drelease=true\n' "$SOLVER" >&2
+    printf 'error: %s not found. build first with:\n  zig build -Doptimize=ReleaseFast\n' "$SOLVER" >&2
     exit 2
 fi
 
