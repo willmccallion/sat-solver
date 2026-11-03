@@ -288,6 +288,9 @@ pub const Solver = struct {
         errdefer self.analyze_stack.deinit(allocator);
         try self.analyze_to_clear.ensureTotalCapacity(allocator, formula.num_vars);
         errdefer self.analyze_to_clear.deinit(allocator);
+        // computeLbd's distinct levels each begin with a distinct decision var.
+        try self.analyze_levels.ensureTotalCapacity(allocator, formula.num_vars);
+        errdefer self.analyze_levels.deinit(allocator);
 
         self.order_heap = try OrderHeap.init(allocator, formula.num_vars, self.activities);
         errdefer self.order_heap.deinit(allocator);

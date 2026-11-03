@@ -226,7 +226,7 @@ pub fn computeLbd(self: *Solver, lits: []const Literal) u32 {
         for (self.analyze_levels.items) |existing| {
             if (existing == lv) continue :outer;
         }
-        self.analyze_levels.append(self.allocator, lv) catch return @intCast(lits.len);
+        self.analyze_levels.appendAssumeCapacity(lv);
     }
     return @intCast(self.analyze_levels.items.len);
 }
