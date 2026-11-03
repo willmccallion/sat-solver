@@ -49,7 +49,7 @@ zig build -Drelease=true      # release (ReleaseFast)
 zig build test                # unit tests + end-to-end
 ```
 
-Requires Zig 0.16.
+Requires Zig 0.17.
 
 ## Usage
 
