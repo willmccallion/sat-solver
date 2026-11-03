@@ -72,6 +72,20 @@ pub fn build(b: *std.Build) void {
     const bench_exe = b.addExecutable(.{ .name = "sat-bench", .root_module = bench_module });
     b.installArtifact(bench_exe);
 
+    const sudoku_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/sudoku.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    addLayerImports(sudoku_module, core, io, heuristics, search);
+    const sudoku_exe = b.addExecutable(.{ .name = "sat-sudoku", .root_module = sudoku_module });
+    b.installArtifact(sudoku_exe);
+
+    const sudoku_run = b.addRunArtifact(sudoku_exe);
+    sudoku_run.addPassthruArgs();
+    const sudoku_step = b.step("sudoku", "Solve a Sudoku (zig build sudoku -- PUZZLE)");
+    sudoku_step.dependOn(&sudoku_run.step);
+
     const bench_release_module = b.createModule(.{
         .root_source_file = b.path("src/tools/bench.zig"),
         .target = target,
@@ -201,8 +215,30 @@ pub fn build(b: *std.Build) void {
     e2e_small.addFileArg(b.path("tests/fixtures/small_sat.cnf"));
     e2e_small.expectExitCode(10);
 
+    const run_sudoku_tests = b.addRunArtifact(b.addTest(.{ .root_module = sudoku_module }));
+
+    const e2e_sudoku = b.addRunArtifact(sudoku_exe);
+    e2e_sudoku.addArg("53..7....6..195....98....6.8...6...34..8.3..17...2...6.6....28....419..5....8..79");
+    e2e_sudoku.expectExitCode(0);
+    e2e_sudoku.expectStdOutEqual(
+        \\5 3 4 | 6 7 8 | 9 1 2
+        \\6 7 2 | 1 9 5 | 3 4 8
+        \\1 9 8 | 3 4 2 | 5 6 7
+        \\------+-------+------
+        \\8 5 9 | 7 6 1 | 4 2 3
+        \\4 2 6 | 8 5 3 | 7 9 1
+        \\7 1 3 | 9 2 4 | 8 5 6
+        \\------+-------+------
+        \\9 6 1 | 5 3 7 | 2 8 4
+        \\2 8 7 | 4 1 9 | 6 3 5
+        \\3 4 5 | 2 8 6 | 1 7 9
+        \\
+    );
+
     const test_step = b.step("test", "Run unit tests and end-to-end round-trip");
     test_step.dependOn(&run_unit_tests.step);
+    test_step.dependOn(&run_sudoku_tests.step);
+    test_step.dependOn(&e2e_sudoku.step);
     test_step.dependOn(&e2e_sat.step);
     test_step.dependOn(&e2e_unsat.step);
     test_step.dependOn(&e2e_small.step);

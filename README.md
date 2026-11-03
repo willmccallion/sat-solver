@@ -74,6 +74,20 @@ Requires Zig 0.17. `flake.nix` provides it (with `zls`) as a dev shell, which
 Exit codes follow SAT Competition convention: **10** = SATISFIABLE,
 **20** = UNSATISFIABLE, **0** = UNKNOWN (including on interrupt or timeout).
 
+## Sudoku
+
+`sat-sudoku` solves a 9x9 Sudoku by encoding it as CNF for the solver: one
+variable per (cell, digit), exactly one digit per cell, each digit exactly
+once per row, column and box, and a unit clause per given digit.
+
+```sh
+zig build sudoku -- '53..7....6..195....98....6.8...6...34..8.3..17...2...6.6....28....419..5....8..79'
+./zig-out/bin/sat-sudoku < puzzle.txt   # a 9-line grid works too
+```
+
+Cells are `1`-`9`, with `.` or `0` for blanks. Exit code **0** = solved,
+**1** = no solution, **2** = bad input.
+
 ## Benchmarks
 
 `zig build bench` runs the ReleaseFast solver on 399 random 3-SAT instances
@@ -215,7 +229,8 @@ src/
 ├── heuristics/      VSIDS heap, restart / rephase / mode schedules
 ├── search/          CDCL loop, propagate, analyze, backtrack, model extension
 │   └── inprocess/   subsume, equiv, bve, probe, vivify, reduce + compact
-└── tools/           bench (batch runner), profile (perf), compete (readiness)
+└── tools/           bench (batch runner), profile (perf), compete (readiness),
+                     sudoku (Sudoku via CNF)
 
 bench/
 ├── fetch.sh         downloads SATLIB + DIMACS instance sets
