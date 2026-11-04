@@ -20,7 +20,7 @@ const solver_mod = search.solver;
 //   solved N instances: X SAT, Y UNSAT, Z unknown
 //   total T.T ms (P.P ms/instance)
 //   dist_ms: min=... p50=... p90=... p99=... max=...
-//   stats: decisions=... conflicts=... propagations=... restarts=... reductions=... learned=...
+//   stats: name=value for every field of search.Stats, in declaration order
 //   peak_rss_kb: R
 //   par2_s: P.PPP          (competition-style penalty: solved→t, unsolved→2T)
 //   timeout_s: T           (0 if no per-instance cap was applied)
@@ -164,31 +164,11 @@ pub fn main(init: std.process.Init) !void {
         );
     }
 
-    try stdout.print(
-        "stats: decisions={d} conflicts={d} propagations={d} restarts={d} reductions={d} learned_clauses={d} rephases={d} chrono_backtracks={d} probe_passes={d} failed_literal_units={d} vivify_passes={d} vivified_clauses={d} subsume_passes={d} subsumed_clauses={d} strengthened_clauses={d} mode_switches={d} compactions={d} bve_passes={d} eliminated_vars={d} resolvents_added={d}\n",
-        .{
-            agg_stats.decisions,
-            agg_stats.conflicts,
-            agg_stats.propagations,
-            agg_stats.restarts,
-            agg_stats.reductions,
-            agg_stats.learned_clauses,
-            agg_stats.rephases,
-            agg_stats.chrono_backtracks,
-            agg_stats.probe_passes,
-            agg_stats.failed_literal_units,
-            agg_stats.vivify_passes,
-            agg_stats.vivified_clauses,
-            agg_stats.subsume_passes,
-            agg_stats.subsumed_clauses,
-            agg_stats.strengthened_clauses,
-            agg_stats.mode_switches,
-            agg_stats.compactions,
-            agg_stats.bve_passes,
-            agg_stats.eliminated_vars,
-            agg_stats.resolvents_added,
-        },
-    );
+    try stdout.writeAll("stats:");
+    inline for (comptime std.meta.fieldNames(solver_mod.Stats)) |name| {
+        try stdout.print(" {s}={d}", .{ name, @field(agg_stats, name) });
+    }
+    try stdout.writeAll("\n");
 
     // Peak RSS from getrusage. On Linux ru_maxrss is in kilobytes.
     const ru = std.posix.getrusage(std.posix.rusage.SELF);
@@ -313,25 +293,7 @@ fn runDirectory(
 }
 
 fn accumulate(dst: *solver_mod.Stats, src: *const solver_mod.Stats) void {
-    dst.decisions += src.decisions;
-    dst.propagations += src.propagations;
-    dst.conflicts += src.conflicts;
-    dst.restarts += src.restarts;
-    dst.learned_clauses += src.learned_clauses;
-    dst.reductions += src.reductions;
-    dst.deleted_clauses += src.deleted_clauses;
-    dst.rephases += src.rephases;
-    dst.chrono_backtracks += src.chrono_backtracks;
-    dst.probe_passes += src.probe_passes;
-    dst.failed_literal_units += src.failed_literal_units;
-    dst.vivify_passes += src.vivify_passes;
-    dst.vivified_clauses += src.vivified_clauses;
-    dst.subsume_passes += src.subsume_passes;
-    dst.subsumed_clauses += src.subsumed_clauses;
-    dst.strengthened_clauses += src.strengthened_clauses;
-    dst.mode_switches += src.mode_switches;
-    dst.compactions += src.compactions;
-    dst.bve_passes += src.bve_passes;
-    dst.eliminated_vars += src.eliminated_vars;
-    dst.resolvents_added += src.resolvents_added;
+    inline for (comptime std.meta.fieldNames(solver_mod.Stats)) |name| {
+        @field(dst, name) += @field(src, name);
+    }
 }

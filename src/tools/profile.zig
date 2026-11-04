@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const SolverStats = @import("search").solver.Stats;
 
 // sat-profile — orchestrator for `zig build bench`. Spawns sat-bench
 // under `perf stat` (counters + Intel topdown metrics) and `perf
@@ -60,26 +61,7 @@ const Stats = struct {
     dist_p90_ms: f64 = 0,
     dist_p99_ms: f64 = 0,
     dist_max_ms: f64 = 0,
-    solver_decisions: u64 = 0,
-    solver_conflicts: u64 = 0,
-    solver_propagations: u64 = 0,
-    solver_restarts: u64 = 0,
-    solver_reductions: u64 = 0,
-    solver_learned_clauses: u64 = 0,
-    solver_rephases: u64 = 0,
-    solver_chrono_backtracks: u64 = 0,
-    solver_probe_passes: u64 = 0,
-    solver_failed_literal_units: u64 = 0,
-    solver_vivify_passes: u64 = 0,
-    solver_vivified_clauses: u64 = 0,
-    solver_subsume_passes: u64 = 0,
-    solver_subsumed_clauses: u64 = 0,
-    solver_strengthened_clauses: u64 = 0,
-    solver_mode_switches: u64 = 0,
-    solver_compactions: u64 = 0,
-    solver_bve_passes: u64 = 0,
-    solver_eliminated_vars: u64 = 0,
-    solver_resolvents_added: u64 = 0,
+    solver: SolverStats = .{},
     peak_rss_kb: u64 = 0,
     par2_s: f64 = 0,
     timeout_s: u64 = 0,
@@ -359,26 +341,9 @@ fn parseBenchOutput(output: []const u8, stats: *Stats) void {
             parseKeyValuePairs(line["stats:".len..], struct {
                 fn apply(dst: *Stats, key: []const u8, val: []const u8) void {
                     const n = std.fmt.parseInt(u64, val, 10) catch return;
-                    if (std.mem.eql(u8, key, "decisions")) dst.solver_decisions = n;
-                    if (std.mem.eql(u8, key, "conflicts")) dst.solver_conflicts = n;
-                    if (std.mem.eql(u8, key, "propagations")) dst.solver_propagations = n;
-                    if (std.mem.eql(u8, key, "restarts")) dst.solver_restarts = n;
-                    if (std.mem.eql(u8, key, "reductions")) dst.solver_reductions = n;
-                    if (std.mem.eql(u8, key, "learned_clauses")) dst.solver_learned_clauses = n;
-                    if (std.mem.eql(u8, key, "rephases")) dst.solver_rephases = n;
-                    if (std.mem.eql(u8, key, "chrono_backtracks")) dst.solver_chrono_backtracks = n;
-                    if (std.mem.eql(u8, key, "probe_passes")) dst.solver_probe_passes = n;
-                    if (std.mem.eql(u8, key, "failed_literal_units")) dst.solver_failed_literal_units = n;
-                    if (std.mem.eql(u8, key, "vivify_passes")) dst.solver_vivify_passes = n;
-                    if (std.mem.eql(u8, key, "vivified_clauses")) dst.solver_vivified_clauses = n;
-                    if (std.mem.eql(u8, key, "subsume_passes")) dst.solver_subsume_passes = n;
-                    if (std.mem.eql(u8, key, "subsumed_clauses")) dst.solver_subsumed_clauses = n;
-                    if (std.mem.eql(u8, key, "strengthened_clauses")) dst.solver_strengthened_clauses = n;
-                    if (std.mem.eql(u8, key, "mode_switches")) dst.solver_mode_switches = n;
-                    if (std.mem.eql(u8, key, "compactions")) dst.solver_compactions = n;
-                    if (std.mem.eql(u8, key, "bve_passes")) dst.solver_bve_passes = n;
-                    if (std.mem.eql(u8, key, "eliminated_vars")) dst.solver_eliminated_vars = n;
-                    if (std.mem.eql(u8, key, "resolvents_added")) dst.solver_resolvents_added = n;
+                    inline for (comptime std.meta.fieldNames(SolverStats)) |name| {
+                        if (std.mem.eql(u8, key, name)) @field(dst.solver, name) = n;
+                    }
                 }
             }.apply, stats);
         } else if (std.mem.startsWith(u8, line, "peak_rss_kb:")) {
@@ -864,33 +829,16 @@ fn printReport(
 
     // Solver activity
     try sectionHeader(w, "solver activity");
-    try solverRow(w, "decisions", stats.solver_decisions, stats.instance_count);
-    try solverRow(w, "conflicts", stats.solver_conflicts, stats.instance_count);
-    try solverRow(w, "propagations", stats.solver_propagations, stats.instance_count);
-    try solverRow(w, "restarts", stats.solver_restarts, stats.instance_count);
-    try solverRow(w, "reductions", stats.solver_reductions, stats.instance_count);
-    try solverRow(w, "learned clauses", stats.solver_learned_clauses, stats.instance_count);
-    try solverRow(w, "rephases", stats.solver_rephases, stats.instance_count);
-    try solverRow(w, "chrono backtracks", stats.solver_chrono_backtracks, stats.instance_count);
-    try solverRow(w, "probe_passes", stats.solver_probe_passes, stats.instance_count);
-    try solverRow(w, "flp units", stats.solver_failed_literal_units, stats.instance_count);
-    try solverRow(w, "vivify passes", stats.solver_vivify_passes, stats.instance_count);
-    try solverRow(w, "vivified clauses", stats.solver_vivified_clauses, stats.instance_count);
-    try solverRow(w, "subsume passes", stats.solver_subsume_passes, stats.instance_count);
-    try solverRow(w, "subsumed clauses", stats.solver_subsumed_clauses, stats.instance_count);
-    try solverRow(w, "strengthened_clauses", stats.solver_strengthened_clauses, stats.instance_count);
-    try solverRow(w, "mode switches", stats.solver_mode_switches, stats.instance_count);
-    try solverRow(w, "compactions", stats.solver_compactions, stats.instance_count);
-    try solverRow(w, "bve passes", stats.solver_bve_passes, stats.instance_count);
-    try solverRow(w, "eliminated_vars", stats.solver_eliminated_vars, stats.instance_count);
-    try solverRow(w, "resolvents added", stats.solver_resolvents_added, stats.instance_count);
+    inline for (comptime std.meta.fieldNames(SolverStats)) |name| {
+        try solverRow(w, comptime spacedName(name), @field(stats.solver, name), stats.instance_count);
+    }
     try blankRow(w);
 
     // Throughput
     try sectionHeader(w, "throughput (wall time / event)");
-    try throughputRow(w, "per decision", elapsed_ns_f, stats.solver_decisions);
-    try throughputRow(w, "per conflict", elapsed_ns_f, stats.solver_conflicts);
-    try throughputRow(w, "per propagation", elapsed_ns_f, stats.solver_propagations);
+    try throughputRow(w, "per decision", elapsed_ns_f, stats.solver.decisions);
+    try throughputRow(w, "per conflict", elapsed_ns_f, stats.solver.conflicts);
+    try throughputRow(w, "per propagation", elapsed_ns_f, stats.solver.propagations);
     try blankRow(w);
 
     // Hotspots (self time)
@@ -995,11 +943,25 @@ fn metricRow(
     try endRow(w, visible);
 }
 
+/// Width of the label column in the solver activity rows.
+const solver_label_width = 24;
+
+/// A `SolverStats` field name as a row label: `chrono_backtracks` reads
+/// "chrono backtracks".
+fn spacedName(comptime name: []const u8) []const u8 {
+    comptime {
+        var label: [name.len]u8 = name[0..name.len].*;
+        std.mem.replaceScalar(u8, &label, '_', ' ');
+        const final = label;
+        return &final;
+    }
+}
+
 fn solverRow(w: *std.Io.Writer, label: []const u8, count: u64, instances: u64) !void {
     try startRow(w);
     try w.writeAll(label);
     var pad: usize = 0;
-    if (label.len < 20) pad = 20 - label.len;
+    if (label.len < solver_label_width) pad = solver_label_width - label.len;
     var i: usize = 0;
     while (i < pad) : (i += 1) try w.writeAll(" ");
 
@@ -1010,7 +972,7 @@ fn solverRow(w: *std.Io.Writer, label: []const u8, count: u64, instances: u64) !
     var pad2: usize = if (cstr.len < 10) 10 - cstr.len else 1;
     while (pad2 > 0) : (pad2 -= 1) try w.writeAll(" ");
 
-    var vis: usize = 20 + cstr.len;
+    var vis: usize = solver_label_width + cstr.len;
     if (cstr.len < 10) vis += (10 - cstr.len) else vis += 1;
 
     if (instances > 0) {
