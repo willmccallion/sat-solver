@@ -42,8 +42,8 @@ const Result = solver_mod.Result;
 // work-list so cascading subsumptions can fire in the same pass, bounded
 // per-clause by `max_revisits_per_clause` to prevent pathological loops.
 //
-// Memory safety: addClauseToArena may reallocate `self.arena` and
-// invalidate `clauseLits` slices. We copy literals into a scratch buffer
+// Memory safety: adding a clause may reallocate the arena and
+// invalidate `literals` slices. We copy literals into a scratch buffer
 // before any arena mutation and rebuild per-literal occurrence lists
 // incrementally as clauses are strengthened.
 
@@ -140,17 +140,17 @@ const Subsumption = struct {
         const counts = try solver.allocator.alloc(u32, self.occ.len);
         defer solver.allocator.free(counts);
         @memset(counts, 0);
-        var live = solver.liveClauses();
+        var live = solver.arena.liveClauses();
         while (live.next()) |cref| {
-            if (solver.clauseLen(cref) < 3) continue;
-            for (solver.clauseLits(cref)) |lit| counts[lit.raw] += 1;
+            if (solver.arena.length(cref) < 3) continue;
+            for (solver.arena.literals(cref)) |lit| counts[lit.raw] += 1;
         }
         for (self.occ, counts) |*o, n| try o.ensureTotalCapacityPrecise(solver.allocator, n);
 
-        live = solver.liveClauses();
+        live = solver.arena.liveClauses();
         while (live.next()) |cref| {
-            if (solver.clauseLen(cref) < 3) continue;
-            for (solver.clauseLits(cref)) |lit| self.occ[lit.raw].appendAssumeCapacity(cref);
+            if (solver.arena.length(cref) < 3) continue;
+            for (solver.arena.literals(cref)) |lit| self.occ[lit.raw].appendAssumeCapacity(cref);
             try self.queue.append(solver.allocator, cref);
         }
     }
@@ -168,9 +168,9 @@ const Subsumption = struct {
                 return;
             }
             const c_cref = self.queue.items[qi];
-            if (self.solver.clauseIsDeleted(c_cref)) continue;
+            if (self.solver.arena.isDeleted(c_cref)) continue;
             if (self.solver.clauseIsLocked(c_cref)) continue;
-            try self.setSubsumer(self.solver.clauseLits(c_cref));
+            try self.setSubsumer(self.solver.arena.literals(c_cref));
             try self.trySubsumer(c_cref);
         }
     }
@@ -221,7 +221,7 @@ const Subsumption = struct {
             }
             const d_cref = self.occ[pivot.raw].items[i];
             if (c_cref != null and d_cref == c_cref.?) continue;
-            if (self.solver.clauseIsDeleted(d_cref)) continue;
+            if (self.solver.arena.isDeleted(d_cref)) continue;
             try self.tryAgainst(c_cref, c_abs, d_cref);
         }
     }
@@ -238,7 +238,7 @@ const Subsumption = struct {
     fn tryAgainst(self: *Subsumption, c_cref: ?ClauseRef, c_abs: u64, d_cref: ClauseRef) !void {
         const solver = self.solver;
         self.op_count += 1;
-        const d_lits = solver.clauseLits(d_cref);
+        const d_lits = solver.arena.literals(d_cref);
         if ((c_abs & ~clauseAbstract(d_lits)) != 0) return;
         if (d_lits.len < self.subsumer.items.len) return;
 
@@ -249,7 +249,7 @@ const Subsumption = struct {
             .subsumed => {
                 // A binary carries no learned flag, so it is already irredundant.
                 if (c_cref) |c| {
-                    if (!solver.clauseIsLearned(d_cref)) solver.promoteToIrredundant(c);
+                    if (!solver.arena.isLearned(d_cref)) solver.arena.promoteToIrredundant(c);
                 }
                 try self.deleteSubsumed(d_cref);
             },
@@ -259,8 +259,8 @@ const Subsumption = struct {
 
     fn deleteSubsumed(self: *Subsumption, d_cref: ClauseRef) !void {
         const solver = self.solver;
-        try solver.proof.deleteClause(solver.clauseLits(d_cref));
-        solver.markDeleted(d_cref);
+        try solver.proof.deleteClause(solver.arena.literals(d_cref));
+        solver.arena.markDeleted(d_cref);
         self.any_deleted = true;
         solver.stats.subsumed_clauses += 1;
     }
@@ -272,7 +272,7 @@ const Subsumption = struct {
     fn strengthenLongClause(self: *Subsumption, d_cref: ClauseRef, neg_lit: Literal) !void {
         const solver = self.solver;
         // Copied out, since installing the new clause may reallocate the arena.
-        const old_lits = try solver.allocator.dupe(Literal, solver.clauseLits(d_cref));
+        const old_lits = try solver.allocator.dupe(Literal, solver.arena.literals(d_cref));
         defer solver.allocator.free(old_lits);
         var new_lits: std.ArrayList(Literal) = try .initCapacity(solver.allocator, old_lits.len);
         defer new_lits.deinit(solver.allocator);
@@ -284,12 +284,12 @@ const Subsumption = struct {
 
         try solver.proof.addClause(kept);
         try solver.proof.deleteClause(old_lits);
-        solver.markDeleted(d_cref);
+        solver.arena.markDeleted(d_cref);
         self.any_deleted = true;
         solver.stats.strengthened_clauses += 1;
 
-        const lbd = clause_mod.rewrittenLbd(solver.clauseLbd(d_cref), kept.len);
-        switch (try solver.installClause(kept, solver.clauseKind(d_cref), lbd)) {
+        const lbd = clause_mod.rewrittenLbd(solver.arena.lbd(d_cref), kept.len);
+        switch (try solver.installClause(kept, solver.arena.kind(d_cref), lbd)) {
             .refuted => self.refuted = true,
             .unit, .binary => {},
             .long => |new_cref| try self.requeue(d_cref, new_cref, kept),
@@ -382,8 +382,8 @@ fn subsumeClause(
     d_cref: ClauseRef,
     any_deleted: *bool,
 ) !void {
-    try self.proof.deleteClause(self.clauseLits(d_cref));
-    self.markDeleted(d_cref);
+    try self.proof.deleteClause(self.arena.literals(d_cref));
+    self.arena.markDeleted(d_cref);
     any_deleted.* = true;
     self.stats.subsumed_clauses += 1;
 }
@@ -410,11 +410,11 @@ fn strengthenLongClause(
     unsat_derived: *bool,
 ) !void {
     // Build the strengthened literal list in a scratch buffer, since
-    // addClauseToArena may reallocate the arena.
+    // Adding a clause may reallocate the arena.
     var new_lits: std.ArrayList(Literal) = .empty;
     defer new_lits.deinit(self.allocator);
 
-    const d_lits_snapshot = self.clauseLits(d_cref);
+    const d_lits_snapshot = self.arena.literals(d_cref);
     const old_lits_copy = try self.allocator.dupe(Literal, d_lits_snapshot);
     defer self.allocator.free(old_lits_copy);
 
@@ -427,7 +427,7 @@ fn strengthenLongClause(
     new_lits.shrinkRetainingCapacity(kept.len);
 
     const new_len = new_lits.items.len;
-    const kind = self.clauseKind(d_cref);
+    const kind = self.arena.kind(d_cref);
 
     // Emit DRAT add FIRST, then delete (required for DRAT-RUP correctness
     // when the strengthened clause is the resolvent).
@@ -435,11 +435,11 @@ fn strengthenLongClause(
     try self.proof.deleteClause(old_lits_copy);
 
     // Mark old D deleted.
-    self.markDeleted(d_cref);
+    self.arena.markDeleted(d_cref);
     any_deleted.* = true;
     self.stats.strengthened_clauses += 1;
 
-    const new_lbd = clause_mod.rewrittenLbd(self.clauseLbd(d_cref), new_len);
+    const new_lbd = clause_mod.rewrittenLbd(self.arena.lbd(d_cref), new_len);
     const new_cref = switch (try self.installClause(new_lits.items, kind, new_lbd)) {
         .refuted => {
             unsat_derived.* = true;

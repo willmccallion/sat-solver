@@ -26,7 +26,7 @@ pub const Reason = struct {
     pub const none = Reason{ .raw = std.math.maxInt(u32) };
 
     pub fn fromClause(cref: ClauseRef) Reason {
-        // Solver.addClauseToArena keeps every cref below 2^31, leaving the
+        // ClauseArena.add keeps every cref below 2^31, leaving the
         // top bit clear so `isBinary` can discriminate.
         std.debug.assert(cref < binary_bit);
         return .{ .raw = cref };

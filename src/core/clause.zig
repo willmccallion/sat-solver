@@ -4,8 +4,8 @@ const cnf = @import("cnf.zig");
 const Literal = cnf.Literal;
 const ClauseRef = cnf.ClauseRef;
 
-// Clause arena header layout. Every clause lives in a single flat buffer
-// `arena: ArrayList(Literal)`; a ClauseRef is the arena index of its header.
+// Clause arena layout. Every long clause lives in one flat buffer of slots;
+// a ClauseRef is the index of its header.
 // Per clause:
 //   arena[cref + 0]  header — .raw = flags | length
 //   arena[cref + 1]  lbd
@@ -15,15 +15,143 @@ const ClauseRef = cnf.ClauseRef;
 // caps clause length below 2^30 (guaranteed by cnf.max_vars, since no
 // clause repeats a variable). assignment.Reason tags binary reasons with
 // bit 31, so every ClauseRef must stay below max_arena_slots.
-pub const learned_bit: u32 = 0x8000_0000;
-pub const deleted_bit: u32 = 0x4000_0000;
-pub const len_mask: u32 = 0x3fff_ffff;
-pub const max_arena_slots: usize = 1 << 31;
-pub const header_slots: u32 = 2;
+const learned_bit: u32 = 0x8000_0000;
+const deleted_bit: u32 = 0x4000_0000;
+const len_mask: u32 = 0x3fff_ffff;
+const max_arena_slots: usize = 1 << 31;
+const header_slots: u32 = 2;
 
 // Learned clauses are implied by the irredundant ones, so reduceDB may
 // delete them.
 pub const ClauseKind = enum { irredundant, learned };
+
+pub const ClauseArena = struct {
+    slots: std.ArrayList(Literal) = .empty,
+    // Slots held by deleted clauses, which compaction reclaims.
+    dead_slots: usize = 0,
+
+    pub const AddError = Allocator.Error || error{ClauseArenaFull};
+
+    pub fn deinit(self: *ClauseArena, allocator: Allocator) void {
+        self.slots.deinit(allocator);
+    }
+
+    // Reserves exactly the room for `clause_count` clauses totalling
+    // `literal_count` literals.
+    pub fn reserve(self: *ClauseArena, allocator: Allocator, clause_count: usize, literal_count: usize) Allocator.Error!void {
+        try self.slots.ensureTotalCapacityPrecise(allocator, clause_count * header_slots + literal_count);
+    }
+
+    pub fn add(self: *ClauseArena, allocator: Allocator, lits: []const Literal, clause_kind: ClauseKind, clause_lbd: u32) AddError!ClauseRef {
+        if (self.slots.items.len + header_slots + lits.len > max_arena_slots) return error.ClauseArenaFull;
+        const cref: ClauseRef = @intCast(self.slots.items.len);
+        const header: u32 = @as(u32, @intCast(lits.len)) | (if (clause_kind == .learned) learned_bit else 0);
+        try self.slots.ensureUnusedCapacity(allocator, header_slots + lits.len);
+        self.slots.appendSliceAssumeCapacity(&.{ .{ .raw = header }, .{ .raw = clause_lbd } });
+        self.slots.appendSliceAssumeCapacity(lits);
+        return cref;
+    }
+
+    pub inline fn length(self: *const ClauseArena, cref: ClauseRef) u32 {
+        return self.slots.items[cref].raw & len_mask;
+    }
+
+    pub inline fn isLearned(self: *const ClauseArena, cref: ClauseRef) bool {
+        return (self.slots.items[cref].raw & learned_bit) != 0;
+    }
+
+    pub inline fn kind(self: *const ClauseArena, cref: ClauseRef) ClauseKind {
+        return if (self.isLearned(cref)) .learned else .irredundant;
+    }
+
+    pub inline fn isDeleted(self: *const ClauseArena, cref: ClauseRef) bool {
+        return (self.slots.items[cref].raw & deleted_bit) != 0;
+    }
+
+    pub inline fn lbd(self: *const ClauseArena, cref: ClauseRef) u32 {
+        return self.slots.items[cref + 1].raw;
+    }
+
+    // Mutable, since propagation reorders a clause's watched literals.
+    pub inline fn literals(self: *ClauseArena, cref: ClauseRef) []Literal {
+        const start: usize = @as(usize, cref) + header_slots;
+        return self.slots.items[start .. start + self.length(cref)];
+    }
+
+    // Where propagation prefetches a clause from.
+    pub inline fn base(self: *const ClauseArena) [*]const Literal {
+        return self.slots.items.ptr;
+    }
+
+    // A learned clause that subsumes an irredundant one takes over its
+    // role in the formula, so it must no longer be eligible for reduceDB.
+    pub fn promoteToIrredundant(self: *ClauseArena, cref: ClauseRef) void {
+        self.slots.items[cref].raw &= ~learned_bit;
+    }
+
+    pub fn markDeleted(self: *ClauseArena, cref: ClauseRef) void {
+        std.debug.assert(!self.isDeleted(cref));
+        self.dead_slots += header_slots + self.length(cref);
+        self.slots.items[cref].raw |= deleted_bit;
+    }
+
+    pub fn isMostlyHoles(self: *const ClauseArena) bool {
+        return self.dead_slots * 2 > self.slots.items.len;
+    }
+
+    pub fn liveClauses(self: *const ClauseArena) LiveClauses {
+        return .{ .arena = self };
+    }
+
+    // Moves the live clauses, in order, into new storage without the holes
+    // deleted ones leave. The returned map gives each old ref its new one
+    // until the caller has rewritten every ref it holds. Nothing changes if
+    // allocating the new storage fails.
+    pub fn compact(self: *ClauseArena, allocator: Allocator) Allocator.Error!Relocation {
+        var fresh: std.ArrayList(Literal) = try .initCapacity(allocator, self.slots.items.len - self.dead_slots);
+        var live = self.liveClauses();
+        while (live.next()) |cref| {
+            const new_cref: ClauseRef = @intCast(fresh.items.len);
+            const end = @as(usize, cref) + header_slots + self.length(cref);
+            fresh.appendSliceAssumeCapacity(self.slots.items[cref..end]);
+            // The old LBD slot now records where the clause went.
+            self.slots.items[cref + 1].raw = new_cref;
+        }
+        const old = self.*;
+        self.* = .{ .slots = fresh };
+        return .{ .old = old };
+    }
+};
+
+// The arena's clauses that are not marked deleted, in arena order.
+pub const LiveClauses = struct {
+    arena: *const ClauseArena,
+    next_cref: ClauseRef = 0,
+
+    pub fn next(self: *LiveClauses) ?ClauseRef {
+        while (self.next_cref < self.arena.slots.items.len) {
+            const cref = self.next_cref;
+            self.next_cref += header_slots + self.arena.length(cref);
+            if (!self.arena.isDeleted(cref)) return cref;
+        }
+        return null;
+    }
+};
+
+// Maps each clause of a compacted arena to its new ref.
+pub const Relocation = struct {
+    old: ClauseArena,
+
+    pub fn deinit(self: *Relocation, allocator: Allocator) void {
+        self.old.deinit(allocator);
+    }
+
+    // Null for a clause that was deleted and so was not moved.
+    pub fn newRef(self: *const Relocation, old_cref: ClauseRef) ?ClauseRef {
+        if (self.old.isDeleted(old_cref)) return null;
+        return self.old.lbd(old_cref);
+    }
+};
 
 // The LBD of a clause rewritten to `new_len` literals by inprocessing at
 // level 0, where the levels that would recompute it are gone: its old LBD,

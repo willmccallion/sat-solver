@@ -371,7 +371,7 @@ test "solver satisfies a chain of implications from a unit" {
 // Count non-deleted clauses in the arena by walking headers.
 fn countLiveLongClauses(solver: *solver_mod.Solver) usize {
     var count: usize = 0;
-    var live = solver.liveClauses();
+    var live = solver.arena.liveClauses();
     while (live.next()) |_| count += 1;
     return count;
 }
@@ -442,8 +442,8 @@ test "a learned clause that subsumes an irredundant one becomes irredundant and 
     // and a bystander at LBD 3 the subsumer is the one it would pick.
     const subsumer_lits = [_]Literal{ Literal.fromDimacs(1), Literal.fromDimacs(2), Literal.fromDimacs(3) };
     const bystander_lits = [_]Literal{ Literal.fromDimacs(-1), Literal.fromDimacs(-2), Literal.fromDimacs(-4) };
-    const subsumer = try solver.addClauseToArena(&subsumer_lits, .learned, 9);
-    const bystander = try solver.addClauseToArena(&bystander_lits, .learned, 3);
+    const subsumer = try solver.arena.add(solver.allocator, &subsumer_lits, .learned, 9);
+    const bystander = try solver.arena.add(solver.allocator, &bystander_lits, .learned, 3);
     try solver.learned_clauses.appendSlice(gpa, &.{ subsumer, bystander });
     try solver.attachWatches(subsumer);
     try solver.attachWatches(bystander);
@@ -452,8 +452,8 @@ test "a learned clause that subsumes an irredundant one becomes irredundant and 
     try solver.reduceDB();
 
     try testing.expect(r == null);
-    try testing.expect(!solver.clauseIsDeleted(subsumer));
-    try testing.expect(!solver.clauseIsLearned(subsumer));
+    try testing.expect(!solver.arena.isDeleted(subsumer));
+    try testing.expect(!solver.arena.isLearned(subsumer));
     try testing.expectEqual(@as(usize, 2), countLiveLongClauses(solver));
 }
 
@@ -500,9 +500,9 @@ test "subsume strengthens a long clause to a new binary" {
     // length-3 clause added to the arena.
     var cref_long: ClauseRef = std.math.maxInt(u32);
     {
-        var live = solver.liveClauses();
+        var live = solver.arena.liveClauses();
         while (live.next()) |cref| {
-            const lits = solver.clauseLits(cref);
+            const lits = solver.arena.literals(cref);
             if (lits.len == 3 and lits[0].toDimacs() == 1 and
                 lits[1].toDimacs() == 2 and
                 lits[2].toDimacs() == -34)
@@ -518,7 +518,7 @@ test "subsume strengthens a long clause to a new binary" {
     try testing.expect(r == null);
 
     // The long clause must be marked deleted.
-    try testing.expect(solver.clauseIsDeleted(cref_long));
+    try testing.expect(solver.arena.isDeleted(cref_long));
 
     // bin_watchers must contain the new binary (1, -34).
     try testing.expect(solver.hasBinary(Literal.fromDimacs(1), Literal.fromDimacs(-34)));
@@ -573,7 +573,7 @@ test "subsume never deletes a clause that is a level-0 reason" {
     const solver = &t.solver;
 
     const locked_cref: ClauseRef = 0;
-    try testing.expectEqual(@as(u32, 4), solver.clauseLen(locked_cref));
+    try testing.expectEqual(@as(u32, 4), solver.arena.length(locked_cref));
 
     // Propagate the units so BCP locks (1 2 3 4) as the reason for 1.
     const conflict = try solver.propagate();
@@ -592,7 +592,7 @@ test "subsume never deletes a clause that is a level-0 reason" {
     const r = try solver.preprocessSubsume();
     try testing.expect(r == null);
 
-    try testing.expect(!solver.clauseIsDeleted(locked_cref));
+    try testing.expect(!solver.arena.isDeleted(locked_cref));
 }
 
 test "subsume refutes the formula when a unit it derives conflicts at level 0" {
@@ -759,7 +759,7 @@ test "bve never eliminates through a clause that is a level-0 reason" {
 fn addLearnedClause(solver: *solver_mod.Solver, dimacs: []const i32, lbd: u32) !ClauseRef {
     var lits: [16]Literal = undefined;
     for (dimacs, 0..) |d, i| lits[i] = Literal.fromDimacs(d);
-    const cref = try solver.addClauseToArena(lits[0..dimacs.len], .learned, lbd);
+    const cref = try solver.arena.add(solver.allocator, lits[0..dimacs.len], .learned, lbd);
     try solver.learned_clauses.append(testing.allocator, cref);
     try solver.attachWatches(cref);
     return cref;
@@ -793,6 +793,30 @@ fn randomThreeSat(seed: u64, num_vars: u32, num_clauses: usize) !cnf.Formula {
     return formula;
 }
 
+test "compaction moves live clauses over a hole and keeps their reasons and watches" {
+    // Deleting (7 8 9) leaves a hole before (1 2 3), the reason for 1 at
+    // level 0, and (4 5 6), which must still propagate afterwards.
+    var t = try TestSolver.init("p cnf 9 5\n7 8 9 0\n1 2 3 0\n4 5 6 0\n-2 0\n-3 0\n");
+    defer t.deinit();
+    const solver = &t.solver;
+    _ = try solver.propagate();
+    solver.arena.markDeleted(0);
+    solver.dropDeletedClauseRefs();
+
+    try solver.compact();
+
+    const reason = solver.assignment.vars[0].reason;
+    try testing.expectEqual(@as(ClauseRef, 0), reason.clauseRef());
+    try testing.expect(isLiteralSet(solver.arena.literals(reason.clauseRef()), &.{ 1, 2, 3 }));
+    try testing.expectEqual(@as(usize, 2), countLiveLongClauses(solver));
+    for ([_]i32{ -4, -5 }) |decision| {
+        try solver.assignment.pushDecisionLevel();
+        try solver.assignment.assign(Literal.fromDimacs(decision), Reason.none);
+        try testing.expect(try solver.propagate() == null);
+    }
+    try testing.expectEqual(assignment_mod.Value.true, solver.assignment.valueOfVar(5));
+}
+
 test "every long clause learned during search has an LBD of at least 2" {
     // A long learned clause holds the UIP at the conflict level plus
     // literals from lower, non-zero levels, so its true LBD is >= 2.
@@ -808,9 +832,9 @@ test "every long clause learned during search has an LBD of at least 2" {
     var long_learned: usize = 0;
     var below_two: usize = 0;
     for (solver.learned_clauses.items) |cref| {
-        if (solver.clauseIsDeleted(cref)) continue;
+        if (solver.arena.isDeleted(cref)) continue;
         long_learned += 1;
-        if (solver.clauseLbd(cref) < 2) below_two += 1;
+        if (solver.arena.lbd(cref) < 2) below_two += 1;
     }
     try testing.expect(long_learned > 0);
     try testing.expectEqual(@as(usize, 0), below_two);
@@ -826,8 +850,8 @@ test "a learned clause shortened by vivify keeps a non-zero LBD" {
 
     try testing.expect(r == null);
     const shortened = lastLearnedClause(solver);
-    try testing.expect(isLiteralSet(solver.clauseLits(shortened), &.{ 1, 2, 3 }));
-    try testing.expectEqual(@as(u32, 3), solver.clauseLbd(shortened));
+    try testing.expect(isLiteralSet(solver.arena.literals(shortened), &.{ 1, 2, 3 }));
+    try testing.expectEqual(@as(u32, 3), solver.arena.lbd(shortened));
 }
 
 test "a learned clause strengthened by subsume keeps a non-zero LBD" {
@@ -841,8 +865,8 @@ test "a learned clause strengthened by subsume keeps a non-zero LBD" {
 
     try testing.expect(r == null);
     const strengthened = lastLearnedClause(solver);
-    try testing.expect(isLiteralSet(solver.clauseLits(strengthened), &.{ 1, -34, 7 }));
-    try testing.expectEqual(@as(u32, 3), solver.clauseLbd(strengthened));
+    try testing.expect(isLiteralSet(solver.arena.literals(strengthened), &.{ 1, -34, 7 }));
+    try testing.expectEqual(@as(u32, 3), solver.arena.lbd(strengthened));
 }
 
 test "a learned clause rewritten by equiv keeps a non-zero LBD" {
@@ -855,15 +879,15 @@ test "a learned clause rewritten by equiv keeps a non-zero LBD" {
 
     try testing.expect(r == null);
     const rewritten = lastLearnedClause(solver);
-    try testing.expect(isLiteralSet(solver.clauseLits(rewritten), &.{ 1, 3, 4 }));
-    try testing.expectEqual(@as(u32, 2), solver.clauseLbd(rewritten));
+    try testing.expect(isLiteralSet(solver.arena.literals(rewritten), &.{ 1, 3, 4 }));
+    try testing.expectEqual(@as(u32, 2), solver.arena.lbd(rewritten));
 }
 
 fn countLiveClauses(solver: *solver_mod.Solver, dimacs: []const i32, kind: clause_mod.ClauseKind) usize {
     var count: usize = 0;
-    var live = solver.liveClauses();
+    var live = solver.arena.liveClauses();
     while (live.next()) |cref| {
-        if (solver.clauseKind(cref) == kind and isLiteralSet(solver.clauseLits(cref), dimacs)) count += 1;
+        if (solver.arena.kind(cref) == kind and isLiteralSet(solver.arena.literals(cref), dimacs)) count += 1;
     }
     return count;
 }

@@ -15,7 +15,7 @@ inline fn antecedents(self: *Solver, reason: Reason, scratch: *[1]Literal) []con
         scratch[0] = reason.binaryOther();
         return scratch;
     }
-    return self.clauseLits(reason.clauseRef())[1..];
+    return self.arena.literals(reason.clauseRef())[1..];
 }
 
 // One bit per decision level, folded mod 64: a cheap superset test for
@@ -53,7 +53,7 @@ fn resolveToFirstUip(self: *Solver, conflict: Conflict, conflict_level: u32) !Li
     var binary_scratch: [2]Literal = undefined;
     var antecedent_scratch: [1]Literal = undefined;
     var lits: []const Literal = switch (conflict) {
-        .clause => |cref| self.clauseLits(cref),
+        .clause => |cref| self.arena.literals(cref),
         .binary => |two| blk: {
             binary_scratch = two;
             break :blk &binary_scratch;

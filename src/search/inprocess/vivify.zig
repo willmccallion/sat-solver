@@ -30,14 +30,14 @@ const lbd_cap: u32 = 6;
 // propagates to a fixed point first, since a decision at level 1 would
 // claim any implication still pending at level 0.
 //
-// Memory safety: addClauseToArena may reallocate the arena and
-// invalidate outstanding `clauseLits` slices. We copy each candidate
+// Memory safety: Adding a clause may reallocate the arena and
+// invalidate outstanding `literals` slices. We copy each candidate
 // into `scratch` up-front and hold no arena slice across the decision
 // loop.
 //
 // Deleted-clause watcher sweep: shrunk/subsumed clauses leave their
-// watchers dangling in `watchers[...]` pointing at deleted_bit-set arena
-// slots. Propagate does not check `clauseIsDeleted`, so we must sweep
+// watchers dangling in `watchers[...]` pointing at deleted arena clauses.
+// Propagate does not check `isDeleted`, so we must sweep
 // watcher lists before returning.
 pub fn vivify(self: *Solver) !?Result {
     std.debug.assert(self.assignment.level == 0);
@@ -50,8 +50,8 @@ pub fn vivify(self: *Solver) !?Result {
     var candidates: std.ArrayList(ClauseRef) = .empty;
     defer candidates.deinit(self.allocator);
     for (self.learned_clauses.items) |cref| {
-        if (self.clauseIsDeleted(cref)) continue;
-        if (self.clauseLbd(cref) > lbd_cap) continue;
+        if (self.arena.isDeleted(cref)) continue;
+        if (self.arena.lbd(cref) > lbd_cap) continue;
         try candidates.append(self.allocator, cref);
     }
 
@@ -63,13 +63,13 @@ pub fn vivify(self: *Solver) !?Result {
     outer: for (candidates.items) |cref| {
         if (self.stats.propagations - props_start > budget) break;
         if (solver_mod.interruptRequested()) break;
-        if (self.clauseIsDeleted(cref)) continue;
+        if (self.arena.isDeleted(cref)) continue;
         if (self.clauseIsLocked(cref)) continue;
 
         // Copy lits before any decision-level push. Arena slices are
         // only safe between allocations; we intentionally don't hold one
         // across propagate().
-        const lits_now = self.clauseLits(cref);
+        const lits_now = self.arena.literals(cref);
         scratch.clearRetainingCapacity();
         try scratch.ensureTotalCapacity(self.allocator, lits_now.len);
         scratch.appendSliceAssumeCapacity(lits_now);
@@ -114,14 +114,14 @@ pub fn vivify(self: *Solver) !?Result {
         self.backtrack(0);
 
         if (subsumed) {
-            try self.proof.deleteClause(self.clauseLits(cref));
-            self.markDeleted(cref);
+            try self.proof.deleteClause(self.arena.literals(cref));
+            self.arena.markDeleted(cref);
             self.stats.vivified_clauses += 1;
             any_deleted = true;
             continue :outer;
         }
 
-        const original_len = self.clauseLen(cref);
+        const original_len = self.arena.length(cref);
         const new_len: usize = shrink_len orelse scratch.items.len;
         if (new_len >= original_len) continue;
 
@@ -133,12 +133,12 @@ pub fn vivify(self: *Solver) !?Result {
         }
 
         try self.proof.addClause(new_lits);
-        try self.proof.deleteClause(self.clauseLits(cref));
-        self.markDeleted(cref);
+        try self.proof.deleteClause(self.arena.literals(cref));
+        self.arena.markDeleted(cref);
         any_deleted = true;
         self.stats.vivified_clauses += 1;
 
-        const new_lbd = clause_mod.rewrittenLbd(self.clauseLbd(cref), new_len);
+        const new_lbd = clause_mod.rewrittenLbd(self.arena.lbd(cref), new_len);
         if (try self.installClause(new_lits, .learned, new_lbd) == .refuted) {
             try self.proof.empty();
             return .unsat;

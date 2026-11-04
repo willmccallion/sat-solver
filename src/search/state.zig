@@ -13,10 +13,6 @@ const clause_mod = core.clause;
 const Watcher = clause_mod.Watcher;
 const BinaryWatch = clause_mod.BinaryWatch;
 const ClauseKind = clause_mod.ClauseKind;
-const learned_bit = clause_mod.learned_bit;
-const deleted_bit = clause_mod.deleted_bit;
-const len_mask = clause_mod.len_mask;
-const header_slots = clause_mod.header_slots;
 
 const heuristics = @import("heuristics");
 const order_heap_mod = heuristics.order_heap;
@@ -108,10 +104,8 @@ pub const Solver = struct {
     allocator: Allocator,
     num_vars: u32,
 
-    // Clause arena. Every original (length >= 3) and learned clause lives
-    // in this single flat buffer; ClauseRef is an index of its header.
-    // See core/clause.zig for the on-disk layout.
-    arena: std.ArrayList(Literal),
+    // Every long (length >= 3) clause, original or learned.
+    arena: clause_mod.ClauseArena,
     watchers: []std.ArrayList(Watcher),
 
     // Per-literal binary watcher lists. Indexed by literal.raw. Each
@@ -171,10 +165,6 @@ pub const Solver = struct {
     // Focused/stable alternation.
     search_mode: mode_mod.SearchMode,
 
-    // Arena slots held by deleted clauses; compaction runs once they
-    // make up half the arena.
-    arena_dead_slots: usize,
-
     unsat_at_init: bool,
 
     stats: Stats,
@@ -205,7 +195,7 @@ pub const Solver = struct {
         var self: Solver = .{
             .allocator = allocator,
             .num_vars = formula.num_vars,
-            .arena = .empty,
+            .arena = .{},
             .watchers = &.{},
             .bin_watchers = &.{},
             .assignment = try Assignment.init(allocator, formula.num_vars),
@@ -233,7 +223,6 @@ pub const Solver = struct {
             .props_at_last_bve = 0,
             .equiv_witness = .empty,
             .search_mode = .focused,
-            .arena_dead_slots = 0,
             .unsat_at_init = false,
             .stats = .{},
         };
@@ -290,7 +279,8 @@ pub const Solver = struct {
     // Binaries live in bin_watchers, not in the arena.
     fn reserveClauseStorage(self: *Solver, formula: *const Formula) !void {
         const allocator = self.allocator;
-        var total_slots: usize = 0;
+        var long_clauses: usize = 0;
+        var long_literals: usize = 0;
         const WatchCounts = struct { long: u32 = 0, binary: u32 = 0 };
         const watch_counts = try allocator.alloc(WatchCounts, @as(usize, formula.num_vars) * 2);
         defer allocator.free(watch_counts);
@@ -301,12 +291,13 @@ pub const Solver = struct {
                 watch_counts[lits[0].negate().raw].binary += 1;
                 watch_counts[lits[1].negate().raw].binary += 1;
             } else if (lits.len >= 3) {
-                total_slots += lits.len + header_slots;
+                long_clauses += 1;
+                long_literals += lits.len;
                 watch_counts[lits[0].negate().raw].long += 1;
                 watch_counts[lits[1].negate().raw].long += 1;
             }
         }
-        try self.arena.ensureTotalCapacityPrecise(allocator, total_slots);
+        try self.arena.reserve(allocator, long_clauses, long_literals);
         errdefer self.arena.deinit(allocator);
         for (self.watchers, self.bin_watchers, watch_counts) |*w, *bw, counts| {
             try w.ensureTotalCapacityPrecise(allocator, counts.long);
@@ -349,32 +340,6 @@ pub const Solver = struct {
         self.proof = io.drat.Writer.wrap(w);
     }
 
-    pub inline fn clauseLen(self: *const Solver, cref: ClauseRef) u32 {
-        return self.arena.items[cref].raw & len_mask;
-    }
-
-    pub inline fn clauseIsLearned(self: *const Solver, cref: ClauseRef) bool {
-        return (self.arena.items[cref].raw & learned_bit) != 0;
-    }
-
-    pub inline fn clauseKind(self: *const Solver, cref: ClauseRef) ClauseKind {
-        return if (self.clauseIsLearned(cref)) .learned else .irredundant;
-    }
-
-    pub inline fn clauseIsDeleted(self: *const Solver, cref: ClauseRef) bool {
-        return (self.arena.items[cref].raw & deleted_bit) != 0;
-    }
-
-    pub inline fn clauseLbd(self: *const Solver, cref: ClauseRef) u32 {
-        return self.arena.items[cref + 1].raw;
-    }
-
-    pub inline fn clauseLits(self: *Solver, cref: ClauseRef) []Literal {
-        const len = self.clauseLen(cref);
-        const start: usize = @as(usize, cref) + header_slots;
-        return self.arena.items[start .. start + len];
-    }
-
     // An active variable is neither assigned nor eliminated, so at level 0
     // it is one the formula still constrains.
     pub fn varIsActive(self: *const Solver, v: u32) bool {
@@ -384,7 +349,7 @@ pub const Solver = struct {
     // A locked clause is the reason for a level-0 assignment, so deleting
     // or rewriting it would break the reason chain analyze follows.
     pub fn clauseIsLocked(self: *Solver, cref: ClauseRef) bool {
-        for (self.clauseLits(cref)) |lit| {
+        for (self.arena.literals(cref)) |lit| {
             const vi = self.assignment.vars[lit.variable()];
             if (vi.level == 0 and !vi.reason.isNone() and
                 !vi.reason.isBinary() and vi.reason.clauseRef() == cref)
@@ -395,18 +360,6 @@ pub const Solver = struct {
         return false;
     }
 
-    // A learned clause that subsumes an irredundant one takes over its
-    // role in the formula, so it must no longer be eligible for reduceDB.
-    pub fn promoteToIrredundant(self: *Solver, cref: ClauseRef) void {
-        self.arena.items[cref].raw &= ~learned_bit;
-    }
-
-    pub fn markDeleted(self: *Solver, cref: ClauseRef) void {
-        std.debug.assert(!self.clauseIsDeleted(cref));
-        self.arena_dead_slots += header_slots + self.clauseLen(cref);
-        self.arena.items[cref].raw |= deleted_bit;
-    }
-
     // Drops watchers and learned-list entries whose clause was marked
     // deleted, so nothing dereferences a tombstoned arena slot, and drops
     // learned-list entries that subsumption promoted to irredundant.
@@ -414,7 +367,7 @@ pub const Solver = struct {
         for (self.watchers) |*wlist| {
             var j: usize = 0;
             for (wlist.items) |w| {
-                if (!self.clauseIsDeleted(w.clause)) {
+                if (!self.arena.isDeleted(w.clause)) {
                     wlist.items[j] = w;
                     j += 1;
                 }
@@ -424,7 +377,7 @@ pub const Solver = struct {
 
         var j: usize = 0;
         for (self.learned_clauses.items) |cref| {
-            if (!self.clauseIsDeleted(cref) and self.clauseIsLearned(cref)) {
+            if (!self.arena.isDeleted(cref) and self.arena.isLearned(cref)) {
                 self.learned_clauses.items[j] = cref;
                 j += 1;
             }
@@ -432,38 +385,12 @@ pub const Solver = struct {
         self.learned_clauses.shrinkRetainingCapacity(j);
     }
 
-    pub fn liveClauses(self: *const Solver) LiveClauses {
-        return .{ .solver = self };
-    }
-
     pub fn binaryClauses(self: *const Solver) BinaryClauses {
         return .{ .solver = self };
     }
 
-    pub fn arenaIsMostlyHoles(self: *const Solver) bool {
-        return self.arena_dead_slots * 2 > self.arena.items.len;
-    }
-
-    pub fn addClauseToArena(
-        self: *Solver,
-        lits: []const Literal,
-        kind: ClauseKind,
-        lbd: u32,
-    ) !ClauseRef {
-        if (self.arena.items.len + header_slots + lits.len > clause_mod.max_arena_slots) {
-            return error.ClauseArenaFull;
-        }
-        const ref: ClauseRef = @intCast(self.arena.items.len);
-        const header_raw: u32 = @as(u32, @intCast(lits.len)) |
-            (if (kind == .learned) learned_bit else 0);
-        try self.arena.append(self.allocator, .{ .raw = header_raw });
-        try self.arena.append(self.allocator, .{ .raw = lbd });
-        try self.arena.appendSlice(self.allocator, lits);
-        return ref;
-    }
-
     pub fn attachWatches(self: *Solver, cref: ClauseRef) !void {
-        const lits = self.clauseLits(cref);
+        const lits = self.arena.literals(cref);
         std.debug.assert(lits.len >= 3);
         const w0 = &self.watchers[lits[0].negate().raw];
         const w1 = &self.watchers[lits[1].negate().raw];
@@ -498,7 +425,7 @@ pub const Solver = struct {
                 return .binary;
             },
             else => {
-                const cref = try self.addClauseToArena(lits, kind, lbd);
+                const cref = try self.arena.add(self.allocator, lits, kind, lbd);
                 try self.attachWatches(cref);
                 if (kind == .learned) try self.learned_clauses.append(self.allocator, cref);
                 return .{ .long = cref };
@@ -586,21 +513,6 @@ fn removeBinaryWatch(list: *std.ArrayList(BinaryWatch), other: Literal) void {
         }
     }
 }
-
-// The arena's clauses that are not marked deleted, in arena order.
-pub const LiveClauses = struct {
-    solver: *const Solver,
-    next_cref: ClauseRef = 0,
-
-    pub fn next(self: *LiveClauses) ?ClauseRef {
-        while (self.next_cref < self.solver.arena.items.len) {
-            const cref = self.next_cref;
-            self.next_cref += header_slots + self.solver.clauseLen(cref);
-            if (!self.solver.clauseIsDeleted(cref)) return cref;
-        }
-        return null;
-    }
-};
 
 // Each binary clause once, as `{a, b}` with `a.raw < b.raw`, although the
 // watch lists hold it twice.

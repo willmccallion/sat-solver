@@ -293,7 +293,7 @@ const Rewrite = struct {
     }
 
     fn collect(self: *Rewrite) !void {
-        var live = self.solver.liveClauses();
+        var live = self.solver.arena.liveClauses();
         while (live.next()) |cref| try self.collectLong(cref);
         var binaries = self.solver.binaryClauses();
         while (binaries.next()) |pair| try self.collectBinary(pair);
@@ -302,7 +302,7 @@ const Rewrite = struct {
     fn collectLong(self: *Rewrite, cref: ClauseRef) !void {
         const solver = self.solver;
         const allocator = solver.allocator;
-        const lits = solver.clauseLits(cref);
+        const lits = solver.arena.literals(cref);
         if (lits.len < 3) return;
         const changes = for (lits) |lit| {
             if (!self.lit_remap[lit.raw].eql(lit)) break true;
@@ -317,7 +317,7 @@ const Rewrite = struct {
             try self.new_clauses.append(allocator, new_lits);
         }
         try self.old_clauses.append(allocator, lits);
-        try self.long.append(allocator, .{ .old_cref = cref, .kind = solver.clauseKind(cref), .new_index = new_index });
+        try self.long.append(allocator, .{ .old_cref = cref, .kind = solver.arena.kind(cref), .new_index = new_index });
     }
 
     fn collectBinary(self: *Rewrite, old: [2]Literal) !void {
@@ -347,10 +347,10 @@ const Rewrite = struct {
     fn apply(self: *const Rewrite) !state.RootUnit {
         const solver = self.solver;
         for (self.long.items) |rewrite| {
-            solver.markDeleted(rewrite.old_cref);
+            solver.arena.markDeleted(rewrite.old_cref);
             const new_index = rewrite.new_index orelse continue;
             const new_lits = self.new_clauses.get(new_index);
-            const lbd = clause_mod.rewrittenLbd(solver.clauseLbd(rewrite.old_cref), new_lits.len);
+            const lbd = clause_mod.rewrittenLbd(solver.arena.lbd(rewrite.old_cref), new_lits.len);
             if (try solver.installClause(new_lits, rewrite.kind, lbd) == .refuted) return .refuted;
         }
         for (self.binaries.items) |rewrite| {

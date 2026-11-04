@@ -35,7 +35,7 @@ const Result = solver_mod.Result;
 // resolvent triggers `.unsat` immediately after emitting an empty DRAT
 // clause.
 //
-// Memory safety: addClauseToArena may reallocate self.arena. Each
+// Memory safety: adding a clause may reallocate the arena. Each
 // original clause's literals are materialized into a scratch buffer
 // before the resolution / commit phase, and no arena slice is held
 // across an allocation boundary.
@@ -149,18 +149,18 @@ const Elimination = struct {
         const long_counts = try solver.allocator.alloc(u32, self.occ.len);
         defer solver.allocator.free(long_counts);
         @memset(long_counts, 0);
-        var live = solver.liveClauses();
+        var live = solver.arena.liveClauses();
         while (live.next()) |cref| {
-            for (solver.clauseLits(cref)) |lit| long_counts[lit.raw] += 1;
+            for (solver.arena.literals(cref)) |lit| long_counts[lit.raw] += 1;
         }
         for (self.occ, long_counts, 0..) |*o, n, lit_raw| {
             const binary_count = solver.bin_watchers[lit_raw ^ 1].items.len;
             try o.ensureTotalCapacityPrecise(solver.allocator, n + binary_count);
         }
 
-        live = solver.liveClauses();
+        live = solver.arena.liveClauses();
         while (live.next()) |cref| {
-            for (solver.clauseLits(cref)) |lit| self.occ[lit.raw].appendAssumeCapacity(.{ .long = cref });
+            for (solver.arena.literals(cref)) |lit| self.occ[lit.raw].appendAssumeCapacity(.{ .long = cref });
         }
         var binaries = solver.binaryClauses();
         while (binaries.next()) |pair| {
@@ -245,12 +245,12 @@ const Elimination = struct {
         for (self.occ[lit.raw].items) |o| {
             switch (o) {
                 .long => |cref| {
-                    if (solver.clauseIsDeleted(cref)) continue;
+                    if (solver.arena.isDeleted(cref)) continue;
                     if (solver.clauseIsLocked(cref)) return false;
                     // A learned clause is implied by the irredundant ones, so
                     // it takes no part in resolution; the commit deletes it.
-                    if (solver.clauseIsLearned(cref)) continue;
-                    try clauses.append(solver.allocator, solver.clauseLits(cref));
+                    if (solver.arena.isLearned(cref)) continue;
+                    try clauses.append(solver.allocator, solver.arena.literals(cref));
                 },
                 .binary => |other| {
                     // A binary's mirror entry outlives it once `other`'s
@@ -341,9 +341,9 @@ const Elimination = struct {
         for (self.occ[lit.raw].items) |o| {
             switch (o) {
                 .long => |cref| {
-                    if (solver.clauseIsDeleted(cref)) continue;
-                    if (solver.clauseIsLearned(cref)) try solver.proof.deleteClause(solver.clauseLits(cref));
-                    solver.markDeleted(cref);
+                    if (solver.arena.isDeleted(cref)) continue;
+                    if (solver.arena.isLearned(cref)) try solver.proof.deleteClause(solver.arena.literals(cref));
+                    solver.arena.markDeleted(cref);
                     self.any_deleted = true;
                 },
                 .binary => |other| solver.removeBinary(lit, other),

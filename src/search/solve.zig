@@ -38,7 +38,7 @@ fn preprocess(self: *Solver) !?Result {
         if (try pass(self)) |r| return r;
         if (solver_mod.interruptRequested()) return .unknown;
     }
-    if (self.arenaIsMostlyHoles()) try self.compact();
+    if (self.arena.isMostlyHoles()) try self.compact();
     return null;
 }
 
@@ -74,7 +74,7 @@ fn conflictLevel(self: *Solver, conflict: Conflict) u32 {
     return switch (conflict) {
         .clause => |cref| blk: {
             var highest: u32 = 0;
-            for (self.clauseLits(cref)) |lit| highest = @max(highest, vars[lit.variable()].level);
+            for (self.arena.literals(cref)) |lit| highest = @max(highest, vars[lit.variable()].level);
             break :blk highest;
         },
         .binary => |two| @max(vars[two[0].variable()].level, vars[two[1].variable()].level),
@@ -118,7 +118,7 @@ fn learnClause(self: *Solver, lbd: u32, backjump_level: u32) !void {
             self.stats.learned_clauses += 1;
         },
         else => {
-            const cref = try self.addClauseToArena(learned, .learned, lbd);
+            const cref = try self.arena.add(self.allocator, learned, .learned, lbd);
             try self.learned_clauses.append(self.allocator, cref);
             try self.attachWatches(cref);
             try self.assignment.assignAtLevel(learned[0], Reason.fromClause(cref), backjump_level);
@@ -203,7 +203,7 @@ fn runDueTasks(self: *Solver, due: DueTasks) !?Result {
         schedules.equiv.advance(self.stats.conflicts);
     }
     if (due.mode_switch) switchSearchMode(self);
-    if (self.arenaIsMostlyHoles()) try self.compact();
+    if (self.arena.isMostlyHoles()) try self.compact();
     return null;
 }
 

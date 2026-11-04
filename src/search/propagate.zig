@@ -22,7 +22,7 @@ const Result = @import("solver.zig").Result;
 pub fn propagate(self: *Solver) !?Conflict {
     // Neither buffer moves during propagate, so both pointers stay in registers.
     const lit_values = self.assignment.lit_values.ptr;
-    const arena_ptr = self.arena.items.ptr;
+    const arena_ptr = self.arena.base();
 
     while (self.assignment.propagation_head < self.assignment.trail.items.len) {
         const p = self.assignment.trail.items[self.assignment.propagation_head];
@@ -73,7 +73,7 @@ pub fn propagate(self: *Solver) !?Conflict {
                 @prefetch(arena_ptr + next_cref, .{ .locality = 3 });
             }
 
-            const lits = self.clauseLits(w.clause);
+            const lits = self.arena.literals(w.clause);
             const false_lit = p.negate();
 
             if (lits[0].eql(false_lit)) {
