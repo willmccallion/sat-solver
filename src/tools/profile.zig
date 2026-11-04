@@ -1,6 +1,10 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const SolverStats = @import("search").solver.Stats;
+const report = @import("report.zig");
+const Color = report.Color;
+const box = report.box;
+const Table = report.Table;
 
 // sat-profile — orchestrator for `zig build bench`. Spawns sat-bench
 // under `perf stat` (counters + Intel topdown metrics) and `perf
@@ -18,17 +22,6 @@ const events_list =
     "L1-dcache-loads,L1-dcache-load-misses," ++
     "LLC-loads,LLC-load-misses";
 
-const Color = struct {
-    const reset = "\x1b[0m";
-    const bold = "\x1b[1m";
-    const dim = "\x1b[2m";
-    const red = "\x1b[31m";
-    const green = "\x1b[32m";
-    const yellow = "\x1b[33m";
-    const cyan = "\x1b[36m";
-    const gray = "\x1b[90m";
-};
-
 const width: usize = 68;
 
 // perf entries below this share of samples are noise.
@@ -40,39 +33,8 @@ const top_n = 8;
 const min_topdown_total_percent: f64 = 0.5;
 
 const Stats = struct {
-    // hardware counters (summed across cpu_core + cpu_atom on hybrid)
-    cycles: u64 = 0,
-    instructions: u64 = 0,
-    branches: u64 = 0,
-    branch_misses: u64 = 0,
-    cache_references: u64 = 0,
-    cache_misses: u64 = 0,
-    l1d_loads: u64 = 0,
-    l1d_load_misses: u64 = 0,
-    llc_loads: u64 = 0,
-    llc_load_misses: u64 = 0,
-
-    // intel topdown L1 (percentages; summed across PMUs because only one is active)
-    topdown_retiring: f64 = 0,
-    topdown_bad_spec: f64 = 0,
-    topdown_fe_bound: f64 = 0,
-    topdown_be_bound: f64 = 0,
-
-    // from sat-bench stdout
-    elapsed_ns: u64 = 0,
-    instance_count: u64 = 0,
-    sat_count: u64 = 0,
-    unsat_count: u64 = 0,
-    unknown_count: u64 = 0,
-    dist_min_ms: f64 = 0,
-    dist_p50_ms: f64 = 0,
-    dist_p90_ms: f64 = 0,
-    dist_p99_ms: f64 = 0,
-    dist_max_ms: f64 = 0,
-    solver: SolverStats = .{},
-    peak_rss_kb: u64 = 0,
-    par2_s: f64 = 0,
-    timeout_s: u64 = 0,
+    perf: report.PerfStat = .{},
+    bench: report.BenchSummary = .{},
 };
 
 const Hotspot = struct {
@@ -197,8 +159,12 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(1);
         }
 
-        parseBenchOutput(result.stdout, &stats);
-        parsePerfStat(result.stderr, &stats);
+        stats.bench = report.BenchSummary.parse(result.stdout) catch {
+            try stderr.print("sat-profile: cannot read the sat-bench summary:\n{s}\n", .{result.stdout});
+            try stderr.flush();
+            std.process.exit(1);
+        };
+        stats.perf = .parse(result.stderr);
     }
 
     try stdout.print("{s}[2/3] perf record (call-graph sampling)...{s}\n", .{ Color.dim, Color.reset });
@@ -296,7 +262,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     try stdout.writeAll("\n");
-    try printReport(stdout, dirs, &stats, hotspots.items, hot_insns.items);
+    try printReport(.{ .writer = stdout, .width = width }, dirs, &stats, hotspots.items, hot_insns.items);
 }
 
 fn readPerfEventParanoid(io: std.Io) ?i32 {
@@ -315,171 +281,6 @@ fn perfAvailable(gpa: Allocator, io: std.Io) bool {
     defer gpa.free(r.stdout);
     defer gpa.free(r.stderr);
     return r.term == .exited and r.term.exited == 0;
-}
-
-fn parseBenchOutput(output: []const u8, stats: *Stats) void {
-    var it = std.mem.splitScalar(u8, output, '\n');
-    while (it.next()) |raw_line| {
-        const line = std.mem.trim(u8, raw_line, " \t\r");
-        if (std.mem.startsWith(u8, line, "solved ")) {
-            // Line shape: "solved N instances: X SAT, Y UNSAT, Z unknown"
-            const rest = line["solved ".len..];
-            const space = std.mem.indexOfScalar(u8, rest, ' ') orelse continue;
-            stats.instance_count = std.fmt.parseInt(u64, rest[0..space], 10) catch 0;
-            stats.sat_count = extractCountBefore(line, " SAT");
-            stats.unsat_count = extractCountBefore(line, " UNSAT");
-            stats.unknown_count = extractCountBefore(line, " unknown");
-        } else if (std.mem.startsWith(u8, line, "total ")) {
-            const rest = line["total ".len..];
-            const space = std.mem.indexOfScalar(u8, rest, ' ') orelse continue;
-            const ms = std.fmt.parseFloat(f64, rest[0..space]) catch continue;
-            stats.elapsed_ns = @intFromFloat(ms * 1e6);
-        } else if (std.mem.startsWith(u8, line, "dist_ms:")) {
-            parseKeyValuePairs(line["dist_ms:".len..], struct {
-                fn apply(dst: *Stats, key: []const u8, val: []const u8) void {
-                    const f = std.fmt.parseFloat(f64, val) catch return;
-                    if (std.mem.eql(u8, key, "min")) dst.dist_min_ms = f;
-                    if (std.mem.eql(u8, key, "p50")) dst.dist_p50_ms = f;
-                    if (std.mem.eql(u8, key, "p90")) dst.dist_p90_ms = f;
-                    if (std.mem.eql(u8, key, "p99")) dst.dist_p99_ms = f;
-                    if (std.mem.eql(u8, key, "max")) dst.dist_max_ms = f;
-                }
-            }.apply, stats);
-        } else if (std.mem.startsWith(u8, line, "stats:")) {
-            parseKeyValuePairs(line["stats:".len..], struct {
-                fn apply(dst: *Stats, key: []const u8, val: []const u8) void {
-                    const n = std.fmt.parseInt(u64, val, 10) catch return;
-                    inline for (comptime std.meta.fieldNames(SolverStats)) |name| {
-                        if (std.mem.eql(u8, key, name)) @field(dst.solver, name) = n;
-                    }
-                }
-            }.apply, stats);
-        } else if (std.mem.startsWith(u8, line, "peak_rss_kb:")) {
-            const rest = std.mem.trim(u8, line["peak_rss_kb:".len..], " \t");
-            stats.peak_rss_kb = std.fmt.parseInt(u64, rest, 10) catch 0;
-        } else if (std.mem.startsWith(u8, line, "par2_s:")) {
-            const rest = std.mem.trim(u8, line["par2_s:".len..], " \t");
-            stats.par2_s = std.fmt.parseFloat(f64, rest) catch 0;
-        } else if (std.mem.startsWith(u8, line, "timeout_s:")) {
-            const rest = std.mem.trim(u8, line["timeout_s:".len..], " \t");
-            stats.timeout_s = std.fmt.parseInt(u64, rest, 10) catch 0;
-        }
-    }
-}
-
-// Pulls the integer immediately preceding `needle` in the line.
-// Given "solved 400 instances: 237 SAT, 150 UNSAT, 13 unknown"
-// and needle " SAT", returns 237. Used to avoid writing a regex
-// for the three-token result tally.
-fn extractCountBefore(line: []const u8, needle: []const u8) u64 {
-    const idx = std.mem.indexOf(u8, line, needle) orelse return 0;
-    var end = idx;
-    while (end > 0 and (line[end - 1] == ' ' or line[end - 1] == '\t')) end -= 1;
-    var start = end;
-    while (start > 0 and std.ascii.isDigit(line[start - 1])) start -= 1;
-    return std.fmt.parseInt(u64, line[start..end], 10) catch 0;
-}
-
-// Parses space-separated `key=value` pairs. Callback receives a pointer
-// to Stats so it can mutate fields directly. Simple, no allocation.
-fn parseKeyValuePairs(
-    payload: []const u8,
-    comptime apply: fn (dst: *Stats, key: []const u8, val: []const u8) void,
-    stats: *Stats,
-) void {
-    var it = std.mem.tokenizeAny(u8, payload, " \t");
-    while (it.next()) |token| {
-        const eq = std.mem.indexOfScalar(u8, token, '=') orelse continue;
-        apply(stats, token[0..eq], token[eq + 1 ..]);
-    }
-}
-
-fn parsePerfStat(output: []const u8, stats: *Stats) void {
-    // Hybrid Intel CPUs report the same events (and the same topdown
-    // metric group) twice — once for cpu_core and once for cpu_atom.
-    // Summing both inflates cycle counts and doubles the topdown
-    // percentages. The kernel scheduler parks single-threaded compute
-    // workloads on cpu_core almost exclusively, so we track the PMU
-    // of the current line and only accept values from cpu_core. On
-    // non-hybrid CPUs the event column has no cpu_* prefix and we
-    // accept everything.
-    var pmu_is_atom: bool = false;
-
-    var it = std.mem.splitScalar(u8, output, '\n');
-    while (it.next()) |raw_line| {
-        const line = std.mem.trim(u8, raw_line, " \t\r");
-        if (line.len == 0 or line[0] == '#') continue;
-
-        var fields = std.mem.splitScalar(u8, line, ',');
-        const value_str = fields.next() orelse continue;
-        _ = fields.next() orelse continue; // unit
-        const event_raw = fields.next() orelse continue;
-        _ = fields.next() orelse continue; // runtime
-        _ = fields.next() orelse continue; // pct
-        const metric_value = fields.next() orelse "";
-        const metric_unit = fields.next() orelse "";
-
-        // If this row names an event, use it to update our PMU state.
-        // Metric continuation rows (empty event column) inherit the
-        // PMU of the most recent event row.
-        if (event_raw.len > 0) {
-            if (std.mem.startsWith(u8, event_raw, "cpu_atom/")) {
-                pmu_is_atom = true;
-            } else if (std.mem.startsWith(u8, event_raw, "cpu_core/")) {
-                pmu_is_atom = false;
-            }
-            // No prefix → not a hybrid CPU; treat as accepted.
-        }
-
-        if (pmu_is_atom) continue;
-
-        // Counter line: parse the numeric value column if present.
-        if (value_str.len > 0 and value_str[0] != '<') {
-            if (std.fmt.parseInt(u64, value_str, 10)) |value| {
-                const event = stripEventName(event_raw);
-                addCounter(stats, event, value);
-            } else |_| {}
-        }
-
-        // Topdown metric line: metric_unit names the metric, metric_value
-        // holds the percentage. These appear on topdown group rows —
-        // sometimes the counter value is `<not counted>` because the
-        // group uses shared slots.
-        if (metric_unit.len > 0 and metric_value.len > 0) {
-            const mu = std.mem.trim(u8, metric_unit, " \t");
-            var name = mu;
-            if (std.mem.startsWith(u8, name, "%")) name = name[1..];
-            name = std.mem.trim(u8, name, " \t");
-            const mv = std.fmt.parseFloat(f64, metric_value) catch continue;
-            if (std.mem.eql(u8, name, "tma_retiring")) stats.topdown_retiring += mv //
-            else if (std.mem.eql(u8, name, "tma_bad_speculation")) stats.topdown_bad_spec += mv //
-            else if (std.mem.eql(u8, name, "tma_frontend_bound")) stats.topdown_fe_bound += mv //
-            else if (std.mem.eql(u8, name, "tma_backend_bound")) stats.topdown_be_bound += mv;
-        }
-    }
-}
-
-fn addCounter(stats: *Stats, event: []const u8, value: u64) void {
-    if (std.mem.eql(u8, event, "cycles")) stats.cycles += value //
-    else if (std.mem.eql(u8, event, "instructions")) stats.instructions += value //
-    else if (std.mem.eql(u8, event, "branches")) stats.branches += value //
-    else if (std.mem.eql(u8, event, "branch-misses")) stats.branch_misses += value //
-    else if (std.mem.eql(u8, event, "cache-references")) stats.cache_references += value //
-    else if (std.mem.eql(u8, event, "cache-misses")) stats.cache_misses += value //
-    else if (std.mem.eql(u8, event, "L1-dcache-loads")) stats.l1d_loads += value //
-    else if (std.mem.eql(u8, event, "L1-dcache-load-misses")) stats.l1d_load_misses += value //
-    else if (std.mem.eql(u8, event, "LLC-loads")) stats.llc_loads += value //
-    else if (std.mem.eql(u8, event, "LLC-load-misses")) stats.llc_load_misses += value;
-}
-
-fn stripEventName(event_in: []const u8) []const u8 {
-    var e = event_in;
-    if (std.mem.startsWith(u8, e, "cpu_core/")) e = e["cpu_core/".len..];
-    if (std.mem.startsWith(u8, e, "cpu_atom/")) e = e["cpu_atom/".len..];
-    if (std.mem.endsWith(u8, e, "/u")) e = e[0 .. e.len - 2];
-    if (std.mem.endsWith(u8, e, "/")) e = e[0 .. e.len - 1];
-    if (std.mem.endsWith(u8, e, ":u")) e = e[0 .. e.len - 2];
-    return e;
 }
 
 fn parsePerfReport(
@@ -613,48 +414,6 @@ fn verdictLabel(v: Verdict) []const u8 {
     };
 }
 
-const box_tl = "╭";
-const box_tr = "╮";
-const box_bl = "╰";
-const box_br = "╯";
-const box_h = "─";
-const box_v = "│";
-const box_lt = "├";
-const box_rt = "┤";
-
-fn hrule(w: *std.Io.Writer, left: []const u8, right: []const u8) !void {
-    try w.print("{s}{s}", .{ Color.gray, left });
-    var i: usize = 0;
-    while (i < width - 2) : (i += 1) try w.writeAll(box_h);
-    try w.print("{s}{s}\n", .{ right, Color.reset });
-}
-
-fn startRow(w: *std.Io.Writer) !void {
-    try w.print("{s}{s}{s}  ", .{ Color.gray, box_v, Color.reset });
-}
-
-fn endRow(w: *std.Io.Writer, visible_cols: usize) !void {
-    var pad: usize = 0;
-    if (2 + visible_cols < width - 1) pad = (width - 1) - (2 + visible_cols);
-    var i: usize = 0;
-    while (i < pad) : (i += 1) try w.writeAll(" ");
-    try w.print("{s}{s}{s}\n", .{ Color.gray, box_v, Color.reset });
-}
-
-fn blankRow(w: *std.Io.Writer) !void {
-    try startRow(w);
-    try endRow(w, 0);
-}
-
-fn sectionHeader(w: *std.Io.Writer, text: []const u8) !void {
-    try hrule(w, box_lt, box_rt);
-    try blankRow(w);
-    try startRow(w);
-    try w.print("{s}{s}{s}", .{ Color.bold, text, Color.reset });
-    try endRow(w, text.len);
-    try blankRow(w);
-}
-
 fn formatCount(buf: []u8, n: u64) []const u8 {
     const nf: f64 = @floatFromInt(n);
     if (n >= 1_000_000_000) return std.fmt.bufPrint(buf, "{d:.2}B", .{nf / 1e9}) catch buf[0..0];
@@ -671,242 +430,239 @@ fn formatTime(buf: []u8, ns: f64) []const u8 {
 }
 
 fn printReport(
-    w: *std.Io.Writer,
+    t: Table,
     dirs: []const []const u8,
     stats: *const Stats,
     hotspots: []const Hotspot,
     hot_insns: []const HotInsn,
 ) !void {
-    const cycles: f64 = @floatFromInt(stats.cycles);
-    const insns: f64 = @floatFromInt(stats.instructions);
-    const branches: f64 = @floatFromInt(stats.branches);
-    const brmisses: f64 = @floatFromInt(stats.branch_misses);
-    const l1d_loads: f64 = @floatFromInt(stats.l1d_loads);
-    const l1d_miss: f64 = @floatFromInt(stats.l1d_load_misses);
+    const cycles: f64 = @floatFromInt(stats.perf.cycles);
+    const insns: f64 = @floatFromInt(stats.perf.instructions);
+    const branches: f64 = @floatFromInt(stats.perf.branches);
+    const brmisses: f64 = @floatFromInt(stats.perf.branch_misses);
+    const l1d_loads: f64 = @floatFromInt(stats.perf.l1d_loads);
+    const l1d_miss: f64 = @floatFromInt(stats.perf.l1d_load_misses);
 
     const ipc: f64 = if (cycles > 0) insns / cycles else 0;
     const br_pct: f64 = if (branches > 0) brmisses * 100.0 / branches else 0;
     const l1d_pct: f64 = if (l1d_loads > 0) l1d_miss * 100.0 / l1d_loads else 0;
     const l1d_mpki: f64 = if (insns > 0) l1d_miss * 1000.0 / insns else 0;
 
-    const elapsed_ns_f: f64 = @floatFromInt(stats.elapsed_ns);
+    const elapsed_ns_f: f64 = @floatFromInt(stats.bench.elapsed_ns);
     const elapsed_ms = elapsed_ns_f / 1e6;
-    const per_inst_ms: f64 = if (stats.instance_count > 0)
-        elapsed_ms / @as(f64, @floatFromInt(stats.instance_count))
+    const per_inst_ms: f64 = if (stats.bench.instance_count > 0)
+        elapsed_ms / @as(f64, @floatFromInt(stats.bench.instance_count))
     else
         0;
 
     const effective_ghz: f64 = if (elapsed_ns_f > 0) cycles / elapsed_ns_f else 0;
 
-    try hrule(w, box_tl, box_tr);
-    try startRow(w);
-    try w.print("{s}{s}sat-bench perf baseline{s}", .{ Color.bold, Color.cyan, Color.reset });
-    try endRow(w, "sat-bench perf baseline".len);
-    try blankRow(w);
+    try t.rule(box.tl, box.tr);
+    try t.startRow();
+    try t.writer.print("{s}{s}sat-bench perf baseline{s}", .{ Color.bold, Color.cyan, Color.reset });
+    try t.endRow("sat-bench perf baseline".len);
+    try t.blankRow();
 
     for (dirs, 0..) |d, i| {
-        try startRow(w);
-        if (i == 0) try w.writeAll("workload   ") else try w.writeAll("           ");
-        try w.print("{s}{s}{s}", .{ Color.cyan, d, Color.reset });
-        try endRow(w, "workload   ".len + d.len);
+        try t.startRow();
+        if (i == 0) try t.writer.writeAll("workload   ") else try t.writer.writeAll("           ");
+        try t.writer.print("{s}{s}{s}", .{ Color.cyan, d, Color.reset });
+        try t.endRow("workload   ".len + d.len);
     }
 
     {
-        try startRow(w);
-        try w.writeAll("instances  ");
+        try t.startRow();
+        try t.writer.writeAll("instances  ");
         var nb: [32]u8 = undefined;
-        const nstr = try std.fmt.bufPrint(&nb, "{d}", .{stats.instance_count});
-        try w.print("{s}{s}{s}", .{ Color.cyan, nstr, Color.reset });
-        try endRow(w, "instances  ".len + nstr.len);
+        const nstr = try std.fmt.bufPrint(&nb, "{d}", .{stats.bench.instance_count});
+        try t.writer.print("{s}{s}{s}", .{ Color.cyan, nstr, Color.reset });
+        try t.endRow("instances  ".len + nstr.len);
     }
     {
         // solved N/M with a SAT/UNSAT breakdown — the first thing you
         // want to see when switching to a timed industrial bench where
         // not every instance finishes.
-        try startRow(w);
-        try w.writeAll("solved     ");
+        try t.startRow();
+        try t.writer.writeAll("solved     ");
         var nb: [64]u8 = undefined;
-        const solved = stats.sat_count + stats.unsat_count;
+        const solved = stats.bench.sat_count + stats.bench.unsat_count;
         const nstr = try std.fmt.bufPrint(
             &nb,
             "{d} / {d}",
-            .{ solved, stats.instance_count },
+            .{ solved, stats.bench.instance_count },
         );
-        const solved_color = if (stats.unknown_count == 0)
+        const solved_color = if (stats.bench.unknown_count == 0)
             Color.green
-        else if (solved * 2 >= stats.instance_count)
+        else if (solved * 2 >= stats.bench.instance_count)
             Color.yellow
         else
             Color.red;
-        try w.print("{s}{s}{s}", .{ solved_color, nstr, Color.reset });
+        try t.writer.print("{s}{s}{s}", .{ solved_color, nstr, Color.reset });
         var db: [64]u8 = undefined;
         const dstr = try std.fmt.bufPrint(
             &db,
             "  ({d} SAT, {d} UNSAT, {d} timeout)",
-            .{ stats.sat_count, stats.unsat_count, stats.unknown_count },
+            .{ stats.bench.sat_count, stats.bench.unsat_count, stats.bench.unknown_count },
         );
-        try w.print("{s}{s}{s}", .{ Color.dim, dstr, Color.reset });
-        try endRow(w, "solved     ".len + nstr.len + dstr.len);
+        try t.writer.print("{s}{s}{s}", .{ Color.dim, dstr, Color.reset });
+        try t.endRow("solved     ".len + nstr.len + dstr.len);
     }
     {
-        try startRow(w);
-        try w.writeAll("wall time  ");
+        try t.startRow();
+        try t.writer.writeAll("wall time  ");
         var vb: [32]u8 = undefined;
         const vstr = try std.fmt.bufPrint(&vb, "{d:.1} ms", .{elapsed_ms});
-        try w.print("{s}{s}{s}", .{ Color.cyan, vstr, Color.reset });
+        try t.writer.print("{s}{s}{s}", .{ Color.cyan, vstr, Color.reset });
         var pb: [32]u8 = undefined;
         const pstr = try std.fmt.bufPrint(&pb, "  ({d:.3} ms / instance)", .{per_inst_ms});
-        try w.print("{s}{s}{s}", .{ Color.dim, pstr, Color.reset });
-        try endRow(w, "wall time  ".len + vstr.len + pstr.len);
+        try t.writer.print("{s}{s}{s}", .{ Color.dim, pstr, Color.reset });
+        try t.endRow("wall time  ".len + vstr.len + pstr.len);
     }
-    if (stats.timeout_s > 0) {
+    if (stats.bench.timeout_s > 0) {
         // PAR-2 is the actual SAT Competition ranking metric: every
         // solved instance costs its wall time, every unsolved one costs
         // 2× the cap. Only meaningful when a per-instance cap was set.
-        try startRow(w);
-        try w.writeAll("PAR-2      ");
+        try t.startRow();
+        try t.writer.writeAll("PAR-2      ");
         var vb: [32]u8 = undefined;
-        const vstr = try std.fmt.bufPrint(&vb, "{d:.2} s", .{stats.par2_s});
-        try w.print("{s}{s}{s}", .{ Color.cyan, vstr, Color.reset });
+        const vstr = try std.fmt.bufPrint(&vb, "{d:.2} s", .{stats.bench.par2_s});
+        try t.writer.print("{s}{s}{s}", .{ Color.cyan, vstr, Color.reset });
         var db: [32]u8 = undefined;
-        const dstr = try std.fmt.bufPrint(&db, "  (cap {d} s/inst)", .{stats.timeout_s});
-        try w.print("{s}{s}{s}", .{ Color.dim, dstr, Color.reset });
-        try endRow(w, "PAR-2      ".len + vstr.len + dstr.len);
+        const dstr = try std.fmt.bufPrint(&db, "  (cap {d} s/inst)", .{stats.bench.timeout_s});
+        try t.writer.print("{s}{s}{s}", .{ Color.dim, dstr, Color.reset });
+        try t.endRow("PAR-2      ".len + vstr.len + dstr.len);
     }
-    try blankRow(w);
+    try t.blankRow();
 
     // Per-instance distribution
-    try sectionHeader(w, "per-instance distribution");
-    try distRow(w, "min", stats.dist_min_ms);
-    try distRow(w, "p50", stats.dist_p50_ms);
-    try distRow(w, "p90", stats.dist_p90_ms);
-    try distRow(w, "p99", stats.dist_p99_ms);
-    try distRow(w, "max", stats.dist_max_ms);
-    try blankRow(w);
+    try t.sectionHeader("per-instance distribution");
+    try distRow(t, "min", stats.bench.dist_min_ms);
+    try distRow(t, "p50", stats.bench.dist_p50_ms);
+    try distRow(t, "p90", stats.bench.dist_p90_ms);
+    try distRow(t, "p99", stats.bench.dist_p99_ms);
+    try distRow(t, "max", stats.bench.dist_max_ms);
+    try t.blankRow();
 
     // CPU topdown
     if (hasTopdown(stats)) {
-        try sectionHeader(w, "cpu (intel topdown L1)");
-        try topdownRow(w, "retiring", stats.topdown_retiring, "doing useful work");
-        try topdownRow(w, "bad-speculation", stats.topdown_bad_spec, "branch miss waste");
-        try topdownRow(w, "frontend-bound", stats.topdown_fe_bound, "fetch/decode stall");
-        try topdownRow(w, "backend-bound", stats.topdown_be_bound, "memory / execute stall");
-        try blankRow(w);
+        try t.sectionHeader("cpu (intel topdown L1)");
+        try topdownRow(t, "retiring", stats.perf.topdown_retiring, "doing useful work");
+        try topdownRow(t, "bad-speculation", stats.perf.topdown_bad_spec, "branch miss waste");
+        try topdownRow(t, "frontend-bound", stats.perf.topdown_fe_bound, "fetch/decode stall");
+        try topdownRow(t, "backend-bound", stats.perf.topdown_be_bound, "memory / execute stall");
+        try t.blankRow();
     }
 
     // Hardware metrics
-    try sectionHeader(w, "hardware metrics");
-    try metricRow(w, "IPC", "{d:.2}", .{ipc}, ipcVerdict(ipc), stats.instructions, stats.cycles);
+    try t.sectionHeader("hardware metrics");
+    try metricRow(t, "IPC", "{d:.2}", .{ipc}, ipcVerdict(ipc), stats.perf.instructions, stats.perf.cycles);
     {
-        try startRow(w);
-        try w.writeAll("effective clock     ");
+        try t.startRow();
+        try t.writer.writeAll("effective clock     ");
         var vb: [32]u8 = undefined;
         const vstr = try std.fmt.bufPrint(&vb, "{d:.2} GHz", .{effective_ghz});
-        try w.print("{s}{s}{s}", .{ Color.cyan, vstr, Color.reset });
-        try endRow(w, "effective clock     ".len + vstr.len);
+        try t.writer.print("{s}{s}{s}", .{ Color.cyan, vstr, Color.reset });
+        try t.endRow("effective clock     ".len + vstr.len);
     }
-    try metricRow(w, "branch-miss rate", "{d:.1}%", .{br_pct}, brMissVerdict(br_pct), stats.branch_misses, stats.branches);
-    try metricRow(w, "L1d miss rate", "{d:.2}%", .{l1d_pct}, l1dMissVerdict(l1d_pct), stats.l1d_load_misses, stats.l1d_loads);
+    try metricRow(t, "branch-miss rate", "{d:.1}%", .{br_pct}, brMissVerdict(br_pct), stats.perf.branch_misses, stats.perf.branches);
+    try metricRow(t, "L1d miss rate", "{d:.2}%", .{l1d_pct}, l1dMissVerdict(l1d_pct), stats.perf.l1d_load_misses, stats.perf.l1d_loads);
     {
-        try startRow(w);
-        try w.writeAll("L1d MPKI            ");
+        try t.startRow();
+        try t.writer.writeAll("L1d MPKI            ");
         var vb: [32]u8 = undefined;
         const vstr = try std.fmt.bufPrint(&vb, "{d:.1}", .{l1d_mpki});
-        try w.print("{s}{s}{s}", .{ Color.cyan, vstr, Color.reset });
-        try w.print("{s}   misses per 1k instructions{s}", .{ Color.dim, Color.reset });
-        try endRow(w, "L1d MPKI            ".len + vstr.len + "   misses per 1k instructions".len);
+        try t.writer.print("{s}{s}{s}", .{ Color.cyan, vstr, Color.reset });
+        try t.writer.print("{s}   misses per 1k instructions{s}", .{ Color.dim, Color.reset });
+        try t.endRow("L1d MPKI            ".len + vstr.len + "   misses per 1k instructions".len);
     }
     {
-        try startRow(w);
-        try w.writeAll("LLC absolute misses ");
+        try t.startRow();
+        try t.writer.writeAll("LLC absolute misses ");
         var vb: [32]u8 = undefined;
-        const vstr = formatCount(&vb, stats.llc_load_misses);
-        try w.print("{s}{s}{s}", .{ Color.cyan, vstr, Color.reset });
-        try endRow(w, "LLC absolute misses ".len + vstr.len);
+        const vstr = formatCount(&vb, stats.perf.llc_load_misses);
+        try t.writer.print("{s}{s}{s}", .{ Color.cyan, vstr, Color.reset });
+        try t.endRow("LLC absolute misses ".len + vstr.len);
     }
     {
-        try startRow(w);
-        try w.writeAll("peak RSS            ");
+        try t.startRow();
+        try t.writer.writeAll("peak RSS            ");
         var vb: [32]u8 = undefined;
-        const mb = @as(f64, @floatFromInt(stats.peak_rss_kb)) / 1024.0;
+        const mb = @as(f64, @floatFromInt(stats.bench.peak_rss_kb)) / 1024.0;
         const vstr = try std.fmt.bufPrint(&vb, "{d:.1} MB", .{mb});
-        try w.print("{s}{s}{s}", .{ Color.cyan, vstr, Color.reset });
-        try endRow(w, "peak RSS            ".len + vstr.len);
+        try t.writer.print("{s}{s}{s}", .{ Color.cyan, vstr, Color.reset });
+        try t.endRow("peak RSS            ".len + vstr.len);
     }
-    try blankRow(w);
+    try t.blankRow();
 
     // Solver activity
-    try sectionHeader(w, "solver activity");
+    try t.sectionHeader("solver activity");
     inline for (comptime std.meta.fieldNames(SolverStats)) |name| {
-        try solverRow(w, comptime spacedName(name), @field(stats.solver, name), stats.instance_count);
+        try solverRow(t, comptime spacedName(name), @field(stats.bench.solver, name), stats.bench.instance_count);
     }
-    try blankRow(w);
+    try t.blankRow();
 
     // Throughput
-    try sectionHeader(w, "throughput (wall time / event)");
-    try throughputRow(w, "per decision", elapsed_ns_f, stats.solver.decisions);
-    try throughputRow(w, "per conflict", elapsed_ns_f, stats.solver.conflicts);
-    try throughputRow(w, "per propagation", elapsed_ns_f, stats.solver.propagations);
-    try blankRow(w);
+    try t.sectionHeader("throughput (wall time / event)");
+    try throughputRow(t, "per decision", elapsed_ns_f, stats.bench.solver.decisions);
+    try throughputRow(t, "per conflict", elapsed_ns_f, stats.bench.solver.conflicts);
+    try throughputRow(t, "per propagation", elapsed_ns_f, stats.bench.solver.propagations);
+    try t.blankRow();
 
     // Hotspots (self time)
-    try sectionHeader(w, "hotspots (self time)");
+    try t.sectionHeader("hotspots (self time)");
     if (hotspots.len == 0) {
-        try startRow(w);
-        try w.print("{s}(no samples — did perf record succeed?){s}", .{ Color.yellow, Color.reset });
-        try endRow(w, "(no samples — did perf record succeed?)".len);
+        try t.startRow();
+        try t.writer.print("{s}(no samples — did perf record succeed?){s}", .{ Color.yellow, Color.reset });
+        try t.endRow("(no samples — did perf record succeed?)".len);
     } else {
-        for (hotspots) |h| try hotspotRow(w, h, elapsed_ns_f);
+        for (hotspots) |h| try hotspotRow(t, h, elapsed_ns_f);
     }
-    try blankRow(w);
+    try t.blankRow();
 
     // Hot instructions inside top function
     if (hotspots.len > 0 and hot_insns.len > 0) {
         var title_buf: [128]u8 = undefined;
         const title = try std.fmt.bufPrint(&title_buf, "hot instructions in {s}", .{hotspots[0].symbol});
-        try sectionHeader(w, title);
-        for (hot_insns) |h| try hotInsnRow(w, h);
-        try blankRow(w);
+        try t.sectionHeader(title);
+        for (hot_insns) |h| try hotInsnRow(t, h);
+        try t.blankRow();
     }
 
-    try hrule(w, box_bl, box_br);
+    try t.rule(box.bl, box.br);
 }
 
 fn hasTopdown(s: *const Stats) bool {
-    const total = s.topdown_retiring + s.topdown_bad_spec +
-        s.topdown_fe_bound + s.topdown_be_bound;
+    const total = s.perf.topdown_retiring + s.perf.topdown_bad_spec +
+        s.perf.topdown_fe_bound + s.perf.topdown_be_bound;
     return total > min_topdown_total_percent;
 }
 
-fn distRow(w: *std.Io.Writer, label: []const u8, ms: f64) !void {
-    try startRow(w);
-    try w.writeAll(label);
-    try w.writeAll("  ");
+fn distRow(t: Table, label: []const u8, ms: f64) !void {
+    try t.startRow();
+    try t.writer.writeAll(label);
+    try t.writer.writeAll("  ");
     var vb: [32]u8 = undefined;
     const vstr = formatTime(&vb, ms * 1e6);
-    try w.print("{s}{s}{s}", .{ Color.cyan, vstr, Color.reset });
-    try endRow(w, label.len + 2 + vstr.len);
+    try t.writer.print("{s}{s}{s}", .{ Color.cyan, vstr, Color.reset });
+    try t.endRow(label.len + 2 + vstr.len);
 }
 
-fn topdownRow(w: *std.Io.Writer, label: []const u8, pct: f64, note: []const u8) !void {
-    try startRow(w);
-    try w.writeAll(label);
-    var pad: usize = 0;
-    if (label.len < 20) pad = 20 - label.len;
-    var i: usize = 0;
-    while (i < pad) : (i += 1) try w.writeAll(" ");
+fn topdownRow(t: Table, label: []const u8, pct: f64, note: []const u8) !void {
+    try t.startRow();
+    try t.writer.writeAll(label);
+    try t.writer.splatByteAll(' ', 20 -| label.len);
     var vb: [32]u8 = undefined;
     const vstr = try std.fmt.bufPrint(&vb, "{d:>5.1}%", .{pct});
 
     // Colorize based on which bucket: retiring green, others warning-yellow
     const col = if (std.mem.eql(u8, label, "retiring")) Color.green else Color.yellow;
-    try w.print("{s}{s}{s}", .{ col, vstr, Color.reset });
-    try w.print("   {s}{s}{s}", .{ Color.dim, note, Color.reset });
-    try endRow(w, 20 + vstr.len + 3 + note.len);
+    try t.writer.print("{s}{s}{s}", .{ col, vstr, Color.reset });
+    try t.writer.print("   {s}{s}{s}", .{ Color.dim, note, Color.reset });
+    try t.endRow(20 + vstr.len + 3 + note.len);
 }
 
 fn metricRow(
-    w: *std.Io.Writer,
+    t: Table,
     label: []const u8,
     comptime value_fmt: []const u8,
     value_args: anytype,
@@ -914,41 +670,35 @@ fn metricRow(
     hits: u64,
     total: u64,
 ) !void {
-    try startRow(w);
-    try w.writeAll(label);
-    var visible: usize = label.len;
-    var pad: usize = 0;
-    if (label.len < 20) pad = 20 - label.len;
-    while (pad > 0) : (pad -= 1) {
-        try w.writeAll(" ");
-        visible += 1;
-    }
+    try t.startRow();
+    try t.writer.writeAll(label);
+    const label_pad = 20 -| label.len;
+    try t.writer.splatByteAll(' ', label_pad);
+    var visible: usize = label.len + label_pad;
 
     var vbuf: [64]u8 = undefined;
     const value_str = try std.fmt.bufPrint(&vbuf, value_fmt, value_args);
-    try w.print("{s}{s}{s}", .{ Color.cyan, value_str, Color.reset });
+    try t.writer.print("{s}{s}{s}", .{ Color.cyan, value_str, Color.reset });
     visible += value_str.len;
 
-    pad = if (value_str.len < 10) 10 - value_str.len else 1;
-    while (pad > 0) : (pad -= 1) {
-        try w.writeAll(" ");
-        visible += 1;
-    }
+    const value_pad: usize = if (value_str.len < 10) 10 - value_str.len else 1;
+    try t.writer.splatByteAll(' ', value_pad);
+    visible += value_pad;
 
-    try w.print("{s}{s}{s}{s}", .{ verdictColor(v), Color.bold, verdictLabel(v), Color.reset });
+    try t.writer.print("{s}{s}{s}{s}", .{ verdictColor(v), Color.bold, verdictLabel(v), Color.reset });
     visible += verdictLabel(v).len;
 
-    try w.writeAll("   ");
+    try t.writer.writeAll("   ");
     visible += 3;
 
     var hbuf: [32]u8 = undefined;
     const hstr = formatCount(&hbuf, hits);
     var tbuf: [32]u8 = undefined;
     const tstr = formatCount(&tbuf, total);
-    try w.print("{s}{s} / {s}{s}", .{ Color.dim, hstr, tstr, Color.reset });
+    try t.writer.print("{s}{s} / {s}{s}", .{ Color.dim, hstr, tstr, Color.reset });
     visible += hstr.len + 3 + tstr.len;
 
-    try endRow(w, visible);
+    try t.endRow(visible);
 }
 
 /// Width of the label column in the solver activity rows.
@@ -965,103 +715,78 @@ fn spacedName(comptime name: []const u8) []const u8 {
     }
 }
 
-fn solverRow(w: *std.Io.Writer, label: []const u8, count: u64, instances: u64) !void {
-    try startRow(w);
-    try w.writeAll(label);
-    var pad: usize = 0;
-    if (label.len < solver_label_width) pad = solver_label_width - label.len;
-    var i: usize = 0;
-    while (i < pad) : (i += 1) try w.writeAll(" ");
+fn solverRow(t: Table, label: []const u8, count: u64, instances: u64) !void {
+    try t.startRow();
+    try t.writer.writeAll(label);
+    try t.writer.splatByteAll(' ', solver_label_width -| label.len);
 
     var cbuf: [32]u8 = undefined;
     const cstr = formatCount(&cbuf, count);
-    try w.print("{s}{s}{s}", .{ Color.cyan, cstr, Color.reset });
+    try t.writer.print("{s}{s}{s}", .{ Color.cyan, cstr, Color.reset });
 
-    var pad2: usize = if (cstr.len < 10) 10 - cstr.len else 1;
-    while (pad2 > 0) : (pad2 -= 1) try w.writeAll(" ");
-
-    var vis: usize = solver_label_width + cstr.len;
-    if (cstr.len < 10) vis += (10 - cstr.len) else vis += 1;
+    const count_pad: usize = if (cstr.len < 10) 10 - cstr.len else 1;
+    try t.writer.splatByteAll(' ', count_pad);
+    var vis: usize = solver_label_width + cstr.len + count_pad;
 
     if (instances > 0) {
         var ab: [32]u8 = undefined;
         const avg: f64 = @as(f64, @floatFromInt(count)) / @as(f64, @floatFromInt(instances));
         const avg_u: u64 = @intFromFloat(@round(avg));
         const astr = formatCount(&ab, avg_u);
-        try w.print("{s}{s}{s} / instance", .{ Color.dim, astr, Color.reset });
+        try t.writer.print("{s}{s}{s} / instance", .{ Color.dim, astr, Color.reset });
         vis += astr.len + " / instance".len;
     }
 
-    try endRow(w, vis);
+    try t.endRow(vis);
 }
 
-fn throughputRow(w: *std.Io.Writer, label: []const u8, wall_ns: f64, events: u64) !void {
-    try startRow(w);
-    try w.writeAll(label);
-    var pad: usize = 0;
-    if (label.len < 20) pad = 20 - label.len;
-    var i: usize = 0;
-    while (i < pad) : (i += 1) try w.writeAll(" ");
+fn throughputRow(t: Table, label: []const u8, wall_ns: f64, events: u64) !void {
+    try t.startRow();
+    try t.writer.writeAll(label);
+    try t.writer.splatByteAll(' ', 20 -| label.len);
 
     if (events == 0) {
-        try w.print("{s}n/a{s}", .{ Color.dim, Color.reset });
-        try endRow(w, 20 + 3);
+        try t.writer.print("{s}n/a{s}", .{ Color.dim, Color.reset });
+        try t.endRow(20 + 3);
         return;
     }
     const per: f64 = wall_ns / @as(f64, @floatFromInt(events));
     var vb: [32]u8 = undefined;
     const vstr = formatTime(&vb, per);
-    try w.print("{s}{s}{s}", .{ Color.cyan, vstr, Color.reset });
-    try endRow(w, 20 + vstr.len);
+    try t.writer.print("{s}{s}{s}", .{ Color.cyan, vstr, Color.reset });
+    try t.endRow(20 + vstr.len);
 }
 
-fn hotspotRow(w: *std.Io.Writer, h: Hotspot, wall_ns: f64) !void {
-    try startRow(w);
+fn hotspotRow(t: Table, h: Hotspot, wall_ns: f64) !void {
+    try t.startRow();
 
     // Absolute time: percent × wall time.
     var tb: [32]u8 = undefined;
     const ns_in_func = (h.percent / 100.0) * wall_ns;
     const tstr = formatTime(&tb, ns_in_func);
     // Pad tstr to width 9 (right-aligned) for column alignment.
-    const tpad: usize = if (tstr.len < 9) 9 - tstr.len else 0;
-    var i: usize = 0;
-    while (i < tpad) : (i += 1) try w.writeAll(" ");
-    try w.print("{s}{s}{s}   ", .{ Color.cyan, tstr, Color.reset });
+    const tpad = 9 -| tstr.len;
+    try t.writer.splatByteAll(' ', tpad);
+    try t.writer.print("{s}{s}{s}   ", .{ Color.cyan, tstr, Color.reset });
 
     var pb: [16]u8 = undefined;
     const pstr = try std.fmt.bufPrint(&pb, "{d:>5.1}%", .{h.percent});
-    try w.print("{s}{s}{s}   ", .{ Color.yellow, pstr, Color.reset });
+    try t.writer.print("{s}{s}{s}   ", .{ Color.yellow, pstr, Color.reset });
 
-    const max_sym_len: usize = width - 2 - tpad - tstr.len - 3 - pstr.len - 3 - 1;
-    var sym = h.symbol;
-    var truncated = false;
-    if (sym.len > max_sym_len) {
-        sym = sym[0 .. max_sym_len - 1];
-        truncated = true;
-    }
-    try w.print("{s}{s}{s}", .{ Color.cyan, sym, Color.reset });
-    if (truncated) try w.writeAll("…");
-
-    const visible = tpad + tstr.len + 3 + pstr.len + 3 + sym.len + @as(usize, if (truncated) 1 else 0);
-    try endRow(w, visible);
+    const max_sym_len: usize = t.width - 2 - tpad - tstr.len - 3 - pstr.len - 3 - 1;
+    const sym_cols = try t.writeTruncated(Color.cyan, h.symbol, max_sym_len);
+    const visible = tpad + tstr.len + 3 + pstr.len + 3 + sym_cols;
+    try t.endRow(visible);
 }
 
-fn hotInsnRow(w: *std.Io.Writer, h: HotInsn) !void {
-    try startRow(w);
+fn hotInsnRow(t: Table, h: HotInsn) !void {
+    try t.startRow();
     var pb: [16]u8 = undefined;
     const pstr = try std.fmt.bufPrint(&pb, "{d:>5.1}%", .{h.percent});
-    try w.print("{s}{s}{s}   ", .{ Color.yellow, pstr, Color.reset });
+    try t.writer.print("{s}{s}{s}   ", .{ Color.yellow, pstr, Color.reset });
 
-    const max_text_len: usize = width - 2 - pstr.len - 3 - 1;
-    var text = h.text;
-    var truncated = false;
-    if (text.len > max_text_len) {
-        text = text[0 .. max_text_len - 1];
-        truncated = true;
-    }
-    try w.print("{s}{s}{s}", .{ Color.cyan, text, Color.reset });
-    if (truncated) try w.writeAll("…");
-
-    const visible = pstr.len + 3 + text.len + @as(usize, if (truncated) 1 else 0);
-    try endRow(w, visible);
+    const max_text_len: usize = t.width - 2 - pstr.len - 3 - 1;
+    const text_cols = try t.writeTruncated(Color.cyan, h.text, max_text_len);
+    const visible = pstr.len + 3 + text_cols;
+    try t.endRow(visible);
 }

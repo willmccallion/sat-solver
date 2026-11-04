@@ -20,7 +20,7 @@ pub fn build(b: *std.Build) void {
     run_cmd.addPassthruArgs();
     b.step("run", "Run the sat solver").dependOn(&run_cmd.step);
 
-    addTests(b, target, optimize, sat_module, tools);
+    addTests(b, target, optimize, layers, sat_module, tools);
 }
 
 // The layer modules, as imports. Dependency DAG, strictly downward:
@@ -122,7 +122,12 @@ fn addTools(
             .optimize = .Debug,
             .imports = &.{layers.search},
         }),
-        .compete = addTool(b, target, .{ .name = "sat-compete", .root = "src/tools/compete.zig", .optimize = .Debug }),
+        .compete = addTool(b, target, .{
+            .name = "sat-compete",
+            .root = "src/tools/compete.zig",
+            .optimize = .Debug,
+            .imports = &.{layers.search},
+        }),
     };
 }
 
@@ -199,6 +204,7 @@ fn addTests(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
+    layers: Layers,
     sat_module: *std.Build.Module,
     tools: Tools,
 ) void {
@@ -226,6 +232,13 @@ fn addTests(
     // what keeps them building.
     test_step.dependOn(&tools.profile.step);
     test_step.dependOn(&tools.compete.step);
+    const report_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/report.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{layers.search},
+    }) });
+    test_step.dependOn(&b.addRunArtifact(report_tests).step);
 
     addSudokuTests(b, test_step, tools.sudoku);
     addSolverCliTests(b, target, test_step, tools.sat);

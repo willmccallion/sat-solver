@@ -1,0 +1,7 @@
+solved 1000 instances: 1000 SAT, 0 UNSAT, 0 unknown
+total 72.0 ms (0.072 ms/instance)
+dist_ms: min=0.045 p50=0.056 p90=0.063 p99=0.074 max=0.081
+stats: decisions=10604 propagations=56611 conflicts=5661 restarts=0 learned_clauses=4995 reductions=0 deleted_clauses=0 rephases=0 chrono_backtracks=0 probe_passes=0 failed_literal_units=0 vivify_passes=0 vivified_clauses=0 subsume_passes=2000 subsumed_clauses=468 strengthened_clauses=0 mode_switches=0 compactions=0 bve_passes=1000 eliminated_vars=386 resolvents_added=2316 equiv_passes=0 equiv_substituted_vars=0
+peak_rss_kb: 4724
+par2_s: 0.056
+timeout_s: 0

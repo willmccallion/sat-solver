@@ -1,5 +1,9 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const report = @import("report.zig");
+const Color = report.Color;
+const box = report.box;
+const Table = report.Table;
 
 // sat-compete — tournament readiness checker for `zig build compete`.
 //
@@ -39,17 +43,6 @@ const ref_third_solved: u32 = 317;
 const ref_ipc_good: f64 = 2.0;
 const ref_branch_miss_good_pct: f64 = 5.0;
 const ref_bad_spec_good_pct: f64 = 20.0;
-
-const Color = struct {
-    const reset = "\x1b[0m";
-    const bold = "\x1b[1m";
-    const dim = "\x1b[2m";
-    const red = "\x1b[31m";
-    const green = "\x1b[32m";
-    const yellow = "\x1b[33m";
-    const cyan = "\x1b[36m";
-    const gray = "\x1b[90m";
-};
 
 const Status = enum { pass, fail, warn, skip };
 
@@ -136,7 +129,7 @@ pub fn main(init: std.process.Init) !u8 {
     };
 
     try stdout.writeAll("\n");
-    try printReport(stdout, checks.items, &perf, &capacity);
+    try printReport(.{ .writer = stdout, .width = width }, checks.items, &perf, &capacity);
 
     // Non-zero exit if any submittability check failed.
     for (checks.items) |c| {
@@ -469,111 +462,19 @@ fn collectPerf(gpa: Allocator, io: std.Io, bench_path: []const u8, out: *Perf) !
 
     if (result.term != .exited or result.term.exited != 0) return;
 
-    parseBench(result.stdout, out);
-    parsePerfStat(result.stderr, out);
-    out.available = true;
-}
-
-// Parses the structured summary lines `sat-bench` prints on stdout.
-fn parseBench(output: []const u8, out: *Perf) void {
-    var it = std.mem.splitScalar(u8, output, '\n');
-    while (it.next()) |raw| {
-        const line = std.mem.trim(u8, raw, " \t\r");
-        if (std.mem.startsWith(u8, line, "solved ")) {
-            const rest = line["solved ".len..];
-            const sp = std.mem.indexOfScalar(u8, rest, ' ') orelse continue;
-            out.instance_count = std.fmt.parseInt(u64, rest[0..sp], 10) catch 0;
-        } else if (std.mem.startsWith(u8, line, "total ")) {
-            const rest = line["total ".len..];
-            const sp = std.mem.indexOfScalar(u8, rest, ' ') orelse continue;
-            const ms = std.fmt.parseFloat(f64, rest[0..sp]) catch 0;
-            out.wall_ms = ms;
-        } else if (std.mem.startsWith(u8, line, "stats:")) {
-            parseStats(line["stats:".len..], out);
-        }
-    }
-}
-
-fn parseStats(payload: []const u8, out: *Perf) void {
-    var it = std.mem.tokenizeAny(u8, payload, " \t");
-    while (it.next()) |tok| {
-        const eq = std.mem.indexOfScalar(u8, tok, '=') orelse continue;
-        const key = tok[0..eq];
-        const val = tok[eq + 1 ..];
-        const n = std.fmt.parseInt(u64, val, 10) catch continue;
-        if (std.mem.eql(u8, key, "conflicts")) out.conflicts = n //
-        else if (std.mem.eql(u8, key, "propagations")) out.propagations = n;
-    }
-}
-
-// Parses perf stat's stderr CSV, picking up cycles/instructions/branches
-// for IPC & miss rate, and TopdownL1 metrics for bad-speculation /
-// retiring percentages. Filters out the cpu_atom PMU on hybrid Intel
-// chips (as documented in src/tools/profile.zig).
-fn parsePerfStat(output: []const u8, out: *Perf) void {
-    var cycles: u64 = 0;
-    var insns: u64 = 0;
-    var branches: u64 = 0;
-    var br_misses: u64 = 0;
-
-    var pmu_is_atom = false;
-    var it = std.mem.splitScalar(u8, output, '\n');
-    while (it.next()) |raw| {
-        const line = std.mem.trim(u8, raw, " \t\r");
-        if (line.len == 0 or line[0] == '#') continue;
-
-        var fields = std.mem.splitScalar(u8, line, ',');
-        const value_str = fields.next() orelse continue;
-        _ = fields.next() orelse continue;
-        const event_raw = fields.next() orelse continue;
-        _ = fields.next() orelse continue;
-        _ = fields.next() orelse continue;
-        const metric_value = fields.next() orelse "";
-        const metric_unit = fields.next() orelse "";
-
-        if (event_raw.len > 0) {
-            if (std.mem.startsWith(u8, event_raw, "cpu_atom/")) {
-                pmu_is_atom = true;
-            } else if (std.mem.startsWith(u8, event_raw, "cpu_core/")) {
-                pmu_is_atom = false;
-            }
-        }
-        if (pmu_is_atom) continue;
-
-        if (value_str.len > 0 and value_str[0] != '<') {
-            if (std.fmt.parseInt(u64, value_str, 10)) |v| {
-                const ev = stripEvent(event_raw);
-                if (std.mem.eql(u8, ev, "cycles")) cycles += v //
-                else if (std.mem.eql(u8, ev, "instructions")) insns += v //
-                else if (std.mem.eql(u8, ev, "branches")) branches += v //
-                else if (std.mem.eql(u8, ev, "branch-misses")) br_misses += v;
-            } else |_| {}
-        }
-
-        if (metric_unit.len > 0 and metric_value.len > 0) {
-            var name = std.mem.trim(u8, metric_unit, " \t");
-            if (std.mem.startsWith(u8, name, "%")) name = name[1..];
-            name = std.mem.trim(u8, name, " \t");
-            const mv = std.fmt.parseFloat(f64, metric_value) catch continue;
-            if (std.mem.eql(u8, name, "tma_retiring")) out.retiring_pct += mv //
-            else if (std.mem.eql(u8, name, "tma_bad_speculation")) out.bad_spec_pct += mv;
-        }
-    }
-
-    if (cycles > 0) out.ipc = @as(f64, @floatFromInt(insns)) / @as(f64, @floatFromInt(cycles));
-    if (branches > 0) {
-        out.branch_miss_pct = @as(f64, @floatFromInt(br_misses)) * 100.0 /
-            @as(f64, @floatFromInt(branches));
-    }
-}
-
-fn stripEvent(event_in: []const u8) []const u8 {
-    var e = event_in;
-    if (std.mem.startsWith(u8, e, "cpu_core/")) e = e["cpu_core/".len..];
-    if (std.mem.startsWith(u8, e, "cpu_atom/")) e = e["cpu_atom/".len..];
-    if (std.mem.endsWith(u8, e, "/u")) e = e[0 .. e.len - 2];
-    if (std.mem.endsWith(u8, e, "/")) e = e[0 .. e.len - 1];
-    return e;
+    const bench = try report.BenchSummary.parse(result.stdout);
+    const counters = report.PerfStat.parse(result.stderr);
+    out.* = .{
+        .available = true,
+        .wall_ms = @as(f64, @floatFromInt(bench.elapsed_ns)) / 1e6,
+        .instance_count = bench.instance_count,
+        .propagations = bench.solver.propagations,
+        .conflicts = bench.solver.conflicts,
+        .ipc = counters.ipc(),
+        .branch_miss_pct = counters.branchMissPercent(),
+        .bad_spec_pct = counters.topdown_bad_spec,
+        .retiring_pct = counters.topdown_retiring,
+    };
 }
 
 // Runs the solver on a sample of uf250 instances with a short time
@@ -636,48 +537,6 @@ fn collectCapacity(gpa: Allocator, io: std.Io, sat_path: []const u8, out: *Capac
     out.available = sample_count > 0;
 }
 
-const box_tl = "╭";
-const box_tr = "╮";
-const box_bl = "╰";
-const box_br = "╯";
-const box_h = "─";
-const box_v = "│";
-const box_lt = "├";
-const box_rt = "┤";
-
-fn hrule(w: *std.Io.Writer, left: []const u8, right: []const u8) !void {
-    try w.print("{s}{s}", .{ Color.gray, left });
-    var i: usize = 0;
-    while (i < width - 2) : (i += 1) try w.writeAll(box_h);
-    try w.print("{s}{s}\n", .{ right, Color.reset });
-}
-
-fn startRow(w: *std.Io.Writer) !void {
-    try w.print("{s}{s}{s}  ", .{ Color.gray, box_v, Color.reset });
-}
-
-fn endRow(w: *std.Io.Writer, visible_cols: usize) !void {
-    var pad: usize = 0;
-    if (2 + visible_cols < width - 1) pad = (width - 1) - (2 + visible_cols);
-    var i: usize = 0;
-    while (i < pad) : (i += 1) try w.writeAll(" ");
-    try w.print("{s}{s}{s}\n", .{ Color.gray, box_v, Color.reset });
-}
-
-fn blankRow(w: *std.Io.Writer) !void {
-    try startRow(w);
-    try endRow(w, 0);
-}
-
-fn sectionHeader(w: *std.Io.Writer, text: []const u8) !void {
-    try hrule(w, box_lt, box_rt);
-    try blankRow(w);
-    try startRow(w);
-    try w.print("{s}{s}{s}", .{ Color.bold, text, Color.reset });
-    try endRow(w, text.len);
-    try blankRow(w);
-}
-
 fn statusGlyph(s: Status) struct { color: []const u8, glyph: []const u8 } {
     return switch (s) {
         .pass => .{ .color = Color.green, .glyph = "[ PASS ]" },
@@ -687,191 +546,164 @@ fn statusGlyph(s: Status) struct { color: []const u8, glyph: []const u8 } {
     };
 }
 
-fn checkRow(w: *std.Io.Writer, check: *const Check) !void {
-    try startRow(w);
+fn checkRow(t: Table, check: *const Check) !void {
+    try t.startRow();
     const g = statusGlyph(check.status);
-    try w.print("{s}{s}{s}{s}  ", .{ g.color, Color.bold, g.glyph, Color.reset });
-    try w.print("{s}", .{check.name});
+    try t.writer.print("{s}{s}{s}{s}  ", .{ g.color, Color.bold, g.glyph, Color.reset });
+    try t.writer.print("{s}", .{check.name});
 
-    var visible: usize = g.glyph.len + 2 + check.name.len;
     const label_width: usize = 30;
-    if (visible < label_width) {
-        const pad = label_width - visible;
-        var i: usize = 0;
-        while (i < pad) : (i += 1) try w.writeAll(" ");
-        visible += pad;
-    } else {
-        try w.writeAll(" ");
-        visible += 1;
-    }
+    const name_cols = g.glyph.len + 2 + check.name.len;
+    const pad: usize = if (name_cols < label_width) label_width - name_cols else 1;
+    try t.writer.splatByteAll(' ', pad);
+    var visible = name_cols + pad;
+    visible += try t.writeTruncated(Color.dim, check.detail, t.width - 2 - visible - 1);
 
-    const max_detail: usize = width - 2 - visible - 1;
-    var detail = check.detail;
-    var truncated = false;
-    if (detail.len > max_detail) {
-        detail = detail[0 .. max_detail - 1];
-        truncated = true;
-    }
-    try w.print("{s}{s}{s}", .{ Color.dim, detail, Color.reset });
-    if (truncated) try w.writeAll("…");
-    visible += detail.len + @as(usize, if (truncated) 1 else 0);
-
-    try endRow(w, visible);
+    try t.endRow(visible);
 }
 
-fn plainRow(w: *std.Io.Writer, label: []const u8, value: []const u8, note: []const u8) !void {
-    try startRow(w);
-    try w.writeAll(label);
-    var vis: usize = label.len;
-    const label_pad: usize = 22;
-    if (vis < label_pad) {
-        const pad = label_pad - vis;
-        var i: usize = 0;
-        while (i < pad) : (i += 1) try w.writeAll(" ");
-        vis += pad;
-    }
-    try w.print("{s}{s}{s}", .{ Color.cyan, value, Color.reset });
+fn plainRow(t: Table, label: []const u8, value: []const u8, note: []const u8) !void {
+    try t.startRow();
+    try t.writer.writeAll(label);
+    const label_pad = 22 -| label.len;
+    try t.writer.splatByteAll(' ', label_pad);
+    var vis = label.len + label_pad;
+    try t.writer.print("{s}{s}{s}", .{ Color.cyan, value, Color.reset });
     vis += value.len;
     if (note.len > 0) {
-        try w.print("   {s}{s}{s}", .{ Color.dim, note, Color.reset });
+        try t.writer.print("   {s}{s}{s}", .{ Color.dim, note, Color.reset });
         vis += 3 + note.len;
     }
-    try endRow(w, vis);
+    try t.endRow(vis);
 }
 
 fn compareRow(
-    w: *std.Io.Writer,
+    t: Table,
     label: []const u8,
     your_value: []const u8,
     ref_value: []const u8,
     verdict_color: []const u8,
 ) !void {
-    try startRow(w);
-    try w.writeAll(label);
-    var vis: usize = label.len;
-    const label_pad: usize = 22;
-    if (vis < label_pad) {
-        const pad = label_pad - vis;
-        var i: usize = 0;
-        while (i < pad) : (i += 1) try w.writeAll(" ");
-        vis += pad;
-    }
+    try t.startRow();
+    try t.writer.writeAll(label);
+    const label_pad = 22 -| label.len;
+    try t.writer.splatByteAll(' ', label_pad);
+    var vis = label.len + label_pad;
 
-    try w.print("{s}{s}{s}", .{ verdict_color, your_value, Color.reset });
+    try t.writer.print("{s}{s}{s}", .{ verdict_color, your_value, Color.reset });
     vis += your_value.len;
 
     const mid_pad: usize = if (your_value.len < 14) 14 - your_value.len else 2;
-    var i: usize = 0;
-    while (i < mid_pad) : (i += 1) try w.writeAll(" ");
+    try t.writer.splatByteAll(' ', mid_pad);
     vis += mid_pad;
 
-    try w.print("{s}vs {s}{s}", .{ Color.dim, ref_value, Color.reset });
+    try t.writer.print("{s}vs {s}{s}", .{ Color.dim, ref_value, Color.reset });
     vis += 3 + ref_value.len;
 
-    try endRow(w, vis);
+    try t.endRow(vis);
 }
 
 fn printReport(
-    w: *std.Io.Writer,
+    t: Table,
     checks: []const Check,
     perf: *const Perf,
     cap: *const Capacity,
 ) !void {
-    try hrule(w, box_tl, box_tr);
-    try startRow(w);
-    try w.print("{s}{s}tournament readiness — sat{s}", .{ Color.bold, Color.cyan, Color.reset });
-    try endRow(w, "tournament readiness — sat".len);
-    try blankRow(w);
-    try startRow(w);
-    try w.print(
+    try t.rule(box.tl, box.tr);
+    try t.startRow();
+    try t.writer.print("{s}{s}tournament readiness — sat{s}", .{ Color.bold, Color.cyan, Color.reset });
+    try t.endRow("tournament readiness — sat".len);
+    try t.blankRow();
+    try t.startRow();
+    try t.writer.print(
         "{s}reference: SAT Competition 2025, Main Sequential Track{s}",
         .{ Color.dim, Color.reset },
     );
-    try endRow(w, "reference: SAT Competition 2025, Main Sequential Track".len);
-    try startRow(w);
-    try w.print(
+    try t.endRow("reference: SAT Competition 2025, Main Sequential Track".len);
+    try t.startRow();
+    try t.writer.print(
         "{s}satcompetition.github.io/2025/satcomp25slides.pdf{s}",
         .{ Color.dim, Color.reset },
     );
-    try endRow(w, "satcompetition.github.io/2025/satcomp25slides.pdf".len);
-    try blankRow(w);
+    try t.endRow("satcompetition.github.io/2025/satcomp25slides.pdf".len);
+    try t.blankRow();
 
-    try sectionHeader(w, "submittability (required for competition entry)");
+    try t.sectionHeader("submittability (required for competition entry)");
     for (checks) |c| {
         var cc = c;
-        try checkRow(w, &cc);
+        try checkRow(t, &cc);
     }
-    try blankRow(w);
+    try t.blankRow();
 
     var submittable = true;
     for (checks) |c| {
         if (c.status == .fail) submittable = false;
     }
-    try startRow(w);
+    try t.startRow();
     if (submittable) {
-        try w.print(
+        try t.writer.print(
             "{s}{s}=> submittable{s}{s}   every required check passes{s}",
             .{ Color.green, Color.bold, Color.reset, Color.dim, Color.reset },
         );
-        try endRow(w, "=> submittable   every required check passes".len);
+        try t.endRow("=> submittable   every required check passes".len);
     } else {
-        try w.print(
+        try t.writer.print(
             "{s}{s}=> NOT submittable{s}{s}   at least one required check failed{s}",
             .{ Color.red, Color.bold, Color.reset, Color.dim, Color.reset },
         );
-        try endRow(w, "=> NOT submittable   at least one required check failed".len);
+        try t.endRow("=> NOT submittable   at least one required check failed".len);
     }
-    try blankRow(w);
+    try t.blankRow();
 
-    try sectionHeader(w, "competitive scoreboard");
-    try startRow(w);
+    try t.sectionHeader("competitive scoreboard");
+    try t.startRow();
     var ref_line_buf: [96]u8 = undefined;
     const ref_line = try std.fmt.bufPrint(
         &ref_line_buf,
         "SAT Comp 2025 main sequential, {d}s timeout, {s}",
         .{ ref_timeout_seconds, ref_scoring },
     );
-    try w.print("{s}{s}{s}", .{ Color.dim, ref_line, Color.reset });
-    try endRow(w, ref_line.len);
-    try blankRow(w);
+    try t.writer.print("{s}{s}{s}", .{ Color.dim, ref_line, Color.reset });
+    try t.endRow(ref_line.len);
+    try t.blankRow();
 
     var ref1_buf: [96]u8 = undefined;
     const ref1 = try std.fmt.bufPrint(&ref1_buf, "1. {s:<16} {d}/{d}  PAR-2 {d:.0}", .{
         ref_winner_name, ref_winner_solved, ref_total_instances, ref_winner_par2,
     });
-    try startRow(w);
-    try w.print("{s}{s}{s}", .{ Color.cyan, ref1, Color.reset });
-    try endRow(w, ref1.len);
+    try t.startRow();
+    try t.writer.print("{s}{s}{s}", .{ Color.cyan, ref1, Color.reset });
+    try t.endRow(ref1.len);
 
     var ref2_buf: [96]u8 = undefined;
     const ref2 = try std.fmt.bufPrint(&ref2_buf, "2. {s:<16} {d}/{d}", .{
         ref_second_name, ref_second_solved, ref_total_instances,
     });
-    try startRow(w);
-    try w.print("{s}{s}{s}", .{ Color.dim, ref2, Color.reset });
-    try endRow(w, ref2.len);
+    try t.startRow();
+    try t.writer.print("{s}{s}{s}", .{ Color.dim, ref2, Color.reset });
+    try t.endRow(ref2.len);
 
     var ref3_buf: [96]u8 = undefined;
     const ref3 = try std.fmt.bufPrint(&ref3_buf, "3. {s:<16} {d}/{d}", .{
         ref_third_name, ref_third_solved, ref_total_instances,
     });
-    try startRow(w);
-    try w.print("{s}{s}{s}", .{ Color.dim, ref3, Color.reset });
-    try endRow(w, ref3.len);
-    try blankRow(w);
+    try t.startRow();
+    try t.writer.print("{s}{s}{s}", .{ Color.dim, ref3, Color.reset });
+    try t.endRow(ref3.len);
+    try t.blankRow();
 
     // Hardware metrics (your solver vs good-range targets)
     if (perf.available) {
-        try startRow(w);
-        try w.print("{s}hardware metrics (light bench: uf100 + uuf100){s}", .{ Color.bold, Color.reset });
-        try endRow(w, "hardware metrics (light bench: uf100 + uuf100)".len);
-        try blankRow(w);
+        try t.startRow();
+        try t.writer.print("{s}hardware metrics (light bench: uf100 + uuf100){s}", .{ Color.bold, Color.reset });
+        try t.endRow("hardware metrics (light bench: uf100 + uuf100)".len);
+        try t.blankRow();
 
         const ipc_good = perf.ipc >= ref_ipc_good;
         var ipc_buf: [16]u8 = undefined;
         const ipc_str = try std.fmt.bufPrint(&ipc_buf, "{d:.2}", .{perf.ipc});
         try compareRow(
-            w,
+            t,
             "IPC",
             ipc_str,
             "~2.0+ (target)",
@@ -882,7 +714,7 @@ fn printReport(
         var br_buf: [16]u8 = undefined;
         const br_str = try std.fmt.bufPrint(&br_buf, "{d:.1}%", .{perf.branch_miss_pct});
         try compareRow(
-            w,
+            t,
             "branch-miss rate",
             br_str,
             "< 5% (target)",
@@ -893,7 +725,7 @@ fn printReport(
         var bs_buf: [16]u8 = undefined;
         const bs_str = try std.fmt.bufPrint(&bs_buf, "{d:.1}%", .{perf.bad_spec_pct});
         try compareRow(
-            w,
+            t,
             "bad-speculation",
             bs_str,
             "< 20% (target)",
@@ -906,7 +738,7 @@ fn printReport(
             var np_buf: [16]u8 = undefined;
             const np_str = try std.fmt.bufPrint(&np_buf, "{d:.0} ns", .{ns_per_prop});
             try compareRow(
-                w,
+                t,
                 "ns / propagation",
                 np_str,
                 "30-80 ns (target)",
@@ -914,26 +746,26 @@ fn printReport(
             );
         }
 
-        try blankRow(w);
+        try t.blankRow();
     } else {
-        try startRow(w);
-        try w.print("{s}hardware metrics: skipped (perf not available){s}", .{ Color.yellow, Color.reset });
-        try endRow(w, "hardware metrics: skipped (perf not available)".len);
-        try blankRow(w);
+        try t.startRow();
+        try t.writer.print("{s}hardware metrics: skipped (perf not available){s}", .{ Color.yellow, Color.reset });
+        try t.endRow("hardware metrics: skipped (perf not available)".len);
+        try t.blankRow();
     }
 
     // Capacity probe (uf250 sample)
     if (cap.available and cap.tested > 0) {
-        try startRow(w);
+        try t.startRow();
         var title_buf: [64]u8 = undefined;
         const title = try std.fmt.bufPrint(
             &title_buf,
             "capacity (uf250 sample, {d}s/instance)",
             .{cap.limit_s},
         );
-        try w.print("{s}{s}{s}", .{ Color.bold, title, Color.reset });
-        try endRow(w, title.len);
-        try blankRow(w);
+        try t.writer.print("{s}{s}{s}", .{ Color.bold, title, Color.reset });
+        try t.endRow(title.len);
+        try t.blankRow();
 
         var buf: [96]u8 = undefined;
         const solved_str = try std.fmt.bufPrint(
@@ -941,44 +773,44 @@ fn printReport(
             "solved  {d}/{d}  in {d:.1} s total",
             .{ cap.solved, cap.tested, cap.elapsed_s },
         );
-        try plainRow(w, "your solver", solved_str, "");
+        try plainRow(t, "your solver", solved_str, "");
 
         // All modern CDCL solvers (Kissat, CaDiCaL, Glucose, MiniSat)
         // complete uf250 in well under a second per instance. If we
         // don't clear the whole sample we are nowhere near competitive.
-        try plainRow(w, "modern CDCL", "≈10/10", "< 1 s / instance (Kissat / CaDiCaL)");
-        try blankRow(w);
+        try plainRow(t, "modern CDCL", "≈10/10", "< 1 s / instance (Kissat / CaDiCaL)");
+        try t.blankRow();
     } else {
-        try startRow(w);
-        try w.print(
+        try t.startRow();
+        try t.writer.print(
             "{s}capacity probe skipped (fetch uf250 via bench/fetch.sh){s}",
             .{ Color.dim, Color.reset },
         );
-        try endRow(w, "capacity probe skipped (fetch uf250 via bench/fetch.sh)".len);
-        try blankRow(w);
+        try t.endRow("capacity probe skipped (fetch uf250 via bench/fetch.sh)".len);
+        try t.blankRow();
     }
 
     // Overall verdict
-    try hrule(w, box_lt, box_rt);
-    try blankRow(w);
-    try startRow(w);
-    try w.writeAll("overall: ");
+    try t.rule(box.lt, box.rt);
+    try t.blankRow();
+    try t.startRow();
+    try t.writer.writeAll("overall: ");
     var vis: usize = "overall: ".len;
 
     if (!submittable) {
-        try w.print("{s}{s}NOT SUBMITTABLE{s}", .{ Color.red, Color.bold, Color.reset });
+        try t.writer.print("{s}{s}NOT SUBMITTABLE{s}", .{ Color.red, Color.bold, Color.reset });
         vis += "NOT SUBMITTABLE".len;
     } else if (perf.available and perf.ipc >= ref_ipc_good and
         perf.branch_miss_pct < ref_branch_miss_good_pct and
         perf.bad_spec_pct < ref_bad_spec_good_pct)
     {
-        try w.print("{s}{s}SUBMITTABLE + COMPETITIVE{s}", .{ Color.green, Color.bold, Color.reset });
+        try t.writer.print("{s}{s}SUBMITTABLE + COMPETITIVE{s}", .{ Color.green, Color.bold, Color.reset });
         vis += "SUBMITTABLE + COMPETITIVE".len;
     } else {
-        try w.print("{s}{s}SUBMITTABLE, not yet competitive{s}", .{ Color.yellow, Color.bold, Color.reset });
+        try t.writer.print("{s}{s}SUBMITTABLE, not yet competitive{s}", .{ Color.yellow, Color.bold, Color.reset });
         vis += "SUBMITTABLE, not yet competitive".len;
     }
-    try endRow(w, vis);
-    try blankRow(w);
-    try hrule(w, box_bl, box_br);
+    try t.endRow(vis);
+    try t.blankRow();
+    try t.rule(box.bl, box.br);
 }
