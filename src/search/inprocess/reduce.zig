@@ -8,6 +8,12 @@ const clause_mod = core.clause;
 const state = @import("../state.zig");
 const Solver = state.Solver;
 
+// ReduceDB cadence — fires on its own conflict-count budget, independent
+// of restarts. The interval grows by `interval_step` each trigger so long
+// searches don't pay a log-N reduce every few thousand conflicts.
+pub const initial_interval: u64 = 2000;
+pub const interval_step: u64 = 300;
+
 // Clause DB reduction. Called at level 0, on its own conflict schedule,
 // when the learned clause count has outgrown `max_learned`. Keeps the better half
 // (by LBD — lower is better). Clauses that are currently reasons for

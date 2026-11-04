@@ -17,12 +17,3 @@ pub const lbd_slow_alpha: f64 = 1.0 / 10_000.0;
 pub const restart_ratio: f64 = 1.25;
 pub const trail_block_ratio: f64 = 1.4;
 pub const restart_min_conflicts: u64 = 50;
-
-pub const var_decay: f64 = 0.95;
-pub const rescale_threshold: f64 = 1e100;
-
-// ReduceDB cadence — fires on its own conflict-count budget, independent
-// of restarts. The interval grows by `reduce_grow` each trigger so long
-// searches don't pay a log-N reduce every few thousand conflicts.
-pub const reduce_initial: u64 = 2000;
-pub const reduce_grow: u64 = 300;

@@ -19,8 +19,8 @@ const len_mask = clause_mod.len_mask;
 const header_slots = clause_mod.header_slots;
 
 const heuristics = @import("heuristics");
-const OrderHeap = heuristics.order_heap.OrderHeap;
-const restart = heuristics.restart;
+const order_heap_mod = heuristics.order_heap;
+const OrderHeap = order_heap_mod.OrderHeap;
 const rephase_mod = heuristics.rephase;
 const mode_mod = heuristics.mode;
 
@@ -238,8 +238,8 @@ pub const Solver = struct {
             .trail_fast = 0,
             .trail_fast_bc = 0,
             .conflicts_since_restart = 0,
-            .next_reduce = restart.reduce_initial,
-            .reduce_interval = restart.reduce_initial,
+            .next_reduce = @import("inprocess/reduce.zig").initial_interval,
+            .reduce_interval = @import("inprocess/reduce.zig").initial_interval,
             .best_trail_len = 0,
             .rephase_next = rephase_mod.rephase_initial,
             .rephase_interval = rephase_mod.rephase_initial,
@@ -552,15 +552,15 @@ pub const Solver = struct {
 
     pub fn bumpVarActivity(self: *Solver, var_idx: u32) void {
         self.activities[var_idx] += self.var_inc;
-        if (self.activities[var_idx] > restart.rescale_threshold) {
-            for (self.activities) |*a| a.* *= 1.0 / restart.rescale_threshold;
-            self.var_inc *= 1.0 / restart.rescale_threshold;
+        if (self.activities[var_idx] > order_heap_mod.rescale_threshold) {
+            for (self.activities) |*a| a.* *= 1.0 / order_heap_mod.rescale_threshold;
+            self.var_inc *= 1.0 / order_heap_mod.rescale_threshold;
         }
         self.order_heap.update(var_idx);
     }
 
     pub fn decayVarActivity(self: *Solver) void {
-        self.var_inc *= 1.0 / restart.var_decay;
+        self.var_inc *= 1.0 / order_heap_mod.var_decay;
     }
 
     pub fn pickBranching(self: *Solver) ?Literal {

@@ -4,13 +4,14 @@ const Reason = core.assignment.Reason;
 const heuristics = @import("heuristics");
 const restart = heuristics.restart;
 const rephase_mod = heuristics.rephase;
-const mode_mod = heuristics.mode;
 
+const backtrack_mod = @import("backtrack.zig");
 const state = @import("state.zig");
 const Solver = state.Solver;
 const solver_mod = @import("solver.zig");
 const Result = solver_mod.Result;
 
+const reduce_mod = @import("inprocess/reduce.zig");
 const probe_mod = @import("inprocess/probe.zig");
 const vivify_mod = @import("inprocess/vivify.zig");
 const subsume_mod = @import("inprocess/subsume.zig");
@@ -77,7 +78,7 @@ pub fn solve(self: *Solver) !Result {
                 self.best_trail_len = conflict_trail_len;
             }
 
-            const chrono = conflict_level > backjump_level + mode_mod.chrono_level_gap;
+            const chrono = conflict_level > backjump_level + backtrack_mod.chrono_level_gap;
             const target_level: u32 = if (chrono)
                 conflict_level - 1
             else
@@ -171,7 +172,7 @@ pub fn solve(self: *Solver) !Result {
                 if (should_reduce) {
                     try self.reduceDB();
                     self.max_learned = (self.max_learned * 11) / 10;
-                    self.reduce_interval += restart.reduce_grow;
+                    self.reduce_interval += reduce_mod.interval_step;
                     self.next_reduce = self.stats.conflicts + self.reduce_interval;
                 }
                 if (should_rephase) {

@@ -1,6 +1,11 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+// Activity decay per conflict, applied by growing the bump instead, and
+// the activity at which every activity is rescaled to stay finite.
+pub const var_decay: f64 = 0.95;
+pub const rescale_threshold: f64 = 1e100;
+
 // VSIDS order heap — binary max-heap keyed by per-variable activity.
 // Standalone type: holds a slice view onto the solver's activity array
 // and compares by dereferencing it. Insert / update / popMax are O(log n).
