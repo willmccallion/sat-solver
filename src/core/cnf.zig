@@ -47,15 +47,49 @@ pub const Literal = struct {
     }
 };
 
-// Clauses are stored back to back in one literal buffer; clause i spans
-// literals[clause_ends[i - 1] .. clause_ends[i]]. Every stored clause is
-// free of duplicate literals and is not a tautology. Inprocessing
-// (subsumption, SSR, BVE) relies on both.
+// Clauses stored back to back in one literal buffer; clause i spans
+// literals[ends[i - 1] .. ends[i]].
+pub const ClauseList = struct {
+    literals: std.ArrayList(Literal) = .empty,
+    ends: std.ArrayList(u32) = .empty,
+
+    pub const AppendError = Allocator.Error || error{TooManyLiterals};
+
+    pub fn deinit(self: *ClauseList, allocator: Allocator) void {
+        self.literals.deinit(allocator);
+        self.ends.deinit(allocator);
+    }
+
+    pub fn clearRetainingCapacity(self: *ClauseList) void {
+        self.literals.clearRetainingCapacity();
+        self.ends.clearRetainingCapacity();
+    }
+
+    pub fn count(self: *const ClauseList) usize {
+        return self.ends.items.len;
+    }
+
+    pub fn get(self: *const ClauseList, index: usize) []const Literal {
+        const start: usize = if (index == 0) 0 else self.ends.items[index - 1];
+        return self.literals.items[start..self.ends.items[index]];
+    }
+
+    pub fn append(self: *ClauseList, allocator: Allocator, clause_lits: []const Literal) AppendError!void {
+        const end = std.math.add(usize, self.literals.items.len, clause_lits.len) catch
+            return error.TooManyLiterals;
+        if (end > std.math.maxInt(u32)) return error.TooManyLiterals;
+        try self.ends.ensureUnusedCapacity(allocator, 1);
+        try self.literals.appendSlice(allocator, clause_lits);
+        self.ends.appendAssumeCapacity(@intCast(end));
+    }
+};
+
+// Every stored clause is free of duplicate literals and is not a
+// tautology. Inprocessing (subsumption, SSR, BVE) relies on both.
 pub const Formula = struct {
     allocator: Allocator,
     num_vars: u32,
-    literals: std.ArrayList(Literal),
-    clause_ends: std.ArrayList(u32),
+    clauses: ClauseList,
     sort_scratch: std.ArrayList(Literal),
 
     pub const AddClauseError = error{ OutOfMemory, FormulaTooLarge };
@@ -64,15 +98,13 @@ pub const Formula = struct {
         return .{
             .allocator = allocator,
             .num_vars = num_vars,
-            .literals = .empty,
-            .clause_ends = .empty,
+            .clauses = .{},
             .sort_scratch = .empty,
         };
     }
 
     pub fn deinit(self: *Formula) void {
-        self.literals.deinit(self.allocator);
-        self.clause_ends.deinit(self.allocator);
+        self.clauses.deinit(self.allocator);
         self.sort_scratch.deinit(self.allocator);
         self.* = undefined;
     }
@@ -83,17 +115,16 @@ pub const Formula = struct {
     // otherwise cost memory for variables that never occur.
     pub fn trimUnusedVars(self: *Formula) void {
         var end: u32 = 0;
-        for (self.literals.items) |lit| end = @max(end, lit.variable() + 1);
+        for (self.clauses.literals.items) |lit| end = @max(end, lit.variable() + 1);
         self.num_vars = end;
     }
 
     pub fn clauseCount(self: *const Formula) usize {
-        return self.clause_ends.items.len;
+        return self.clauses.count();
     }
 
     pub fn clause(self: *const Formula, index: usize) []const Literal {
-        const start: usize = if (index == 0) 0 else self.clause_ends.items[index - 1];
-        return self.literals.items[start..self.clause_ends.items[index]];
+        return self.clauses.get(index);
     }
 
     // Stores `literals` with duplicates merged. A tautology (x and ¬x both
@@ -105,12 +136,10 @@ pub const Formula = struct {
         const distinct = sortedDistinct(sorted.items) orelse return;
         // The caller's literal order is kept unless duplicates were merged.
         const kept = if (distinct.len < literals.len) distinct else literals;
-        const end = std.math.add(usize, self.literals.items.len, kept.len) catch
-            return error.FormulaTooLarge;
-        if (end > std.math.maxInt(u32)) return error.FormulaTooLarge;
-        try self.clause_ends.ensureUnusedCapacity(self.allocator, 1);
-        try self.literals.appendSlice(self.allocator, kept);
-        self.clause_ends.appendAssumeCapacity(@intCast(end));
+        self.clauses.append(self.allocator, kept) catch |err| switch (err) {
+            error.TooManyLiterals => return error.FormulaTooLarge,
+            error.OutOfMemory => return error.OutOfMemory,
+        };
     }
 };
 

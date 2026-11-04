@@ -32,7 +32,7 @@ pub fn parse(allocator: Allocator, reader: *std.Io.Reader) ParseError!Formula {
     const header = try parseHeader(reader);
     var formula = Formula.init(allocator, header.num_vars);
     errdefer formula.deinit();
-    try formula.clause_ends.ensureTotalCapacity(
+    try formula.clauses.ends.ensureTotalCapacity(
         allocator,
         @min(header.num_clauses, max_reserved_clauses),
     );

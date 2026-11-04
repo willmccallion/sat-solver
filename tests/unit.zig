@@ -109,8 +109,8 @@ test "parser: tokens split across reader refills parse the same as one buffer" {
     defer formula.deinit();
 
     try testing.expectEqual(expected.num_vars, formula.num_vars);
-    try testing.expectEqualSlices(u32, expected.clause_ends.items, formula.clause_ends.items);
-    try testing.expectEqualSlices(Literal, expected.literals.items, formula.literals.items);
+    try testing.expectEqualSlices(u32, expected.clauses.ends.items, formula.clauses.ends.items);
+    try testing.expectEqualSlices(Literal, expected.clauses.literals.items, formula.clauses.literals.items);
 }
 
 test "parser: clauses span multiple lines" {
