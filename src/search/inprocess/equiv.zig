@@ -392,7 +392,7 @@ pub fn equiv(self: *Solver) !?Result {
                 .{ .eliminated_var = v, .rep_lit = .{ .raw = rep_raw } },
             );
             self.eliminated.set(v);
-            self.stats.equiv_eliminated += 1;
+            self.stats.equiv_substituted_vars += 1;
         }
     }
 
@@ -543,7 +543,7 @@ pub fn equiv(self: *Solver) !?Result {
 
     if (try self.propagateAtRoot()) |r| return r;
 
-    self.stats.equivs += 1;
+    self.stats.equiv_passes += 1;
     return null;
 }
 

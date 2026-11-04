@@ -165,27 +165,27 @@ pub fn main(init: std.process.Init) !void {
     }
 
     try stdout.print(
-        "stats: decisions={d} conflicts={d} propagations={d} restarts={d} reductions={d} learned={d} rephases={d} chronos={d} probings={d} flp_units={d} vivifies={d} vivified={d} subsumes={d} subsumed={d} strengthened={d} mode_switches={d} compactions={d} bves={d} eliminated={d} resolvents_added={d}\n",
+        "stats: decisions={d} conflicts={d} propagations={d} restarts={d} reductions={d} learned_clauses={d} rephases={d} chrono_backtracks={d} probe_passes={d} failed_literal_units={d} vivify_passes={d} vivified_clauses={d} subsume_passes={d} subsumed_clauses={d} strengthened_clauses={d} mode_switches={d} compactions={d} bve_passes={d} eliminated_vars={d} resolvents_added={d}\n",
         .{
             agg_stats.decisions,
             agg_stats.conflicts,
             agg_stats.propagations,
             agg_stats.restarts,
             agg_stats.reductions,
-            agg_stats.learned,
+            agg_stats.learned_clauses,
             agg_stats.rephases,
-            agg_stats.chronos,
-            agg_stats.probings,
-            agg_stats.flp_units,
-            agg_stats.vivifies,
-            agg_stats.vivified,
-            agg_stats.subsumes,
-            agg_stats.subsumed,
-            agg_stats.strengthened,
+            agg_stats.chrono_backtracks,
+            agg_stats.probe_passes,
+            agg_stats.failed_literal_units,
+            agg_stats.vivify_passes,
+            agg_stats.vivified_clauses,
+            agg_stats.subsume_passes,
+            agg_stats.subsumed_clauses,
+            agg_stats.strengthened_clauses,
             agg_stats.mode_switches,
             agg_stats.compactions,
-            agg_stats.bves,
-            agg_stats.eliminated,
+            agg_stats.bve_passes,
+            agg_stats.eliminated_vars,
             agg_stats.resolvents_added,
         },
     );
@@ -317,21 +317,21 @@ fn accumulate(dst: *solver_mod.Stats, src: *const solver_mod.Stats) void {
     dst.propagations += src.propagations;
     dst.conflicts += src.conflicts;
     dst.restarts += src.restarts;
-    dst.learned += src.learned;
+    dst.learned_clauses += src.learned_clauses;
     dst.reductions += src.reductions;
-    dst.deleted += src.deleted;
+    dst.deleted_clauses += src.deleted_clauses;
     dst.rephases += src.rephases;
-    dst.chronos += src.chronos;
-    dst.probings += src.probings;
-    dst.flp_units += src.flp_units;
-    dst.vivifies += src.vivifies;
-    dst.vivified += src.vivified;
-    dst.subsumes += src.subsumes;
-    dst.subsumed += src.subsumed;
-    dst.strengthened += src.strengthened;
+    dst.chrono_backtracks += src.chrono_backtracks;
+    dst.probe_passes += src.probe_passes;
+    dst.failed_literal_units += src.failed_literal_units;
+    dst.vivify_passes += src.vivify_passes;
+    dst.vivified_clauses += src.vivified_clauses;
+    dst.subsume_passes += src.subsume_passes;
+    dst.subsumed_clauses += src.subsumed_clauses;
+    dst.strengthened_clauses += src.strengthened_clauses;
     dst.mode_switches += src.mode_switches;
     dst.compactions += src.compactions;
-    dst.bves += src.bves;
-    dst.eliminated += src.eliminated;
+    dst.bve_passes += src.bve_passes;
+    dst.eliminated_vars += src.eliminated_vars;
     dst.resolvents_added += src.resolvents_added;
 }

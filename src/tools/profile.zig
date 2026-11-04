@@ -65,20 +65,20 @@ const Stats = struct {
     solver_propagations: u64 = 0,
     solver_restarts: u64 = 0,
     solver_reductions: u64 = 0,
-    solver_learned: u64 = 0,
+    solver_learned_clauses: u64 = 0,
     solver_rephases: u64 = 0,
-    solver_chronos: u64 = 0,
-    solver_probings: u64 = 0,
-    solver_flp_units: u64 = 0,
-    solver_vivifies: u64 = 0,
-    solver_vivified: u64 = 0,
-    solver_subsumes: u64 = 0,
-    solver_subsumed: u64 = 0,
-    solver_strengthened: u64 = 0,
+    solver_chrono_backtracks: u64 = 0,
+    solver_probe_passes: u64 = 0,
+    solver_failed_literal_units: u64 = 0,
+    solver_vivify_passes: u64 = 0,
+    solver_vivified_clauses: u64 = 0,
+    solver_subsume_passes: u64 = 0,
+    solver_subsumed_clauses: u64 = 0,
+    solver_strengthened_clauses: u64 = 0,
     solver_mode_switches: u64 = 0,
     solver_compactions: u64 = 0,
-    solver_bves: u64 = 0,
-    solver_eliminated: u64 = 0,
+    solver_bve_passes: u64 = 0,
+    solver_eliminated_vars: u64 = 0,
     solver_resolvents_added: u64 = 0,
     peak_rss_kb: u64 = 0,
     par2_s: f64 = 0,
@@ -364,20 +364,20 @@ fn parseBenchOutput(output: []const u8, stats: *Stats) void {
                     if (std.mem.eql(u8, key, "propagations")) dst.solver_propagations = n;
                     if (std.mem.eql(u8, key, "restarts")) dst.solver_restarts = n;
                     if (std.mem.eql(u8, key, "reductions")) dst.solver_reductions = n;
-                    if (std.mem.eql(u8, key, "learned")) dst.solver_learned = n;
+                    if (std.mem.eql(u8, key, "learned_clauses")) dst.solver_learned_clauses = n;
                     if (std.mem.eql(u8, key, "rephases")) dst.solver_rephases = n;
-                    if (std.mem.eql(u8, key, "chronos")) dst.solver_chronos = n;
-                    if (std.mem.eql(u8, key, "probings")) dst.solver_probings = n;
-                    if (std.mem.eql(u8, key, "flp_units")) dst.solver_flp_units = n;
-                    if (std.mem.eql(u8, key, "vivifies")) dst.solver_vivifies = n;
-                    if (std.mem.eql(u8, key, "vivified")) dst.solver_vivified = n;
-                    if (std.mem.eql(u8, key, "subsumes")) dst.solver_subsumes = n;
-                    if (std.mem.eql(u8, key, "subsumed")) dst.solver_subsumed = n;
-                    if (std.mem.eql(u8, key, "strengthened")) dst.solver_strengthened = n;
+                    if (std.mem.eql(u8, key, "chrono_backtracks")) dst.solver_chrono_backtracks = n;
+                    if (std.mem.eql(u8, key, "probe_passes")) dst.solver_probe_passes = n;
+                    if (std.mem.eql(u8, key, "failed_literal_units")) dst.solver_failed_literal_units = n;
+                    if (std.mem.eql(u8, key, "vivify_passes")) dst.solver_vivify_passes = n;
+                    if (std.mem.eql(u8, key, "vivified_clauses")) dst.solver_vivified_clauses = n;
+                    if (std.mem.eql(u8, key, "subsume_passes")) dst.solver_subsume_passes = n;
+                    if (std.mem.eql(u8, key, "subsumed_clauses")) dst.solver_subsumed_clauses = n;
+                    if (std.mem.eql(u8, key, "strengthened_clauses")) dst.solver_strengthened_clauses = n;
                     if (std.mem.eql(u8, key, "mode_switches")) dst.solver_mode_switches = n;
                     if (std.mem.eql(u8, key, "compactions")) dst.solver_compactions = n;
-                    if (std.mem.eql(u8, key, "bves")) dst.solver_bves = n;
-                    if (std.mem.eql(u8, key, "eliminated")) dst.solver_eliminated = n;
+                    if (std.mem.eql(u8, key, "bve_passes")) dst.solver_bve_passes = n;
+                    if (std.mem.eql(u8, key, "eliminated_vars")) dst.solver_eliminated_vars = n;
                     if (std.mem.eql(u8, key, "resolvents_added")) dst.solver_resolvents_added = n;
                 }
             }.apply, stats);
@@ -869,20 +869,20 @@ fn printReport(
     try solverRow(w, "propagations", stats.solver_propagations, stats.instance_count);
     try solverRow(w, "restarts", stats.solver_restarts, stats.instance_count);
     try solverRow(w, "reductions", stats.solver_reductions, stats.instance_count);
-    try solverRow(w, "learned clauses", stats.solver_learned, stats.instance_count);
+    try solverRow(w, "learned clauses", stats.solver_learned_clauses, stats.instance_count);
     try solverRow(w, "rephases", stats.solver_rephases, stats.instance_count);
-    try solverRow(w, "chrono backtracks", stats.solver_chronos, stats.instance_count);
-    try solverRow(w, "probings", stats.solver_probings, stats.instance_count);
-    try solverRow(w, "flp units", stats.solver_flp_units, stats.instance_count);
-    try solverRow(w, "vivify passes", stats.solver_vivifies, stats.instance_count);
-    try solverRow(w, "vivified clauses", stats.solver_vivified, stats.instance_count);
-    try solverRow(w, "subsume passes", stats.solver_subsumes, stats.instance_count);
-    try solverRow(w, "subsumed clauses", stats.solver_subsumed, stats.instance_count);
-    try solverRow(w, "strengthened", stats.solver_strengthened, stats.instance_count);
+    try solverRow(w, "chrono backtracks", stats.solver_chrono_backtracks, stats.instance_count);
+    try solverRow(w, "probe_passes", stats.solver_probe_passes, stats.instance_count);
+    try solverRow(w, "flp units", stats.solver_failed_literal_units, stats.instance_count);
+    try solverRow(w, "vivify passes", stats.solver_vivify_passes, stats.instance_count);
+    try solverRow(w, "vivified clauses", stats.solver_vivified_clauses, stats.instance_count);
+    try solverRow(w, "subsume passes", stats.solver_subsume_passes, stats.instance_count);
+    try solverRow(w, "subsumed clauses", stats.solver_subsumed_clauses, stats.instance_count);
+    try solverRow(w, "strengthened_clauses", stats.solver_strengthened_clauses, stats.instance_count);
     try solverRow(w, "mode switches", stats.solver_mode_switches, stats.instance_count);
     try solverRow(w, "compactions", stats.solver_compactions, stats.instance_count);
-    try solverRow(w, "bve passes", stats.solver_bves, stats.instance_count);
-    try solverRow(w, "eliminated", stats.solver_eliminated, stats.instance_count);
+    try solverRow(w, "bve passes", stats.solver_bve_passes, stats.instance_count);
+    try solverRow(w, "eliminated_vars", stats.solver_eliminated_vars, stats.instance_count);
     try solverRow(w, "resolvents added", stats.solver_resolvents_added, stats.instance_count);
     try blankRow(w);
 

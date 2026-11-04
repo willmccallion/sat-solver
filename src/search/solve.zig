@@ -85,7 +85,7 @@ pub fn solve(self: *Solver) !Result {
                 conflict_level - 1
             else
                 backjump_level;
-            if (chrono) self.stats.chronos += 1;
+            if (chrono) self.stats.chrono_backtracks += 1;
             self.backtrack(target_level);
 
             const lbd_f: f64 = @floatFromInt(lbd);
@@ -112,7 +112,7 @@ pub fn solve(self: *Solver) !Result {
                     Reason.fromBinary(other),
                     backjump_level,
                 );
-                self.stats.learned += 1;
+                self.stats.learned_clauses += 1;
             } else {
                 try self.proof.addClause(self.analyze_learned.items);
                 const cref = try self.addClauseToArena(
@@ -127,7 +127,7 @@ pub fn solve(self: *Solver) !Result {
                     Reason.fromClause(cref),
                     backjump_level,
                 );
-                self.stats.learned += 1;
+                self.stats.learned_clauses += 1;
             }
 
             self.decayVarActivity();

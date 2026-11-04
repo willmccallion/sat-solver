@@ -385,7 +385,7 @@ test "subsume: trivial — (1 2 3) subsumed by (1 2)" {
 
     try testing.expectEqual(@as(usize, 0), countLiveLongClauses(&solver));
     try testing.expect(hasBinary(&solver, Literal.fromDimacs(1), Literal.fromDimacs(2)));
-    try testing.expectEqual(@as(u64, 1), solver.stats.subsumed);
+    try testing.expectEqual(@as(u64, 1), solver.stats.subsumed_clauses);
 }
 
 test "subsume: learned clause that subsumes an irredundant clause survives reduceDB" {
@@ -421,7 +421,7 @@ test "subsume: learned clause that subsumes an irredundant clause survives reduc
 test "subsume: SSR to unit — (1 2) and (1 -2) derive unit 1" {
     // Binary subsumer (1, 2) resolves with its sibling (1, -2) on 2 to
     // derive the level-0 unit (1). Both binaries should leave
-    // bin_watchers, stats.strengthened increments.
+    // bin_watchers, stats.strengthened_clauses increments.
     const src =
         \\p cnf 2 2
         \\1 2 0
@@ -439,7 +439,7 @@ test "subsume: SSR to unit — (1 2) and (1 -2) derive unit 1" {
     try testing.expect(r == null);
 
     try testing.expectEqual(assignment_mod.Value.true, solver.assignment.valueOfVar(0));
-    try testing.expect(solver.stats.strengthened >= 1);
+    try testing.expect(solver.stats.strengthened_clauses >= 1);
 }
 
 test "subsume: SSR to binary — long clause strengthened to a new binary" {
@@ -516,7 +516,7 @@ test "subsume: SSR to binary — long clause strengthened to a new binary" {
         Literal.fromDimacs(-34),
     ));
 
-    try testing.expectEqual(@as(u64, 1), solver.stats.strengthened);
+    try testing.expectEqual(@as(u64, 1), solver.stats.strengthened_clauses);
 }
 
 test "subsume: deleted-skip — two calls don't re-process deleted clauses" {
@@ -538,14 +538,14 @@ test "subsume: deleted-skip — two calls don't re-process deleted clauses" {
 
     const r1 = try solver.preprocessSubsume();
     try testing.expect(r1 == null);
-    const subsumed_after_first = solver.stats.subsumed;
+    const subsumed_after_first = solver.stats.subsumed_clauses;
     try testing.expect(subsumed_after_first >= 1);
 
     const r2 = try solver.preprocessSubsume();
     try testing.expect(r2 == null);
     // Stats may not increment further; at minimum the call must not
     // crash or produce unsat.
-    try testing.expectEqual(subsumed_after_first, solver.stats.subsumed);
+    try testing.expectEqual(subsumed_after_first, solver.stats.subsumed_clauses);
 }
 
 test "subsume: a level-0 reason clause is never a subsumption target" {
@@ -1039,7 +1039,7 @@ test "a long clause strengthened by subsume propagates its last non-false litera
     const r = try solver.preprocessSubsume();
 
     try testing.expect(r == null);
-    try testing.expect(solver.stats.strengthened >= 1);
+    try testing.expect(solver.stats.strengthened_clauses >= 1);
     try testing.expectEqual(assignment_mod.Value.true, solver.assignment.valueOfVar(0));
 }
 
@@ -1054,7 +1054,7 @@ test "a clause subsume strengthens to a binary with a level-0 false literal prop
     const r = try solver.preprocessSubsume();
 
     try testing.expect(r == null);
-    try testing.expect(solver.stats.strengthened >= 1);
+    try testing.expect(solver.stats.strengthened_clauses >= 1);
     try testing.expectEqual(assignment_mod.Value.true, solver.assignment.valueOfVar(0));
 }
 

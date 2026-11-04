@@ -42,7 +42,7 @@ pub const lbd_cap: u32 = 6;
 pub fn vivify(self: *Solver) !?Result {
     std.debug.assert(self.assignment.level == 0);
     if (try self.propagateAtRoot()) |r| return r;
-    self.stats.vivifies += 1;
+    self.stats.vivify_passes += 1;
 
     const props_start = self.stats.propagations;
     const delta = if (props_start > self.props_at_last_vivify)
@@ -134,7 +134,7 @@ pub fn vivify(self: *Solver) !?Result {
         if (subsumed) {
             try self.proof.deleteClause(self.clauseLits(cref));
             self.markDeleted(cref);
-            self.stats.vivified += 1;
+            self.stats.vivified_clauses += 1;
             any_deleted = true;
             continue :outer;
         }
@@ -154,7 +154,7 @@ pub fn vivify(self: *Solver) !?Result {
         try self.proof.deleteClause(self.clauseLits(cref));
         self.markDeleted(cref);
         any_deleted = true;
-        self.stats.vivified += 1;
+        self.stats.vivified_clauses += 1;
 
         if (new_len == 1) {
             const unit = new_lits[0];

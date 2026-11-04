@@ -35,7 +35,7 @@ pub const max_vars: usize = 1024;
 pub fn probe(self: *Solver) !?Result {
     std.debug.assert(self.assignment.level == 0);
     if (try self.propagateAtRoot()) |r| return r;
-    self.stats.probings += 1;
+    self.stats.probe_passes += 1;
 
     const props_start = self.stats.propagations;
     const delta = if (props_start > self.props_at_last_probe)
@@ -88,7 +88,7 @@ pub fn probe(self: *Solver) !?Result {
                 const unit = probe_lit.negate();
                 try self.proof.addClause(&.{unit});
                 try self.assignment.assign(unit, Reason.none);
-                self.stats.flp_units += 1;
+                self.stats.failed_literal_units += 1;
                 if (try self.propagateAtRoot()) |r| return r;
             }
         }

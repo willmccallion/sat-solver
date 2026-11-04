@@ -57,7 +57,7 @@ pub fn reduceDB(self: *Solver) !void {
         self.markDeleted(c.cref);
     }
     self.stats.reductions += 1;
-    self.stats.deleted += to_delete;
+    self.stats.deleted_clauses += to_delete;
 
     for (self.watchers) |*wlist| {
         var j: usize = 0;

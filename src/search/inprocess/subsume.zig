@@ -78,7 +78,7 @@ pub fn preprocessSubsume(self: *Solver) !?Result {
 fn subsumeImpl(self: *Solver, is_preprocess: bool) !?Result {
     std.debug.assert(self.assignment.level == 0);
     if (try self.propagateAtRoot()) |r| return r;
-    self.stats.subsumes += 1;
+    self.stats.subsume_passes += 1;
 
     const props_start = self.stats.propagations;
     const budget: u64 = blk: {
@@ -492,7 +492,7 @@ fn binarySSRAgainstBinaries(
             }
         }
 
-        self.stats.strengthened += 1;
+        self.stats.strengthened_clauses += 1;
 
         // Assign unit or detect conflict.
         const val = self.assignment.valueOfLiteral(unit);
@@ -566,7 +566,7 @@ fn subsumeClause(
     try self.proof.deleteClause(self.clauseLits(d_cref));
     self.markDeleted(d_cref);
     any_deleted.* = true;
-    self.stats.subsumed += 1;
+    self.stats.subsumed_clauses += 1;
 }
 
 // Self-subsuming resolution on a long clause D. Removes `neg_lit` and
@@ -621,7 +621,7 @@ fn strengthenLongClause(
     // Mark old D deleted.
     self.markDeleted(d_cref);
     any_deleted.* = true;
-    self.stats.strengthened += 1;
+    self.stats.strengthened_clauses += 1;
 
     if (new_len == 0) {
         unsat_derived.* = true;

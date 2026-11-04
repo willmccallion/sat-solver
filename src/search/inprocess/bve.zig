@@ -491,7 +491,7 @@ fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
 
         if (unsat_derived) break;
 
-        self.stats.eliminated += 1;
+        self.stats.eliminated_vars += 1;
         self.stats.resolvents_added += non_taut_count;
 
         // A unit installed by commit just landed on the trail via
@@ -535,7 +535,7 @@ fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
 
     if (try self.propagateAtRoot()) |r| return r;
 
-    self.stats.bves += 1;
+    self.stats.bve_passes += 1;
     return null;
 }
 
