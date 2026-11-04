@@ -349,10 +349,6 @@ fn processSubsumerBinary(
         }
 
         const d_lits = self.clauseLits(d_cref);
-        if (d_lits.len < 2) {
-            op_count.* += 1;
-            continue;
-        }
         const outcome = checkSubsumeOrSSR(scratch.items, d_lits);
         op_count.* += 1;
         if (outcome != .none and self.clauseIsLocked(d_cref)) continue;

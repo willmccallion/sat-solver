@@ -208,7 +208,6 @@ fn eliminateWithin(self: *Solver, budget: u64) !?Result {
     var unsat_derived = false;
 
     outer: while (heap.pop()) |entry| {
-        if (unsat_derived) break;
         if (op_count > budget or solver_mod.interruptRequested()) {
             @branchHint(.cold);
             break;
@@ -623,7 +622,7 @@ pub fn reconstructEliminatedVars(self: *Solver) void {
         // Walk every -pivot clause; confirm each has a satisfied
         // non-pivot literal. If any clause lacks one, pivot=true would
         // leave that clause unsatisfied, so we must flip to pivot=false.
-        var pivot_true_ok = true;
+        var pick_true = true;
         var cursor: u32 = frame.neg_start;
         while (cursor < frame.end) {
             const clen: u32 = lits_buf[cursor].raw;
@@ -639,12 +638,11 @@ pub fn reconstructEliminatedVars(self: *Solver) void {
                 }
             }
             if (!clause_satisfied) {
-                pivot_true_ok = false;
+                pick_true = false;
                 break;
             }
         }
 
-        const pick_true = pivot_true_ok;
         const pos_slot = pivot << 1;
         self.assignment.vars[pivot].value = if (pick_true) .true else .false;
         self.assignment.lit_values[pos_slot] =
