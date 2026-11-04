@@ -23,6 +23,7 @@ const order_heap_mod = heuristics.order_heap;
 const OrderHeap = order_heap_mod.OrderHeap;
 const rephase_mod = heuristics.rephase;
 const mode_mod = heuristics.mode;
+const restart = heuristics.restart;
 const Schedule = heuristics.schedule.Schedule;
 
 const reduce_mod = @import("inprocess/reduce.zig");
@@ -137,17 +138,7 @@ pub const Solver = struct {
 
     proof: io.drat.Writer,
 
-    // Glucose restart state. Each EMA carries a bias-correction
-    // accumulator (`_bc`) that normalizes the raw sum for the Adam-style
-    // `value / bc` unbiased estimate. The bc fields start at 0 and
-    // asymptote to 1.
-    lbd_fast: f64,
-    lbd_fast_bc: f64,
-    lbd_slow: f64,
-    lbd_slow_bc: f64,
-    trail_fast: f64,
-    trail_fast_bc: f64,
-    conflicts_since_restart: u64,
+    restarts: restart.RestartState,
 
     // When each periodic task next runs.
     schedules: Schedules,
@@ -229,13 +220,7 @@ pub const Solver = struct {
             .learned_clauses = .empty,
             .max_learned = @max(formula.clauseCount(), reduce_mod.min_max_learned),
             .proof = .{},
-            .lbd_fast = 0,
-            .lbd_fast_bc = 0,
-            .lbd_slow = 0,
-            .lbd_slow_bc = 0,
-            .trail_fast = 0,
-            .trail_fast_bc = 0,
-            .conflicts_since_restart = 0,
+            .restarts = .{},
             .schedules = .{},
             .best_trail_len = 0,
             .rephase_kind = .best,

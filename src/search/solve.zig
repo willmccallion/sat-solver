@@ -1,9 +1,6 @@
 const core = @import("core");
 const Reason = core.assignment.Reason;
 
-const heuristics = @import("heuristics");
-const restart = heuristics.restart;
-
 const backtrack_mod = @import("backtrack.zig");
 const state = @import("state.zig");
 const Solver = state.Solver;
@@ -31,7 +28,7 @@ pub fn solve(self: *Solver) !Result {
 
         if (try self.propagate()) |conflict| {
             self.stats.conflicts += 1;
-            self.conflicts_since_restart += 1;
+            self.restarts.conflicts_since_restart += 1;
 
             const conflict_level: u32 = switch (conflict) {
                 .clause => |cref| blk: {
@@ -80,12 +77,7 @@ pub fn solve(self: *Solver) !Result {
             if (chrono) self.stats.chrono_backtracks += 1;
             self.backtrack(target_level);
 
-            const lbd_f: f64 = @floatFromInt(lbd);
-
-            self.lbd_fast += restart.lbd_fast_alpha * (lbd_f - self.lbd_fast);
-            self.lbd_fast_bc += restart.lbd_fast_alpha * (1 - self.lbd_fast_bc);
-            self.lbd_slow += restart.lbd_slow_alpha * (lbd_f - self.lbd_slow);
-            self.lbd_slow_bc += restart.lbd_slow_alpha * (1 - self.lbd_slow_bc);
+            self.restarts.recordLbd(@floatFromInt(lbd));
 
             if (learned_len == 1) {
                 try self.proof.addClause(self.analyze_learned.items);
@@ -124,25 +116,8 @@ pub fn solve(self: *Solver) !Result {
 
             self.decayVarActivity();
 
-            const ready = self.conflicts_since_restart >= restart.restart_min_conflicts;
-            var should_restart = false;
-            if (self.search_mode == .focused and
-                ready and self.lbd_fast_bc > 0 and self.lbd_slow_bc > 0)
-            {
-                const fast_corrected = self.lbd_fast / self.lbd_fast_bc;
-                const slow_corrected = self.lbd_slow / self.lbd_slow_bc;
-                const trending_bad = fast_corrected > slow_corrected * restart.restart_ratio;
-
-                var trail_blocks = false;
-                if (self.trail_fast_bc > 0) {
-                    const trail_corrected = self.trail_fast / self.trail_fast_bc;
-                    trail_blocks = conflict_trail_f > trail_corrected * restart.trail_block_ratio;
-                }
-                should_restart = trending_bad and !trail_blocks;
-            }
-
-            self.trail_fast += restart.lbd_fast_alpha * (conflict_trail_f - self.trail_fast);
-            self.trail_fast_bc += restart.lbd_fast_alpha * (1 - self.trail_fast_bc);
+            const should_restart = self.search_mode == .focused and self.restarts.isDue(conflict_trail_f);
+            self.restarts.trail_fast.update(conflict_trail_f);
 
             const conflicts = self.stats.conflicts;
             const schedules = &self.schedules;
@@ -162,7 +137,7 @@ pub fn solve(self: *Solver) !Result {
             {
                 if (should_restart) {
                     self.stats.restarts += 1;
-                    self.conflicts_since_restart = 0;
+                    self.restarts.conflicts_since_restart = 0;
                 }
                 self.backtrack(0);
                 if (should_reduce) {
