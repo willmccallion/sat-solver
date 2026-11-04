@@ -122,10 +122,18 @@ pub fn propagate(self: *Solver) !?Conflict {
                 self.assignment.propagation_head = self.assignment.trail.items.len;
                 return Conflict{ .clause = w.clause };
             } else {
+                // The highest level among the clause's false literals. A
+                // helper call here costs 4% more instructions on the bench.
+                var force_level: u32 = p_level;
+                var lit_idx: usize = 2;
+                while (lit_idx < lits.len) : (lit_idx += 1) {
+                    const level = self.assignment.vars[lits[lit_idx].variable()].level;
+                    if (level > force_level) force_level = level;
+                }
                 try self.assignment.assignAtLevel(
                     other,
                     Reason.fromClause(w.clause),
-                    self.highestLevel(lits[2..], p_level),
+                    force_level,
                 );
             }
         }
