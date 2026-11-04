@@ -269,6 +269,15 @@ pub fn build(b: *std.Build) void {
 
     // /dev/full fails every write, standing in for a full disk.
     if (target.result.os.tag == .linux) {
+        // The address-space cap turns a header-sized allocation into a
+        // clean OutOfMemory instead of the OOM killer.
+        const e2e_huge_header = b.addSystemCommand(&.{ "prlimit", "--as=4294967296", "--" });
+        e2e_huge_header.addArtifactArg(exe);
+        e2e_huge_header.setStdIn(.{ .bytes = "p cnf 1073741824 1\n1 0\n" });
+        e2e_huge_header.expectExitCode(10);
+        e2e_huge_header.expectStdOutEqual("s SATISFIABLE\nv 1 0\n");
+        test_step.dependOn(&e2e_huge_header.step);
+
         const e2e_proof_write_failure = b.addRunArtifact(exe);
         e2e_proof_write_failure.addArgs(&.{ "--proof", "/dev/full" });
         e2e_proof_write_failure.addFileArg(b.path("tests/fixtures/trivial_unsat.cnf"));

@@ -138,6 +138,7 @@ pub fn main(init: std.process.Init) !u8 {
         return 0;
     };
     defer formula.deinit();
+    formula.trimUnusedVars();
 
     // Open the DRAT proof file if requested. It is flushed explicitly once
     // solving ends, so a failed write is reported instead of lost.

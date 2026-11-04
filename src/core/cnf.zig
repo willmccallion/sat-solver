@@ -77,6 +77,16 @@ pub const Formula = struct {
         self.* = undefined;
     }
 
+    // Lowers num_vars to one past the highest variable a clause mentions.
+    // A header's count is only a declaration, and the solver sizes every
+    // per-variable array from num_vars, so an overstated header would
+    // otherwise cost memory for variables that never occur.
+    pub fn trimUnusedVars(self: *Formula) void {
+        var end: u32 = 0;
+        for (self.literals.items) |lit| end = @max(end, lit.variable() + 1);
+        self.num_vars = end;
+    }
+
     pub fn clauseCount(self: *const Formula) usize {
         return self.clause_ends.items.len;
     }

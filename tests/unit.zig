@@ -1079,3 +1079,21 @@ test "vivify run right after a learned unit keeps the unit's level-0 implication
 test "parser rejects -0 instead of reading it as a clause terminator" {
     try testing.expectError(error.InvalidToken, parseSource("p cnf 1 1\n1 -0 0\n"));
 }
+
+test "trimming unused variables keeps only those up to the highest a clause mentions" {
+    var formula = try parseSource("p cnf 1073741824 2\n1 -3 0\n2 0\n");
+    defer formula.deinit();
+
+    formula.trimUnusedVars();
+
+    try testing.expectEqual(@as(u32, 3), formula.num_vars);
+}
+
+test "trimming unused variables leaves an empty formula with none" {
+    var formula = try parseSource("p cnf 50 0\n");
+    defer formula.deinit();
+
+    formula.trimUnusedVars();
+
+    try testing.expectEqual(@as(u32, 0), formula.num_vars);
+}
