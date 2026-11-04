@@ -389,6 +389,11 @@ fn hasEliminated(solver: *solver_mod.Solver, var_idx: u32) bool {
     return solver.eliminated.isSet(var_idx);
 }
 
+// The subsumption fast-reject hashes literals by `raw & 63`, so an SSR
+// pair (ℓ ∈ C, ¬ℓ ∈ D) only reaches the full check when D also holds a
+// literal sharing ℓ's bit. -34 (raw 67) shares -2's (raw 3), so the SSR
+// tests below put -34 in each clause that (1 -2) strengthens on 2.
+
 test "subsume: trivial — (1 2 3) subsumed by (1 2)" {
     // (1 2) is stored as a binary in bin_watchers; (1 2 3) is the only
     // long clause in the arena. preprocessSubsume should mark (1 2 3)
@@ -465,7 +470,7 @@ test "subsume: SSR to unit — (1 2) and (1 -2) derive unit 1" {
     try testing.expect(r == null);
 
     try testing.expectEqual(assignment_mod.Value.true, solver.assignment.valueOfVar(0));
-    try testing.expect(solver.stats.strengthened_clauses >= 1);
+    try testing.expectEqual(@as(u64, 1), solver.stats.strengthened_clauses);
 }
 
 test "subsume: SSR to binary — long clause strengthened to a new binary" {
@@ -474,23 +479,9 @@ test "subsume: SSR to binary — long clause strengthened to a new binary" {
     // 3-literal clause gets the deleted bit set, and the new binary is
     // registered in bin_watchers.
     //
-    // The smallest case, (1 2 3) with (1 -2) giving (1 3), never reaches
-    // SSR, for two reasons:
-    //   (a) the subsumption-style abstract fast-reject
-    //       `(abstract(C) & ~abstract(D)) != 0` inside
-    //       processSubsumerBinary. The abstract uses `lit.raw & 63` so
-    //       a bit-collision between the C-literal being flipped and
-    //       some D-literal is required for the check to pass on an SSR
-    //       pair. Variable 33 (dimacs -34, raw=67 → bit 67 & 63 = 3)
-    //       supplies that collision against dimacs -2 (raw=3).
-    //   (b) pivot selection picks the shorter occ list among the
-    //       binary's two literals. With only one other long clause,
-    //       occ[dimacs-2] is empty and gets picked, so (1 2 -34) is
-    //       never walked. The extra clause (-2 5 6) balances the pivot
-    //       tie so occ[dimacs1] is chosen and (1 2 -34) is discovered.
-    //
-    // With both workarounds in place the SSR fires exactly once and
-    // produces the expected binary.
+    // -34 gets the clause past the fast-reject (see the note above). The
+    // subsumer walks its rarer literal's occurrences, and occ[-2] would be
+    // empty without (-2 5 6), so (1 2 -34) would never be visited.
     const src =
         \\p cnf 34 3
         \\1 2 -34 0
@@ -535,33 +526,17 @@ test "subsume: SSR to binary — long clause strengthened to a new binary" {
     try testing.expectEqual(@as(u64, 1), solver.stats.strengthened_clauses);
 }
 
-test "subsume: deleted-skip — two calls don't re-process deleted clauses" {
-    // (1 2 3) gets subsumed by (1 2) on the first call. A second call
-    // must walk the arena without re-emitting deletes or tripping any
-    // assertions inside checkSubsumeOrSSR / strengthenLongClause.
-    const src =
-        \\p cnf 3 2
-        \\1 2 3 0
-        \\1 2 0
-    ;
-    const gpa = testing.allocator;
-    var formula = try parseSource(src);
+test "subsume run a second time finds nothing left to subsume" {
+    var formula = try parseSource("p cnf 3 2\n1 2 3 0\n1 2 0\n");
     defer formula.deinit();
-    var solver = try solver_mod.Solver.init(gpa, &formula);
+    var solver = try solver_mod.Solver.init(testing.allocator, &formula);
     defer solver.deinit();
+    _ = try solver.preprocessSubsume();
 
-    _ = try solver.propagate();
+    const r = try solver.preprocessSubsume();
 
-    const r1 = try solver.preprocessSubsume();
-    try testing.expect(r1 == null);
-    const subsumed_after_first = solver.stats.subsumed_clauses;
-    try testing.expect(subsumed_after_first >= 1);
-
-    const r2 = try solver.preprocessSubsume();
-    try testing.expect(r2 == null);
-    // Stats may not increment further; at minimum the call must not
-    // crash or produce unsat.
-    try testing.expectEqual(subsumed_after_first, solver.stats.subsumed_clauses);
+    try testing.expect(r == null);
+    try testing.expectEqual(@as(u64, 1), solver.stats.subsumed_clauses);
 }
 
 test "subsume stops at its budget partway through one binary's occurrences" {
@@ -883,7 +858,7 @@ test "a learned clause shortened by vivify keeps a non-zero LBD" {
 }
 
 test "a learned clause strengthened by subsume keeps a non-zero LBD" {
-    // -34 collides with -2 in the literal abstract; see the SSR-to-binary test.
+    // -34 shares -2's abstract bit; see the note above the subsume tests.
     var formula = try parseSource("p cnf 34 2\n1 -2 0\n-2 5 6 0\n");
     defer formula.deinit();
     var solver = try solver_mod.Solver.init(testing.allocator, &formula);
@@ -1060,23 +1035,24 @@ test "a long clause strengthened by subsume propagates its last non-false litera
     const r = try solver.preprocessSubsume();
 
     try testing.expect(r == null);
-    try testing.expect(solver.stats.strengthened_clauses >= 1);
+    try testing.expectEqual(@as(u64, 1), solver.stats.strengthened_clauses);
     try testing.expectEqual(assignment_mod.Value.true, solver.assignment.valueOfVar(0));
 }
 
-test "a clause subsume strengthens to a binary with a level-0 false literal propagates" {
-    // SSR turns (1 2 -34) into (1 -34), and 34 is true at level 0.
-    var formula = try parseSource("p cnf 34 4\n1 2 -34 0\n1 -2 0\n-2 5 6 0\n34 0\n");
+test "a clause subsume strengthens drops its literals false at level 0" {
+    // SSR turns (1 2 -34 -35) into (1 -34 -35), and 35 is true at level 0,
+    // which leaves the binary (1 -34).
+    var formula = try parseSource("p cnf 35 4\n1 2 -34 -35 0\n1 -2 0\n-2 5 6 0\n35 0\n");
     defer formula.deinit();
     var solver = try solver_mod.Solver.init(testing.allocator, &formula);
     defer solver.deinit();
-    _ = try solver.propagate();
 
     const r = try solver.preprocessSubsume();
 
     try testing.expect(r == null);
-    try testing.expect(solver.stats.strengthened_clauses >= 1);
-    try testing.expectEqual(assignment_mod.Value.true, solver.assignment.valueOfVar(0));
+    try testing.expectEqual(@as(u64, 1), solver.stats.strengthened_clauses);
+    try testing.expect(solver.hasBinary(Literal.fromDimacs(1), Literal.fromDimacs(-34)));
+    try testing.expectEqual(@as(usize, 0), countLiveClauses(&solver, &.{ 1, 2, -34, -35 }, .irredundant));
 }
 
 test "vivify run right after a learned unit keeps the unit's level-0 implications" {
