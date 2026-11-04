@@ -129,9 +129,9 @@ pub fn main(init: std.process.Init) !u8 {
                 return 1;
             };
             defer file.close(io);
-            break :blk parseFile(gpa, io, file, std.mem.endsWith(u8, path, ".gz"));
+            break :blk parseFile(gpa, io, file, if (std.mem.endsWith(u8, path, ".gz")) .gzip else .plain);
         }
-        break :blk parseFile(gpa, io, std.Io.File.stdin(), false);
+        break :blk parseFile(gpa, io, std.Io.File.stdin(), .plain);
     } catch |err| {
         try stdout.print("c parse error: {s}\n", .{@errorName(err)});
         try stdout.writeAll("s UNKNOWN\n");
@@ -202,12 +202,14 @@ pub fn main(init: std.process.Init) !u8 {
 
 const InputError = parser.ParseError || std.Io.File.Reader.Error || flate.Decompress.Error;
 
-// Streams `file` through the DIMACS parser, gunzipping when `gzipped`.
-// A read failure is reported as the underlying I/O or gzip error.
-fn parseFile(gpa: std.mem.Allocator, io: std.Io, file: std.Io.File, gzipped: bool) InputError!cnf.Formula {
+const Compression = enum { plain, gzip };
+
+// Streams `file` through the DIMACS parser, decompressing it first if it is
+// gzipped. A read failure is reported as the underlying I/O or gzip error.
+fn parseFile(gpa: std.mem.Allocator, io: std.Io, file: std.Io.File, compression: Compression) InputError!cnf.Formula {
     var file_buffer: [64 * 1024]u8 = undefined;
     var file_reader = file.readerStreaming(io, &file_buffer);
-    if (!gzipped) {
+    if (compression == .plain) {
         return parser.parse(gpa, &file_reader.interface) catch |err| switch (err) {
             error.ReadFailed => {
                 if (file_reader.err) |read_err| return read_err;
