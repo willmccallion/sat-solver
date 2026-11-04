@@ -329,8 +329,8 @@ fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
         }
         if (locked) continue;
 
-        // Skip variables with no live clauses on at least one side —
-        // BVE on them is a no-op that still costs bookkeeping.
+        // Skip variables with no live clauses on either side — BVE on
+        // them is a no-op that still costs bookkeeping.
         if (pos_live_count == 0 and neg_live_count == 0) continue;
 
         // Enumerate resolvents

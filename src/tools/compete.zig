@@ -509,7 +509,7 @@ fn parseStats(payload: []const u8, out: *Perf) void {
 // Parses perf stat's stderr CSV, picking up cycles/instructions/branches
 // for IPC & miss rate, and TopdownL1 metrics for bad-speculation /
 // retiring percentages. Filters out the cpu_atom PMU on hybrid Intel
-// chips (as documented in src/profile.zig).
+// chips (as documented in src/tools/profile.zig).
 fn parsePerfStat(output: []const u8, out: *Perf) void {
     var cycles: u64 = 0;
     var insns: u64 = 0;

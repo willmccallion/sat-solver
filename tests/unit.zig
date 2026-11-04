@@ -448,8 +448,8 @@ test "subsume: SSR to binary — long clause strengthened to a new binary" {
     // 3-literal clause gets the deleted bit set, and the new binary is
     // registered in bin_watchers.
     //
-    // The task spec asked for formula (1 2 3) + (1 -2) → (1 3); that
-    // minimal case is blocked by two implementation details:
+    // The smallest case, (1 2 3) with (1 -2) giving (1 3), never reaches
+    // SSR, for two reasons:
     //   (a) the subsumption-style abstract fast-reject
     //       `(abstract(C) & ~abstract(D)) != 0` inside
     //       processSubsumerBinary. The abstract uses `lit.raw & 63` so

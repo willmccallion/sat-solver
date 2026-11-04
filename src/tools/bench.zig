@@ -237,7 +237,7 @@ fn runDirectory(
         defer solver.deinit();
 
         // Per-instance: reset the global interrupt flag, arm a watchdog
-        // if we have a timeout. The watchdog holds a ResetEvent we flip
+        // if we have a timeout. The watchdog holds an Io.Event we set
         // the moment solve() returns, so short instances don't pay the
         // full timeout waiting on a detached thread.
         solver_mod.interrupted.store(false, .monotonic);

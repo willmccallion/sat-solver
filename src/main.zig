@@ -100,8 +100,8 @@ pub fn main(init: std.process.Init) !u8 {
     // Route SIGINT / SIGTERM / SIGXCPU into the solver's interrupt flag.
     // Competition infrastructure sends SIGTERM or SIGXCPU to enforce its
     // per-instance timeout; SIGINT is the ctrl-c escape hatch during
-    // local testing. On any of these, the solver returns .unknown at the
-    // next conflict and main falls through to the `s UNKNOWN` path.
+    // local testing. On any of these, the solver returns .unknown on its
+    // next search iteration and main falls through to the `s UNKNOWN` path.
     {
         const act: std.posix.Sigaction = .{
             .handler = .{ .handler = signalHandler },

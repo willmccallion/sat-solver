@@ -586,8 +586,8 @@ fn removeBinary(self: *Solver, a: Literal, other: Literal) void {
 // Walk `equiv_witness` in reverse and synthesize a value for every
 // equiv-substituted variable from the current value of its representative.
 // An unassigned rep (the rep variable was never branched or propagated)
-// defaults to `true`; the caller has already run model verification so
-// this only runs on .sat, where every non-eliminated variable has a value.
+// defaults to `true`. This runs only on .sat, before the model is checked
+// against the formula, when every non-eliminated variable has a value.
 pub fn reconstructEquivVars(self: *Solver) void {
     const frames = self.equiv_witness.items;
     if (frames.len == 0) return;

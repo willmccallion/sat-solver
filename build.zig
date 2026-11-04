@@ -267,7 +267,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&e2e_small.step);
     test_step.dependOn(&e2e_proof.step);
 
-    // /dev/full fails every write, standing in for a full disk.
     if (target.result.os.tag == .linux) {
         // The address-space cap turns a header-sized allocation into a
         // clean OutOfMemory instead of the OOM killer.
@@ -278,6 +277,7 @@ pub fn build(b: *std.Build) void {
         e2e_huge_header.expectStdOutEqual("s SATISFIABLE\nv 1 0\n");
         test_step.dependOn(&e2e_huge_header.step);
 
+        // /dev/full fails every write, standing in for a full disk.
         const e2e_proof_write_failure = b.addRunArtifact(exe);
         e2e_proof_write_failure.addArgs(&.{ "--proof", "/dev/full" });
         e2e_proof_write_failure.addFileArg(b.path("tests/fixtures/trivial_unsat.cnf"));
