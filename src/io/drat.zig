@@ -15,10 +15,6 @@ const Literal = core.cnf.Literal;
 pub const Writer = struct {
     out: ?*std.Io.Writer = null,
 
-    pub fn none() Writer {
-        return .{ .out = null };
-    }
-
     pub fn wrap(out: *std.Io.Writer) Writer {
         return .{ .out = out };
     }

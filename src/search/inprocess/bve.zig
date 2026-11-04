@@ -15,7 +15,7 @@ const Result = solver_mod.Result;
 // (c_pos ∪ c_neg) \ {+v, -v} over every pair of irredundant clauses
 // (c_pos, c_neg) with +v ∈ c_pos and -v ∈ c_neg; if the set of
 // non-tautological resolvents is no larger than the number of those
-// clauses + growth_slack, replace them by the resolvents, delete the
+// clauses, replace them by the resolvents, delete the
 // learned clauses on v, and mark v eliminated. Binaries carry no learned
 // flag, so a learned binary counts as irredundant. Variables with too
 // many occurrences, resolvents that grow past `max_resolvent_len`, or
@@ -51,7 +51,6 @@ const budget_share: common.BudgetShare = .{ .num = 1, .den = 10 };
 pub const inprocess_floor: u64 = 1_000_000;
 pub const max_resolvent_len: u32 = 16;
 pub const max_occ_product: u64 = 10_000;
-pub const growth_slack: i32 = 0;
 
 // Inprocessing entry point, on a share of the propagations since the last
 // call. Returns `.unsat` if elimination derives an empty clause or a
@@ -395,11 +394,7 @@ fn eliminateWithin(self: *Solver, budget: u64) !?Result {
             continue;
         }
 
-        // Growth test. Signed comparison — slack may be negative in
-        // future tunings. Here growth_slack == 0.
-        const original_count: i64 = @as(i64, pos_live_count) + @as(i64, neg_live_count);
-        const resolvent_count: i64 = @intCast(non_taut_count);
-        if (resolvent_count > original_count + growth_slack) continue;
+        if (non_taut_count > pos_live_count + neg_live_count) continue;
 
         try commitElimination(
             self,
