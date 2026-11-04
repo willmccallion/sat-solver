@@ -61,7 +61,7 @@ pub fn vivify(self: *Solver) !?Result {
     var any_deleted = false;
 
     outer: for (candidates.items) |cref| {
-        if (budget > 0 and self.stats.propagations - props_start > budget) break;
+        if (self.stats.propagations - props_start > budget) break;
         if (solver_mod.interruptRequested()) break;
         if (self.clauseIsDeleted(cref)) continue;
         if (self.clauseIsLocked(cref)) continue;
