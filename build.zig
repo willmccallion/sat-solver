@@ -266,6 +266,26 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&e2e_small.step);
     test_step.dependOn(&e2e_proof.step);
 
+    const cli_cases = [_]CliCase{
+        .{ .args = &.{"--bogus"}, .exit_code = 1, .stderr_contains = "sat: unknown option `--bogus`\nusage: sat " },
+        .{ .args = &.{"--proof"}, .exit_code = 1, .stderr_contains = "sat: --proof requires a PATH argument\n" },
+        .{ .args = &.{"--time-limit"}, .exit_code = 1, .stderr_contains = "sat: --time-limit requires a SECS argument\n" },
+        .{ .args = &.{ "--time-limit", "abc" }, .exit_code = 1, .stderr_contains = "sat: --time-limit: invalid integer `abc`\n" },
+        .{
+            .args = &.{ "tests/fixtures/trivial_sat.cnf", "tests/fixtures/small_sat.cnf" },
+            .exit_code = 1,
+            .stderr_contains = "sat: only one input path allowed\n",
+        },
+        .{
+            .args = &.{"tests/fixtures/missing.cnf"},
+            .exit_code = 1,
+            .stderr_contains = "sat: cannot open tests/fixtures/missing.cnf: FileNotFound\n",
+        },
+        .{ .stdin = "p cnf 1 1\n1 x 0\n", .exit_code = 0, .stdout = "c parse error: InvalidToken\ns UNKNOWN\n" },
+        .{ .args = &.{"tests/fixtures/trivial_sat.cnf.gz"}, .exit_code = 10, .stdout = "s SATISFIABLE\nv 1 -2 0\n" },
+    };
+    for (cli_cases) |case| addCliTest(b, test_step, exe, case);
+
     if (target.result.os.tag == .linux) {
         // The address-space cap turns a header-sized allocation into a
         // clean OutOfMemory instead of the OOM killer.
@@ -284,4 +304,25 @@ pub fn build(b: *std.Build) void {
         e2e_proof_write_failure.expectStdOutEqual("c error: cannot write proof: NoSpaceLeft\ns UNKNOWN\n");
         test_step.dependOn(&e2e_proof_write_failure.step);
     }
+}
+
+// One run of the `sat` CLI from the build root, checked on its exit code
+// and, where given, its whole stdout and a line its stderr must contain.
+const CliCase = struct {
+    args: []const []const u8 = &.{},
+    stdin: ?[]const u8 = null,
+    exit_code: u8,
+    stdout: ?[]const u8 = null,
+    stderr_contains: ?[]const u8 = null,
+};
+
+fn addCliTest(b: *std.Build, test_step: *std.Build.Step, exe: *std.Build.Step.Compile, case: CliCase) void {
+    const run = b.addRunArtifact(exe);
+    run.setCwd(b.path("."));
+    run.addArgs(case.args);
+    run.setStdIn(.{ .bytes = case.stdin orelse "" });
+    run.expectExitCode(case.exit_code);
+    if (case.stdout) |out| run.expectStdOutEqual(out);
+    if (case.stderr_contains) |prefix| run.addCheck(.{ .expect_stderr_match = prefix });
+    test_step.dependOn(&run.step);
 }
