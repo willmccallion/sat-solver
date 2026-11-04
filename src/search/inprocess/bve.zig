@@ -122,20 +122,12 @@ fn eliminateWithin(self: *Solver, budget: u64) !?Result {
         }
     }
 
-    // Binaries from bin_watchers. Each binary (a, b) is registered twice
-    // — as .other = b in bin_watchers[a.negate().raw] and as .other = a
-    // in bin_watchers[b.negate().raw]. Dedup via raw ordering of the two
-    // literals to visit each clause exactly once.
+    // Binaries, once each.
     {
-        var l_raw: u32 = 0;
-        while (l_raw < num_lits) : (l_raw += 1) {
-            const a = (Literal{ .raw = l_raw }).negate();
-            for (self.bin_watchers[l_raw].items) |entry| {
-                const b = entry.other;
-                if (a.raw >= b.raw) continue;
-                occ[a.raw].appendAssumeCapacity(.{ .binary = b });
-                occ[b.raw].appendAssumeCapacity(.{ .binary = a });
-            }
+        var binaries = self.binaryClauses();
+        while (binaries.next()) |pair| {
+            occ[pair[0].raw].appendAssumeCapacity(.{ .binary = pair[1] });
+            occ[pair[1].raw].appendAssumeCapacity(.{ .binary = pair[0] });
         }
     }
 

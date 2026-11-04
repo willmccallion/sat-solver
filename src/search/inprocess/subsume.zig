@@ -181,12 +181,8 @@ const Subsumption = struct {
         const solver = self.solver;
         var binaries: std.ArrayList([2]Literal) = .empty;
         defer binaries.deinit(solver.allocator);
-        for (solver.bin_watchers, 0..) |list, watched| {
-            const a = (Literal{ .raw = @intCast(watched) }).negate();
-            for (list.items) |entry| {
-                if (a.raw < entry.other.raw) try binaries.append(solver.allocator, .{ a, entry.other });
-            }
-        }
+        var all_binaries = solver.binaryClauses();
+        while (all_binaries.next()) |pair| try binaries.append(solver.allocator, pair);
 
         for (binaries.items) |pair| {
             if (self.refuted) return;

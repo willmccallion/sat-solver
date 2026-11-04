@@ -466,6 +466,10 @@ pub const Solver = struct {
         return .{ .solver = self };
     }
 
+    pub fn binaryClauses(self: *const Solver) BinaryClauses {
+        return .{ .solver = self };
+    }
+
     pub fn arenaIsMostlyHoles(self: *const Solver) bool {
         return self.arena_dead_slots * 2 > self.arena.items.len;
     }
@@ -623,6 +627,31 @@ pub const LiveClauses = struct {
             const cref = self.next_cref;
             self.next_cref += header_slots + self.solver.clauseLen(cref);
             if (!self.solver.clauseIsDeleted(cref)) return cref;
+        }
+        return null;
+    }
+};
+
+// Each binary clause once, as `{a, b}` with `a.raw < b.raw`, although the
+// watch lists hold it twice.
+pub const BinaryClauses = struct {
+    solver: *const Solver,
+    watched: usize = 0,
+    entry: usize = 0,
+
+    pub fn next(self: *BinaryClauses) ?[2]Literal {
+        const lists = self.solver.bin_watchers;
+        while (self.watched < lists.len) : ({
+            self.watched += 1;
+            self.entry = 0;
+        }) {
+            const a = (Literal{ .raw = @intCast(self.watched) }).negate();
+            const entries = lists[self.watched].items;
+            while (self.entry < entries.len) {
+                const b = entries[self.entry].other;
+                self.entry += 1;
+                if (a.raw < b.raw) return .{ a, b };
+            }
         }
         return null;
     }

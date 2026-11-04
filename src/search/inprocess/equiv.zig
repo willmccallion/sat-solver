@@ -272,44 +272,26 @@ pub fn equiv(self: *Solver) !?Result {
     defer bin_work.deinit(self.allocator);
 
     {
-        var lr: u32 = 0;
-        while (lr < num_lits) : (lr += 1) {
-            const watcher_lit = Literal{ .raw = lr };
-            const a = watcher_lit.negate();
-            for (self.bin_watchers[lr].items) |entry| {
-                const b = entry.other;
-                if (a.raw >= b.raw) continue;
-                const a_new_raw = lit_remap[a.raw].raw;
-                const b_new_raw = lit_remap[b.raw].raw;
-                if (a_new_raw == a.raw and b_new_raw == b.raw) continue;
-                const a_new = Literal{ .raw = a_new_raw };
-                const b_new = Literal{ .raw = b_new_raw };
-                if (a_new.raw == (b_new.raw ^ 1)) {
-                    try bin_work.append(self.allocator, .{
-                        .old_a = a,
-                        .old_b = b,
-                        .new_a = a_new,
-                        .new_b = b_new,
-                        .kind = .tautology,
-                    });
-                } else if (a_new.raw == b_new.raw) {
-                    try bin_work.append(self.allocator, .{
-                        .old_a = a,
-                        .old_b = b,
-                        .new_a = a_new,
-                        .new_b = b_new,
-                        .kind = .unit,
-                    });
-                } else {
-                    try bin_work.append(self.allocator, .{
-                        .old_a = a,
-                        .old_b = b,
-                        .new_a = a_new,
-                        .new_b = b_new,
-                        .kind = .rebind,
-                    });
-                }
-            }
+        var binaries = self.binaryClauses();
+        while (binaries.next()) |pair| {
+            const a = pair[0];
+            const b = pair[1];
+            const a_new = lit_remap[a.raw];
+            const b_new = lit_remap[b.raw];
+            if (a_new.eql(a) and b_new.eql(b)) continue;
+            const kind: BinKind = if (a_new.eql(b_new.negate()))
+                .tautology
+            else if (a_new.eql(b_new))
+                .unit
+            else
+                .rebind;
+            try bin_work.append(self.allocator, .{
+                .old_a = a,
+                .old_b = b,
+                .new_a = a_new,
+                .new_b = b_new,
+                .kind = kind,
+            });
         }
     }
 
