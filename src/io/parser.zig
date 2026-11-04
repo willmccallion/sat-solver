@@ -85,10 +85,12 @@ fn parseHeader(reader: *std.Io.Reader) ParseError!Header {
 // A large mismatch against the `p cnf N M` header is almost always a
 // malformed file (missing `0` terminators joining clauses together, as in
 // SATLIB's dubois100.cnf). 5% slack tolerates off-by-one headers.
+const clause_count_slack_divisor: u64 = 20;
+
 fn clauseCountMatches(declared: u32, parsed: u64) bool {
     if (declared == 0) return true;
     const delta = if (parsed >= declared) parsed - declared else declared - parsed;
-    const slack = (@as(u64, declared) + 19) / 20;
+    const slack = (declared + clause_count_slack_divisor - 1) / clause_count_slack_divisor;
     return delta <= slack;
 }
 

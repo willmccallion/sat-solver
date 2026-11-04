@@ -171,7 +171,7 @@ pub fn solve(self: *Solver) !Result {
                 self.backtrack(0);
                 if (should_reduce) {
                     try self.reduceDB();
-                    self.max_learned = (self.max_learned * 11) / 10;
+                    self.max_learned = (self.max_learned * reduce_mod.max_learned_grow_num) / reduce_mod.max_learned_grow_den;
                     self.reduce_interval += reduce_mod.interval_step;
                     self.next_reduce = self.stats.conflicts + self.reduce_interval;
                 }

@@ -31,6 +31,14 @@ const Color = struct {
 
 const width: usize = 68;
 
+// perf entries below this share of samples are noise.
+const min_percent: f64 = 0.5;
+const min_percent_arg = std.fmt.comptimePrint("{d}", .{min_percent});
+// How many hot functions and instructions the report keeps.
+const top_n = 8;
+// The topdown metrics sum to about 100% when perf reports them at all.
+const min_topdown_total_percent: f64 = 0.5;
+
 const Stats = struct {
     // hardware counters (summed across cpu_core + cpu_atom on hybrid)
     cycles: u64 = 0,
@@ -246,7 +254,7 @@ pub fn main(init: std.process.Init) !void {
                 "perf",            "report",
                 "-i",              perf_data,
                 "--stdio",         "--no-children",
-                "--percent-limit", "0.5",
+                "--percent-limit", min_percent_arg,
             },
             .stdout_limit = .limited(1 << 22),
             .stderr_limit = .limited(1 << 22),
@@ -274,7 +282,7 @@ pub fn main(init: std.process.Init) !void {
                 "perf",                   "annotate",
                 "-i",                     perf_data,
                 "--stdio",                "--no-source",
-                "--percent-limit",        "0.5",
+                "--percent-limit",        min_percent_arg,
                 hotspots.items[0].symbol,
             },
             .stdout_limit = .limited(1 << 23),
@@ -512,7 +520,7 @@ fn parsePerfReport(
             .percent = pct,
             .symbol = try gpa.dupe(u8, sym),
         });
-        if (hotspots.items.len >= 8) section_is_core = false;
+        if (hotspots.items.len >= top_n) section_is_core = false;
     }
 }
 
@@ -532,7 +540,7 @@ fn parsePerfAnnotate(
         const pct_part = std.mem.trim(u8, raw_line[0..colon_sep], " \t");
         if (pct_part.len == 0) continue;
         const pct = std.fmt.parseFloat(f64, pct_part) catch continue;
-        if (pct < 0.5) continue;
+        if (pct < min_percent) continue;
 
         // Everything after " : " is "<addr>: <instruction>". Split on
         // the first ": " within to drop the address column.
@@ -561,13 +569,13 @@ fn parsePerfAnnotate(
         });
     }
 
-    // Keep only the top 8 by percent.
+    // Keep only the top `top_n` by percent.
     std.mem.sort(HotInsn, hot_insns.items, {}, struct {
         fn lessThan(_: void, a: HotInsn, b: HotInsn) bool {
             return a.percent > b.percent;
         }
     }.lessThan);
-    while (hot_insns.items.len > 8) {
+    while (hot_insns.items.len > top_n) {
         gpa.free(hot_insns.items[hot_insns.items.len - 1].text);
         _ = hot_insns.pop();
     }
@@ -867,7 +875,7 @@ fn printReport(
 fn hasTopdown(s: *const Stats) bool {
     const total = s.topdown_retiring + s.topdown_bad_spec +
         s.topdown_fe_bound + s.topdown_be_bound;
-    return total > 0.5;
+    return total > min_topdown_total_percent;
 }
 
 fn distRow(w: *std.Io.Writer, label: []const u8, ms: f64) !void {

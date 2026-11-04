@@ -14,6 +14,15 @@ const Solver = state.Solver;
 pub const initial_interval: u64 = 2000;
 pub const interval_step: u64 = 300;
 
+// The learned-clause limit starts at the formula's clause count, but no
+// lower than `min_max_learned`, and grows by 11/10 after each reduction.
+pub const min_max_learned: usize = 1000;
+pub const max_learned_grow_num: usize = 11;
+pub const max_learned_grow_den: usize = 10;
+
+// Clauses at or below this LBD ("glue") are never deleted.
+const glue_lbd: u32 = 2;
+
 // Clause DB reduction. Called at level 0, on its own conflict schedule,
 // when the learned clause count has outgrown `max_learned`. Keeps the better half
 // (by LBD — lower is better). Clauses that are currently reasons for
@@ -39,7 +48,7 @@ pub fn reduceDB(self: *Solver) !void {
         if (self.clauseIsDeleted(cref)) continue;
         if (self.clauseIsLocked(cref)) continue;
         const lbd = self.clauseLbd(cref);
-        if (lbd <= 2) continue;
+        if (lbd <= glue_lbd) continue;
         candidates.appendAssumeCapacity(.{ .cref = cref, .lbd = lbd });
     }
 
