@@ -54,18 +54,33 @@ const Command = union(enum) {
 };
 
 pub fn main(init: std.process.Init) !u8 {
-    const io = init.io;
-
     var stdout_buffer: [4096]u8 = undefined;
-    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
-    defer stdout.flush() catch {};
 
     var stderr_buffer: [1024]u8 = undefined;
-    var stderr_writer = std.Io.File.stderr().writer(io, &stderr_buffer);
+    var stderr_writer = std.Io.File.stderr().writer(init.io, &stderr_buffer);
     const stderr = &stderr_writer.interface;
+    // A failed write to stderr has nowhere left to be reported.
     defer stderr.flush() catch {};
 
+    const exit_code = runCli(init, stdout, stderr) catch |err| {
+        if (stdout_writer.err) |cause| return reportStdoutFailure(stderr, cause);
+        return err;
+    };
+    stdout.flush() catch |err| return reportStdoutFailure(stderr, stdout_writer.err orelse err);
+    return exit_code;
+}
+
+// The result is only reported once it reaches stdout, so a lost status line
+// must not leave a SAT or UNSAT exit code behind.
+fn reportStdoutFailure(stderr: *std.Io.Writer, cause: anyerror) !u8 {
+    try stderr.print("sat: cannot write to stdout: {s}\n", .{@errorName(cause)});
+    return exit_failure;
+}
+
+fn runCli(init: std.process.Init, stdout: *std.Io.Writer, stderr: *std.Io.Writer) !u8 {
+    const io = init.io;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     const options = switch (parseArgs(args[1..])) {
         .help => {

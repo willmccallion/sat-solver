@@ -303,6 +303,21 @@ pub fn build(b: *std.Build) void {
         e2e_proof_write_failure.expectExitCode(0);
         e2e_proof_write_failure.expectStdOutEqual("c error: cannot write proof: NoSpaceLeft\ns UNKNOWN\n");
         test_step.dependOn(&e2e_proof_write_failure.step);
+
+        const e2e_stdout_write_failure = b.addSystemCommand(&.{ "sh", "-c", "exec \"$0\" \"$1\" > /dev/full" });
+        e2e_stdout_write_failure.addArtifactArg(exe);
+        e2e_stdout_write_failure.addFileArg(b.path("tests/fixtures/trivial_sat.cnf"));
+        e2e_stdout_write_failure.expectExitCode(1);
+        e2e_stdout_write_failure.expectStdErrEqual("sat: cannot write to stdout: NoSpaceLeft\n");
+        test_step.dependOn(&e2e_stdout_write_failure.step);
+
+        // A model longer than the stdout buffer fails mid-print instead.
+        const e2e_model_write_failure = b.addSystemCommand(&.{ "sh", "-c", "exec \"$0\" > /dev/full" });
+        e2e_model_write_failure.addArtifactArg(exe);
+        e2e_model_write_failure.setStdIn(.{ .bytes = "p cnf 2000 1\n2000 0\n" });
+        e2e_model_write_failure.expectExitCode(1);
+        e2e_model_write_failure.expectStdErrEqual("sat: cannot write to stdout: NoSpaceLeft\n");
+        test_step.dependOn(&e2e_model_write_failure.step);
     }
 }
 
