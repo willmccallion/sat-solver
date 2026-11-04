@@ -33,7 +33,6 @@ pub fn propagate(self: *Solver) !?Conflict {
         // clause's false literals; for a binary (¬p ∨ b) that is p's level.
         const p_level = self.assignment.vars[p.variable()].level;
 
-        // Binary fast path
         const bws = self.bin_watchers[p.raw].items;
         for (bws) |b| {
             const v = lit_values[b.other.raw];
@@ -50,7 +49,6 @@ pub fn propagate(self: *Solver) !?Conflict {
             );
         }
 
-        // Long-clause path
         const ws = &self.watchers[p.raw];
         var i: usize = 0;
         var j: usize = 0;
@@ -124,17 +122,10 @@ pub fn propagate(self: *Solver) !?Conflict {
                 self.assignment.propagation_head = self.assignment.trail.items.len;
                 return Conflict{ .clause = w.clause };
             } else {
-                // The highest level among the clause's false literals.
-                var force_level: u32 = p_level;
-                var m: usize = 2;
-                while (m < lits.len) : (m += 1) {
-                    const lv = self.assignment.vars[lits[m].variable()].level;
-                    if (lv > force_level) force_level = lv;
-                }
                 try self.assignment.assignAtLevel(
                     other,
                     Reason.fromClause(w.clause),
-                    force_level,
+                    self.highestLevel(lits[2..], p_level),
                 );
             }
         }

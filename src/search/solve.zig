@@ -68,16 +68,10 @@ fn handleConflict(self: *Solver, conflict: Conflict) !?Result {
     return runDueTasks(self, dueTasks(self, should_restart));
 }
 
-// The highest level among the conflict's literals, which are all false.
 fn conflictLevel(self: *Solver, conflict: Conflict) u32 {
-    const vars = self.assignment.vars;
     return switch (conflict) {
-        .clause => |cref| blk: {
-            var highest: u32 = 0;
-            for (self.clauseLits(cref)) |lit| highest = @max(highest, vars[lit.variable()].level);
-            break :blk highest;
-        },
-        .binary => |two| @max(vars[two[0].variable()].level, vars[two[1].variable()].level),
+        .clause => |cref| self.highestLevel(self.clauseLits(cref), 0),
+        .binary => |two| self.highestLevel(&two, 0),
     };
 }
 

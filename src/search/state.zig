@@ -429,6 +429,13 @@ pub const Solver = struct {
         self.learned_clauses.shrinkRetainingCapacity(j);
     }
 
+    // The highest decision level among `lits`, and at least `floor`.
+    pub inline fn highestLevel(self: *const Solver, lits: []const Literal, floor: u32) u32 {
+        var highest = floor;
+        for (lits) |lit| highest = @max(highest, self.assignment.vars[lit.variable()].level);
+        return highest;
+    }
+
     pub fn liveClauses(self: *const Solver) LiveClauses {
         return .{ .solver = self };
     }
