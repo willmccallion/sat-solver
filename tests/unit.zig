@@ -1075,3 +1075,7 @@ test "vivify run right after a learned unit keeps the unit's level-0 implication
     try testing.expectEqual(assignment_mod.Value.false, solver.assignment.valueOfVar(1));
     try testing.expectEqual(@as(u32, 0), solver.assignment.vars[1].level);
 }
+
+test "parser rejects -0 instead of reading it as a clause terminator" {
+    try testing.expectError(error.InvalidToken, parseSource("p cnf 1 1\n1 -0 0\n"));
+}

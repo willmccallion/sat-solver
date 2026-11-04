@@ -117,7 +117,8 @@ fn peekTokenStart(reader: *std.Io.Reader) ParseError!?u8 {
     }
 }
 
-// Consumes one integer token. Returns null for the `0` clause terminator.
+// Consumes one integer token. Returns null for the `0` clause terminator;
+// `-0` is no literal, so it is an invalid token, not a terminator.
 fn takeLiteral(reader: *std.Io.Reader, num_vars: u32) ParseError!?Literal {
     const negative = (peekByteOrNull(reader) catch return error.ReadFailed) == '-';
     if (negative) reader.toss(1);
@@ -133,7 +134,7 @@ fn takeLiteral(reader: *std.Io.Reader, num_vars: u32) ParseError!?Literal {
         reader.toss(1);
     }
     if (digits == 0) return error.InvalidToken;
-    if (magnitude == 0) return null;
+    if (magnitude == 0) return if (negative) error.InvalidToken else null;
     return Literal.init(@intCast(magnitude - 1), negative);
 }
 
