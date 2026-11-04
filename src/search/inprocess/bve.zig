@@ -53,16 +53,21 @@ pub const max_resolvent_len: u32 = 16;
 pub const max_occ_product: u64 = 10_000;
 pub const growth_slack: i32 = 0;
 
-// Inprocess entry point. Uses the propagation-derived budget; returns
-// `.unsat` if elimination derives an empty clause or a conflicting unit.
+// Inprocessing entry point, on a share of the propagations since the last
+// call. Returns `.unsat` if elimination derives an empty clause or a
+// conflicting unit.
 pub fn bve(self: *Solver) !?Result {
-    return bveImpl(self, false);
+    if (try self.propagateAtRoot()) |r| return r;
+    const share = common.propagationBudget(self.stats.propagations, &self.props_at_last_bve, budget_share);
+    return eliminateWithin(self, @max(inprocess_floor, share));
 }
 
-// Preprocess entry point. Uses the big `preprocess_cap` budget because
-// no search has yet happened.
+// Preprocessing entry point, on the large `preprocess_cap` budget because
+// no search has happened yet.
 pub fn preprocessBVE(self: *Solver) !?Result {
-    return bveImpl(self, true);
+    if (try self.propagateAtRoot()) |r| return r;
+    self.props_at_last_bve = self.stats.propagations;
+    return eliminateWithin(self, preprocess_cap);
 }
 
 // Tagged occurrence: either a long-clause arena ref, or a binary
@@ -73,13 +78,8 @@ const Occurrence = union(enum) {
     binary: Literal,
 };
 
-fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
+fn eliminateWithin(self: *Solver, budget: u64) !?Result {
     std.debug.assert(self.assignment.level == 0);
-    if (try self.propagateAtRoot()) |r| return r;
-
-    const is_first_call = self.props_at_last_bve == 0;
-    const share = common.propagationBudget(self.stats.propagations, &self.props_at_last_bve, budget_share);
-    const budget = if (is_preprocess or is_first_call) preprocess_cap else @max(inprocess_floor, share);
 
     const num_vars = self.num_vars;
     const num_lits: usize = @as(usize, num_vars) * 2;

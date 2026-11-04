@@ -59,28 +59,25 @@ pub const inprocess_floor: u64 = 2_000_000;
 // re-enqueueing the same arena slot.
 const max_revisits_per_clause: u8 = 4;
 
-// Public inprocessing entry point. Uses the budget derived from
-// propagations-since-last-call; returns .unsat if SSR derives an empty
-// clause or a conflicting unit.
+// Inprocessing entry point, on a share of the propagations since the last
+// call. Returns .unsat if SSR derives an empty clause or a conflicting unit.
 pub fn subsume(self: *Solver) !?Result {
-    return subsumeImpl(self, false);
-}
-
-// Preprocessing entry point. Uses a much larger fixed budget because
-// there are no "propagations since last call" yet — the prior search has
-// done zero work.
-pub fn preprocessSubsume(self: *Solver) !?Result {
-    return subsumeImpl(self, true);
-}
-
-fn subsumeImpl(self: *Solver, is_preprocess: bool) !?Result {
-    std.debug.assert(self.assignment.level == 0);
     if (try self.propagateAtRoot()) |r| return r;
-    self.stats.subsume_passes += 1;
-
-    const is_first_call = self.props_at_last_subsume == 0;
     const share = common.propagationBudget(self.stats.propagations, &self.props_at_last_subsume, budget_share);
-    const budget = if (is_preprocess or is_first_call) preprocess_cap else @max(inprocess_floor, share);
+    return subsumeWithin(self, @max(inprocess_floor, share));
+}
+
+// Preprocessing entry point, on the large `preprocess_cap` budget because
+// no search has happened yet.
+pub fn preprocessSubsume(self: *Solver) !?Result {
+    if (try self.propagateAtRoot()) |r| return r;
+    self.props_at_last_subsume = self.stats.propagations;
+    return subsumeWithin(self, preprocess_cap);
+}
+
+fn subsumeWithin(self: *Solver, budget: u64) !?Result {
+    std.debug.assert(self.assignment.level == 0);
+    self.stats.subsume_passes += 1;
 
     const num_lits: usize = @as(usize, self.num_vars) * 2;
 
