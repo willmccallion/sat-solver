@@ -610,37 +610,30 @@ fn printReport(
     cap: *const Capacity,
 ) !void {
     try t.rule(box.tl, box.tr);
-    try t.startRow();
-    try t.writer.print("{s}{s}tournament readiness — sat{s}", .{ Color.bold, Color.cyan, Color.reset });
-    try t.endRow("tournament readiness — sat".len);
+    try t.textRow(Color.bold ++ Color.cyan, "tournament readiness — sat");
     try t.blankRow();
-    try t.startRow();
-    try t.writer.print(
-        "{s}reference: SAT Competition 2025, Main Sequential Track{s}",
-        .{ Color.dim, Color.reset },
-    );
-    try t.endRow("reference: SAT Competition 2025, Main Sequential Track".len);
-    try t.startRow();
-    try t.writer.print(
-        "{s}satcompetition.github.io/2025/satcomp25slides.pdf{s}",
-        .{ Color.dim, Color.reset },
-    );
-    try t.endRow("satcompetition.github.io/2025/satcomp25slides.pdf".len);
+    try t.textRow(Color.dim, "reference: SAT Competition 2025, Main Sequential Track");
+    try t.textRow(Color.dim, "satcompetition.github.io/2025/satcomp25slides.pdf");
     try t.blankRow();
 
+    const is_submittable = try printSubmittability(t, checks);
+    try printScoreboard(t);
+    try printHardware(t, perf);
+    try printCapacity(t, cap);
+    try printVerdict(t, is_submittable, perf);
+}
+
+// Lists the required checks; true when none failed.
+fn printSubmittability(t: Table, checks: []const Check) !bool {
     try t.sectionHeader("submittability (required for competition entry)");
-    for (checks) |c| {
-        var cc = c;
-        try checkRow(t, &cc);
-    }
+    for (checks) |*check| try checkRow(t, check);
     try t.blankRow();
 
-    var submittable = true;
-    for (checks) |c| {
-        if (c.status == .fail) submittable = false;
-    }
+    const is_submittable = for (checks) |check| {
+        if (check.status == .fail) break false;
+    } else true;
     try t.startRow();
-    if (submittable) {
+    if (is_submittable) {
         try t.writer.print(
             "{s}{s}=> submittable{s}{s}   every required check passes{s}",
             .{ Color.green, Color.bold, Color.reset, Color.dim, Color.reset },
@@ -654,163 +647,109 @@ fn printReport(
         try t.endRow("=> NOT submittable   at least one required check failed".len);
     }
     try t.blankRow();
+    return is_submittable;
+}
 
+fn printScoreboard(t: Table) !void {
     try t.sectionHeader("competitive scoreboard");
-    try t.startRow();
-    var ref_line_buf: [96]u8 = undefined;
-    const ref_line = try std.fmt.bufPrint(
-        &ref_line_buf,
+    var line_buf: [96]u8 = undefined;
+    try t.textRow(Color.dim, try std.fmt.bufPrint(
+        &line_buf,
         "SAT Comp 2025 main sequential, {d}s timeout, {s}",
         .{ ref_timeout_seconds, ref_scoring },
-    );
-    try t.writer.print("{s}{s}{s}", .{ Color.dim, ref_line, Color.reset });
-    try t.endRow(ref_line.len);
+    ));
     try t.blankRow();
-
-    var ref1_buf: [96]u8 = undefined;
-    const ref1 = try std.fmt.bufPrint(&ref1_buf, "1. {s:<16} {d}/{d}  PAR-2 {d:.0}", .{
+    try t.textRow(Color.cyan, try std.fmt.bufPrint(&line_buf, "1. {s:<16} {d}/{d}  PAR-2 {d:.0}", .{
         ref_winner_name, ref_winner_solved, ref_total_instances, ref_winner_par2,
-    });
-    try t.startRow();
-    try t.writer.print("{s}{s}{s}", .{ Color.cyan, ref1, Color.reset });
-    try t.endRow(ref1.len);
-
-    var ref2_buf: [96]u8 = undefined;
-    const ref2 = try std.fmt.bufPrint(&ref2_buf, "2. {s:<16} {d}/{d}", .{
+    }));
+    try t.textRow(Color.dim, try std.fmt.bufPrint(&line_buf, "2. {s:<16} {d}/{d}", .{
         ref_second_name, ref_second_solved, ref_total_instances,
-    });
-    try t.startRow();
-    try t.writer.print("{s}{s}{s}", .{ Color.dim, ref2, Color.reset });
-    try t.endRow(ref2.len);
-
-    var ref3_buf: [96]u8 = undefined;
-    const ref3 = try std.fmt.bufPrint(&ref3_buf, "3. {s:<16} {d}/{d}", .{
+    }));
+    try t.textRow(Color.dim, try std.fmt.bufPrint(&line_buf, "3. {s:<16} {d}/{d}", .{
         ref_third_name, ref_third_solved, ref_total_instances,
-    });
-    try t.startRow();
-    try t.writer.print("{s}{s}{s}", .{ Color.dim, ref3, Color.reset });
-    try t.endRow(ref3.len);
+    }));
+    try t.blankRow();
+}
+
+// The solver's hardware metrics against the ranges a competitive solver
+// reaches.
+fn printHardware(t: Table, perf: *const Perf) !void {
+    if (!perf.available) {
+        try t.textRow(Color.yellow, "hardware metrics: skipped (perf not available)");
+        try t.blankRow();
+        return;
+    }
+    try t.textRow(Color.bold, "hardware metrics (light bench: uf100 + uuf100)");
     try t.blankRow();
 
-    // Hardware metrics (your solver vs good-range targets)
-    if (perf.available) {
-        try t.startRow();
-        try t.writer.print("{s}hardware metrics (light bench: uf100 + uuf100){s}", .{ Color.bold, Color.reset });
-        try t.endRow("hardware metrics (light bench: uf100 + uuf100)".len);
-        try t.blankRow();
-
-        const ipc_good = perf.ipc >= ref_ipc_good;
-        var ipc_buf: [16]u8 = undefined;
-        const ipc_str = try std.fmt.bufPrint(&ipc_buf, "{d:.2}", .{perf.ipc});
+    var value_buf: [16]u8 = undefined;
+    try compareRow(t, "IPC", try std.fmt.bufPrint(&value_buf, "{d:.2}", .{perf.ipc}), "~2.0+ (target)", targetColor(perf.ipc >= ref_ipc_good));
+    try compareRow(
+        t,
+        "branch-miss rate",
+        try std.fmt.bufPrint(&value_buf, "{d:.1}%", .{perf.branch_miss_pct}),
+        "< 5% (target)",
+        targetColor(perf.branch_miss_pct < ref_branch_miss_good_pct),
+    );
+    try compareRow(
+        t,
+        "bad-speculation",
+        try std.fmt.bufPrint(&value_buf, "{d:.1}%", .{perf.bad_spec_pct}),
+        "< 20% (target)",
+        targetColor(perf.bad_spec_pct < ref_bad_spec_good_pct),
+    );
+    if (perf.propagations > 0 and perf.wall_ms > 0) {
+        const ns_per_prop: f64 = perf.wall_ms * 1e6 / @as(f64, @floatFromInt(perf.propagations));
         try compareRow(
             t,
-            "IPC",
-            ipc_str,
-            "~2.0+ (target)",
-            if (ipc_good) Color.green else Color.red,
+            "ns / propagation",
+            try std.fmt.bufPrint(&value_buf, "{d:.0} ns", .{ns_per_prop}),
+            "30-80 ns (target)",
+            targetColor(ns_per_prop < 100),
         );
-
-        const br_good = perf.branch_miss_pct < ref_branch_miss_good_pct;
-        var br_buf: [16]u8 = undefined;
-        const br_str = try std.fmt.bufPrint(&br_buf, "{d:.1}%", .{perf.branch_miss_pct});
-        try compareRow(
-            t,
-            "branch-miss rate",
-            br_str,
-            "< 5% (target)",
-            if (br_good) Color.green else Color.red,
-        );
-
-        const bs_good = perf.bad_spec_pct < ref_bad_spec_good_pct;
-        var bs_buf: [16]u8 = undefined;
-        const bs_str = try std.fmt.bufPrint(&bs_buf, "{d:.1}%", .{perf.bad_spec_pct});
-        try compareRow(
-            t,
-            "bad-speculation",
-            bs_str,
-            "< 20% (target)",
-            if (bs_good) Color.green else Color.red,
-        );
-
-        if (perf.propagations > 0 and perf.wall_ms > 0) {
-            const ns_per_prop: f64 =
-                perf.wall_ms * 1e6 / @as(f64, @floatFromInt(perf.propagations));
-            var np_buf: [16]u8 = undefined;
-            const np_str = try std.fmt.bufPrint(&np_buf, "{d:.0} ns", .{ns_per_prop});
-            try compareRow(
-                t,
-                "ns / propagation",
-                np_str,
-                "30-80 ns (target)",
-                if (ns_per_prop < 100) Color.green else Color.red,
-            );
-        }
-
-        try t.blankRow();
-    } else {
-        try t.startRow();
-        try t.writer.print("{s}hardware metrics: skipped (perf not available){s}", .{ Color.yellow, Color.reset });
-        try t.endRow("hardware metrics: skipped (perf not available)".len);
-        try t.blankRow();
     }
+    try t.blankRow();
+}
 
-    // Capacity probe (uf250 sample)
-    if (cap.available and cap.tested > 0) {
-        try t.startRow();
-        var title_buf: [64]u8 = undefined;
-        const title = try std.fmt.bufPrint(
-            &title_buf,
-            "capacity (uf250 sample, {d}s/instance)",
-            .{cap.limit_s},
-        );
-        try t.writer.print("{s}{s}{s}", .{ Color.bold, title, Color.reset });
-        try t.endRow(title.len);
-        try t.blankRow();
+fn targetColor(meets_target: bool) []const u8 {
+    return if (meets_target) Color.green else Color.red;
+}
 
-        var buf: [96]u8 = undefined;
-        const solved_str = try std.fmt.bufPrint(
-            &buf,
-            "solved  {d}/{d}  in {d:.1} s total",
-            .{ cap.solved, cap.tested, cap.elapsed_s },
-        );
-        try plainRow(t, "your solver", solved_str, "");
-
-        // All modern CDCL solvers (Kissat, CaDiCaL, Glucose, MiniSat)
-        // complete uf250 in well under a second per instance. If we
-        // don't clear the whole sample we are nowhere near competitive.
-        try plainRow(t, "modern CDCL", "≈10/10", "< 1 s / instance (Kissat / CaDiCaL)");
+fn printCapacity(t: Table, cap: *const Capacity) !void {
+    if (!cap.available or cap.tested == 0) {
+        try t.textRow(Color.dim, "capacity probe skipped (fetch uf250 via bench/fetch.sh)");
         try t.blankRow();
-    } else {
-        try t.startRow();
-        try t.writer.print(
-            "{s}capacity probe skipped (fetch uf250 via bench/fetch.sh){s}",
-            .{ Color.dim, Color.reset },
-        );
-        try t.endRow("capacity probe skipped (fetch uf250 via bench/fetch.sh)".len);
-        try t.blankRow();
+        return;
     }
+    var title_buf: [64]u8 = undefined;
+    try t.textRow(Color.bold, try std.fmt.bufPrint(&title_buf, "capacity (uf250 sample, {d}s/instance)", .{cap.limit_s}));
+    try t.blankRow();
 
-    // Overall verdict
+    var solved_buf: [96]u8 = undefined;
+    const solved = try std.fmt.bufPrint(&solved_buf, "solved  {d}/{d}  in {d:.1} s total", .{ cap.solved, cap.tested, cap.elapsed_s });
+    try plainRow(t, "your solver", solved, "");
+    // Every modern CDCL solver finishes uf250 in well under a second per
+    // instance, so missing any of the sample is far from competitive.
+    try plainRow(t, "modern CDCL", "≈10/10", "< 1 s / instance (Kissat / CaDiCaL)");
+    try t.blankRow();
+}
+
+fn printVerdict(t: Table, is_submittable: bool, perf: *const Perf) !void {
     try t.rule(box.lt, box.rt);
     try t.blankRow();
+    const is_competitive = perf.available and perf.ipc >= ref_ipc_good and
+        perf.branch_miss_pct < ref_branch_miss_good_pct and
+        perf.bad_spec_pct < ref_bad_spec_good_pct;
+    const color, const verdict = if (!is_submittable)
+        .{ Color.red, "NOT SUBMITTABLE" }
+    else if (is_competitive)
+        .{ Color.green, "SUBMITTABLE + COMPETITIVE" }
+    else
+        .{ Color.yellow, "SUBMITTABLE, not yet competitive" };
     try t.startRow();
     try t.writer.writeAll("overall: ");
-    var vis: usize = "overall: ".len;
-
-    if (!submittable) {
-        try t.writer.print("{s}{s}NOT SUBMITTABLE{s}", .{ Color.red, Color.bold, Color.reset });
-        vis += "NOT SUBMITTABLE".len;
-    } else if (perf.available and perf.ipc >= ref_ipc_good and
-        perf.branch_miss_pct < ref_branch_miss_good_pct and
-        perf.bad_spec_pct < ref_bad_spec_good_pct)
-    {
-        try t.writer.print("{s}{s}SUBMITTABLE + COMPETITIVE{s}", .{ Color.green, Color.bold, Color.reset });
-        vis += "SUBMITTABLE + COMPETITIVE".len;
-    } else {
-        try t.writer.print("{s}{s}SUBMITTABLE, not yet competitive{s}", .{ Color.yellow, Color.bold, Color.reset });
-        vis += "SUBMITTABLE, not yet competitive".len;
-    }
-    try t.endRow(vis);
+    try t.writer.print("{s}{s}{s}{s}", .{ color, Color.bold, verdict, Color.reset });
+    try t.endRow("overall: ".len + verdict.len);
     try t.blankRow();
     try t.rule(box.bl, box.br);
 }

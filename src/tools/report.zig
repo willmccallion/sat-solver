@@ -48,6 +48,13 @@ pub const Table = struct {
         try self.writer.print("{s}{s}{s}\n", .{ Color.gray, box.v, Color.reset });
     }
 
+    // A row holding just `text`, written in `style`.
+    pub fn textRow(self: Table, style: []const u8, text: []const u8) !void {
+        try self.startRow();
+        try self.writer.print("{s}{s}{s}", .{ style, text, Color.reset });
+        try self.endRow(text.len);
+    }
+
     pub fn blankRow(self: Table) !void {
         try self.startRow();
         try self.endRow(0);
