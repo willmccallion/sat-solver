@@ -3,6 +3,7 @@ const core = @import("core");
 const Literal = core.cnf.Literal;
 const Reason = core.assignment.Reason;
 
+const common = @import("common.zig");
 const state = @import("../state.zig");
 const Solver = state.Solver;
 const solver_mod = @import("../solver.zig");
@@ -17,15 +18,14 @@ const Result = solver_mod.Result;
 // the level-1 scratch trail, so it slots cleanly between a restart and
 // the next decision without disturbing the search state.
 //
-// budget_num/_den controls how much work each probe call may do
+// `budget_share` controls how much work each probe call may do
 // relative to the propagations accumulated since the last probe; the
 // outer interval grows geometrically so inprocessing doesn't dominate
 // on long searches.
 pub const initial_interval: u64 = 10_000;
 pub const grow_num: u64 = 3;
 pub const grow_den: u64 = 2;
-pub const budget_num: u64 = 1;
-pub const budget_den: u64 = 10;
+const budget_share: common.BudgetShare = .{ .num = 1, .den = 10 };
 pub const max_vars: usize = 1024;
 
 // Failed literal probing pass. Returns .unsat if the probe (or its
@@ -38,12 +38,7 @@ pub fn probe(self: *Solver) !?Result {
     self.stats.probe_passes += 1;
 
     const props_start = self.stats.propagations;
-    const delta = if (props_start > self.props_at_last_probe)
-        props_start - self.props_at_last_probe
-    else
-        0;
-    const budget: u64 = (delta * budget_num) / budget_den;
-    self.props_at_last_probe = props_start;
+    const budget = common.propagationBudget(props_start, &self.props_at_last_probe, budget_share);
 
     var candidates: std.ArrayList(u32) = .empty;
     defer candidates.deinit(self.allocator);

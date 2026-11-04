@@ -27,3 +27,14 @@ pub fn unassignedAtRoot(assignment: *const Assignment, lits: []Literal) ?[]Liter
 pub fn normalizeAtRoot(assignment: *const Assignment, lits: []Literal) ?[]Literal {
     return unassignedAtRoot(assignment, core.cnf.sortedDistinct(lits) orelse return null);
 }
+
+// A pass's work budget as a share of the propagations since it last ran,
+// so inprocessing costs a fixed fraction of search.
+pub const BudgetShare = struct { num: u64, den: u64 };
+
+// `share` of the propagations made since `last`, then moves `last` to now.
+pub fn propagationBudget(propagations: u64, last: *u64, share: BudgetShare) u64 {
+    const since_last = propagations -| last.*;
+    last.* = propagations;
+    return since_last * share.num / share.den;
+}

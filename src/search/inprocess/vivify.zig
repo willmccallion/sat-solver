@@ -5,6 +5,7 @@ const ClauseRef = core.cnf.ClauseRef;
 const Reason = core.assignment.Reason;
 const clause_mod = core.clause;
 
+const common = @import("common.zig");
 const state = @import("../state.zig");
 const Solver = state.Solver;
 const solver_mod = @import("../solver.zig");
@@ -21,8 +22,7 @@ const Result = solver_mod.Result;
 pub const initial_interval: u64 = 15_000;
 pub const grow_num: u64 = 3;
 pub const grow_den: u64 = 2;
-pub const budget_num: u64 = 2;
-pub const budget_den: u64 = 10;
+const budget_share: common.BudgetShare = .{ .num = 2, .den = 10 };
 pub const lbd_cap: u32 = 6;
 
 // Returns .unsat if any shrink lands on an empty clause or derives a
@@ -45,12 +45,7 @@ pub fn vivify(self: *Solver) !?Result {
     self.stats.vivify_passes += 1;
 
     const props_start = self.stats.propagations;
-    const delta = if (props_start > self.props_at_last_vivify)
-        props_start - self.props_at_last_vivify
-    else
-        0;
-    const budget: u64 = (delta * budget_num) / budget_den;
-    self.props_at_last_vivify = props_start;
+    const budget = common.propagationBudget(props_start, &self.props_at_last_vivify, budget_share);
 
     var candidates: std.ArrayList(ClauseRef) = .empty;
     defer candidates.deinit(self.allocator);

@@ -47,8 +47,7 @@ pub const preprocess_cap: u64 = 50_000_000;
 pub const inprocess_initial_interval: u64 = 40_000;
 pub const grow_num: u64 = 3;
 pub const grow_den: u64 = 2;
-pub const budget_num: u64 = 1;
-pub const budget_den: u64 = 10;
+const budget_share: common.BudgetShare = .{ .num = 1, .den = 10 };
 pub const inprocess_floor: u64 = 1_000_000;
 pub const max_resolvent_len: u32 = 16;
 pub const max_occ_product: u64 = 10_000;
@@ -78,19 +77,9 @@ fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
     std.debug.assert(self.assignment.level == 0);
     if (try self.propagateAtRoot()) |r| return r;
 
-    const props_start = self.stats.propagations;
-    const budget: u64 = blk: {
-        if (is_preprocess or self.props_at_last_bve == 0) {
-            break :blk preprocess_cap;
-        }
-        const delta = if (props_start > self.props_at_last_bve)
-            props_start - self.props_at_last_bve
-        else
-            0;
-        const raw = (delta * budget_num) / budget_den;
-        break :blk @max(inprocess_floor, raw);
-    };
-    self.props_at_last_bve = props_start;
+    const is_first_call = self.props_at_last_bve == 0;
+    const share = common.propagationBudget(self.stats.propagations, &self.props_at_last_bve, budget_share);
+    const budget = if (is_preprocess or is_first_call) preprocess_cap else @max(inprocess_floor, share);
 
     const num_vars = self.num_vars;
     const num_lits: usize = @as(usize, num_vars) * 2;

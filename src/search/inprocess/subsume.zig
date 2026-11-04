@@ -51,8 +51,7 @@ pub const preprocess_cap: u64 = 100_000_000;
 pub const inprocess_initial_interval: u64 = 20_000;
 pub const grow_num: u64 = 3;
 pub const grow_den: u64 = 2;
-pub const budget_num: u64 = 2;
-pub const budget_den: u64 = 10;
+const budget_share: common.BudgetShare = .{ .num = 2, .den = 10 };
 pub const inprocess_floor: u64 = 2_000_000;
 
 // Hard cap on how many times one clause can be revisited through the
@@ -79,19 +78,9 @@ fn subsumeImpl(self: *Solver, is_preprocess: bool) !?Result {
     if (try self.propagateAtRoot()) |r| return r;
     self.stats.subsume_passes += 1;
 
-    const props_start = self.stats.propagations;
-    const budget: u64 = blk: {
-        if (is_preprocess or self.props_at_last_subsume == 0) {
-            break :blk preprocess_cap;
-        }
-        const delta = if (props_start > self.props_at_last_subsume)
-            props_start - self.props_at_last_subsume
-        else
-            0;
-        const raw = (delta * budget_num) / budget_den;
-        break :blk @max(inprocess_floor, raw);
-    };
-    self.props_at_last_subsume = props_start;
+    const is_first_call = self.props_at_last_subsume == 0;
+    const share = common.propagationBudget(self.stats.propagations, &self.props_at_last_subsume, budget_share);
+    const budget = if (is_preprocess or is_first_call) preprocess_cap else @max(inprocess_floor, share);
 
     const num_lits: usize = @as(usize, self.num_vars) * 2;
 
