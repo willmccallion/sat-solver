@@ -49,6 +49,27 @@ const HotInsn = struct {
 
 const Verdict = enum { good, warn, bad };
 
+// What sat-bench is run on: its own flags, such as `--timeout-sec 30`,
+// and the instance directories, which the report also lists.
+const Workload = struct {
+    sat_bench: []const u8,
+    flags: []const []const u8,
+    dirs: []const []const u8,
+
+    // sat-bench's command line after `prefix`.
+    fn argv(self: Workload, gpa: Allocator, prefix: []const []const u8) ![]const []const u8 {
+        var list: std.ArrayList([]const u8) = .empty;
+        errdefer list.deinit(gpa);
+        try list.appendSlice(gpa, prefix);
+        try list.append(gpa, self.sat_bench);
+        try list.appendSlice(gpa, self.flags);
+        try list.appendSlice(gpa, self.dirs);
+        return list.toOwnedSlice(gpa);
+    }
+};
+
+const perf_data = "bench/.cache/perf.data";
+
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
@@ -63,206 +84,167 @@ pub fn main(init: std.process.Init) !void {
     const stderr = &stderr_writer.interface;
     defer stderr.flush() catch {};
 
-    const args = try init.minimal.args.toSlice(init.arena.allocator());
-
-    if (args.len < 3) {
-        try stderr.writeAll("usage: sat-profile <sat-bench-binary> <dir> [dir ...]\n");
-        try stderr.flush();
-        std.process.exit(1);
-    }
-
-    const sat_bench = args[1];
-
-    // The caller (build.zig) sends a mix of sat-bench flags (e.g.
-    // `--timeout-sec 30`) and directory paths after the binary. Split
-    // them: forward everything to sat-bench, but only use real dir
-    // paths in the "workload" row of the report table.
-    var bench_args: std.ArrayList([]const u8) = .empty;
-    defer bench_args.deinit(gpa);
-    var dirs_list: std.ArrayList([]const u8) = .empty;
-    defer dirs_list.deinit(gpa);
-    {
-        var ai: usize = 2;
-        while (ai < args.len) : (ai += 1) {
-            const a = args[ai];
-            if (std.mem.eql(u8, a, "--timeout-sec")) {
-                try bench_args.append(gpa, a);
-                ai += 1;
-                if (ai >= args.len) {
-                    try stderr.writeAll("sat-profile: --timeout-sec requires a value\n");
-                    try stderr.flush();
-                    std.process.exit(1);
-                }
-                try bench_args.append(gpa, args[ai]);
-            } else if (a.len > 0 and a[0] == '-') {
-                try bench_args.append(gpa, a);
-            } else {
-                try dirs_list.append(gpa, a);
-            }
-        }
-    }
-    const dirs = dirs_list.items;
-
-    if (!perfAvailable(gpa, io)) {
-        try stderr.writeAll(
-            "error: `perf` not found. install it (`perf` or `linux-tools` package) and retry.\n",
-        );
-        try stderr.flush();
-        std.process.exit(1);
-    }
-
-    if (readPerfEventParanoid(io)) |paranoid| {
-        if (paranoid > 1) {
-            try stderr.print(
-                "error: /proc/sys/kernel/perf_event_paranoid = {d} (hardware counters require ≤ 1)\n" ++
-                    "fix:   echo 1 | sudo tee /proc/sys/kernel/perf_event_paranoid\n",
-                .{paranoid},
-            );
-            try stderr.flush();
-            std.process.exit(1);
-        }
-    }
+    const arena = init.arena.allocator();
+    const workload = try parseArgs(arena, try init.minimal.args.toSlice(arena), stderr);
+    checkPerf(gpa, io, stderr);
 
     try stdout.print(
         "{s}[1/3] perf stat with topdown (this takes ~7 min, no output until done)...{s}\n",
         .{ Color.dim, Color.reset },
     );
     try stdout.flush();
-
-    var stats: Stats = .{};
-
-    // Perf stat pass (counters + TopdownL1)
-    {
-        var argv: std.ArrayList([]const u8) = .empty;
-        defer argv.deinit(gpa);
-        try argv.appendSlice(gpa, &.{
-            "perf", "stat",
-            "-x",   ",",
-            "-e",   events_list,
-            "-M",   "TopdownL1",
-            "--",   sat_bench,
-        });
-        try argv.appendSlice(gpa, bench_args.items);
-        try argv.appendSlice(gpa, dirs);
-
-        const result = try std.process.run(gpa, io, .{
-            .argv = argv.items,
-            .stdout_limit = .limited(1 << 22),
-            .stderr_limit = .limited(1 << 22),
-        });
-        defer gpa.free(result.stdout);
-        defer gpa.free(result.stderr);
-
-        if (result.term != .exited or result.term.exited != 0) {
-            try stderr.print("perf stat failed (exit code): \n{s}\n", .{result.stderr});
-            try stderr.flush();
-            std.process.exit(1);
-        }
-
-        stats.bench = report.BenchSummary.parse(result.stdout) catch {
-            try stderr.print("sat-profile: cannot read the sat-bench summary:\n{s}\n", .{result.stdout});
-            try stderr.flush();
-            std.process.exit(1);
-        };
-        stats.perf = .parse(result.stderr);
-    }
+    const stats = try countEvents(gpa, io, workload, stderr);
 
     try stdout.print("{s}[2/3] perf record (call-graph sampling)...{s}\n", .{ Color.dim, Color.reset });
     try stdout.flush();
-
-    const perf_data = "bench/.cache/perf.data";
-    try std.Io.Dir.cwd().createDirPath(io, "bench/.cache");
+    try recordSamples(gpa, io, workload, stderr);
 
     var hotspots: std.ArrayList(Hotspot) = .empty;
     defer {
         for (hotspots.items) |h| gpa.free(h.symbol);
         hotspots.deinit(gpa);
     }
+    try findHotspots(gpa, io, &hotspots, stderr);
 
     var hot_insns: std.ArrayList(HotInsn) = .empty;
     defer {
         for (hot_insns.items) |h| gpa.free(h.text);
         hot_insns.deinit(gpa);
     }
-
-    // Perf record pass
-    {
-        var argv: std.ArrayList([]const u8) = .empty;
-        defer argv.deinit(gpa);
-        try argv.appendSlice(gpa, &.{
-            "perf",         "record",
-            "-F",           "999",
-            "--call-graph", "dwarf",
-            "-o",           perf_data,
-            "--",           sat_bench,
-        });
-        try argv.appendSlice(gpa, bench_args.items);
-        try argv.appendSlice(gpa, dirs);
-
-        var child = try std.process.spawn(io, .{
-            .argv = argv.items,
-            .stdin = .ignore,
-            .stdout = .inherit,
-            .stderr = .inherit,
-        });
-        const term = try child.wait(io);
-        if (term != .exited or term.exited != 0) {
-            try stderr.writeAll("perf record exited non-zero\n");
-            try stderr.flush();
-            std.process.exit(1);
-        }
-    }
-
-    // Perf report (hotspot extraction)
-    {
-        const result = try std.process.run(gpa, io, .{
-            .argv = &.{
-                "perf",            "report",
-                "-i",              perf_data,
-                "--stdio",         "--no-children",
-                "--percent-limit", min_percent_arg,
-            },
-            .stdout_limit = .limited(1 << 22),
-            .stderr_limit = .limited(1 << 22),
-        });
-        defer gpa.free(result.stdout);
-        defer gpa.free(result.stderr);
-        if (result.term != .exited or result.term.exited != 0) {
-            try stderr.print("perf report failed:\n{s}\n", .{result.stderr});
-            try stderr.flush();
-            std.process.exit(1);
-        }
-        try parsePerfReport(gpa, result.stdout, &hotspots);
-    }
-
-    // Perf annotate on top hot function
     if (hotspots.items.len > 0) {
         try stdout.print(
             "{s}[3/3] perf annotate `{s}`...{s}\n",
             .{ Color.dim, hotspots.items[0].symbol, Color.reset },
         );
         try stdout.flush();
-
-        const result = try std.process.run(gpa, io, .{
-            .argv = &.{
-                "perf",                   "annotate",
-                "-i",                     perf_data,
-                "--stdio",                "--no-source",
-                "--percent-limit",        min_percent_arg,
-                hotspots.items[0].symbol,
-            },
-            .stdout_limit = .limited(1 << 23),
-            .stderr_limit = .limited(1 << 23),
-        });
-        defer gpa.free(result.stdout);
-        defer gpa.free(result.stderr);
-        if (result.term == .exited and result.term.exited == 0) {
-            try parsePerfAnnotate(gpa, result.stdout, &hot_insns);
-        }
+        try annotateHottest(gpa, io, hotspots.items[0].symbol, &hot_insns, stderr);
     }
 
     try stdout.writeAll("\n");
-    try printReport(.{ .writer = stdout, .width = width }, dirs, &stats, hotspots.items, hot_insns.items);
+    try printReport(.{ .writer = stdout, .width = width }, workload.dirs, &stats, hotspots.items, hot_insns.items);
+}
+
+// Prints the message and exits; with stderr failing too there is nowhere
+// left to report that.
+fn fatal(stderr: *std.Io.Writer, comptime fmt: []const u8, args: anytype) noreturn {
+    stderr.print(fmt, args) catch {};
+    stderr.flush() catch {};
+    std.process.exit(1);
+}
+
+// The caller (build.zig) passes sat-bench flags and directories after the
+// binary; flags are forwarded, and only directories label the report.
+fn parseArgs(arena: Allocator, args: []const []const u8, stderr: *std.Io.Writer) !Workload {
+    if (args.len < 3) fatal(stderr, "usage: sat-profile <sat-bench-binary> <dir> [dir ...]\n", .{});
+    var flags: std.ArrayList([]const u8) = .empty;
+    var dirs: std.ArrayList([]const u8) = .empty;
+    var i: usize = 2;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--timeout-sec")) {
+            i += 1;
+            if (i >= args.len) fatal(stderr, "sat-profile: --timeout-sec requires a value\n", .{});
+            try flags.appendSlice(arena, &.{ arg, args[i] });
+        } else if (arg.len > 0 and arg[0] == '-') {
+            try flags.append(arena, arg);
+        } else {
+            try dirs.append(arena, arg);
+        }
+    }
+    return .{ .sat_bench = args[1], .flags = flags.items, .dirs = dirs.items };
+}
+
+fn checkPerf(gpa: Allocator, io: std.Io, stderr: *std.Io.Writer) void {
+    if (!perfAvailable(gpa, io)) {
+        fatal(stderr, "error: `perf` not found. install it (`perf` or `linux-tools` package) and retry.\n", .{});
+    }
+    const paranoid = readPerfEventParanoid(io) orelse return;
+    if (paranoid > 1) fatal(
+        stderr,
+        "error: /proc/sys/kernel/perf_event_paranoid = {d} (hardware counters require ≤ 1)\n" ++
+            "fix:   echo 1 | sudo tee /proc/sys/kernel/perf_event_paranoid\n",
+        .{paranoid},
+    );
+}
+
+// Runs sat-bench under perf stat for the counters and TopdownL1 metrics.
+fn countEvents(gpa: Allocator, io: std.Io, workload: Workload, stderr: *std.Io.Writer) !Stats {
+    const argv = try workload.argv(gpa, &.{ "perf", "stat", "-x", ",", "-e", events_list, "-M", "TopdownL1", "--" });
+    defer gpa.free(argv);
+    const result = try std.process.run(gpa, io, .{
+        .argv = argv,
+        .stdout_limit = .limited(1 << 22),
+        .stderr_limit = .limited(1 << 22),
+    });
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+    if (result.term != .exited or result.term.exited != 0) {
+        fatal(stderr, "perf stat failed (exit code): \n{s}\n", .{result.stderr});
+    }
+    const bench = report.BenchSummary.parse(result.stdout) catch
+        fatal(stderr, "sat-profile: cannot read the sat-bench summary:\n{s}\n", .{result.stdout});
+    return .{ .perf = .parse(result.stderr), .bench = bench };
+}
+
+fn recordSamples(gpa: Allocator, io: std.Io, workload: Workload, stderr: *std.Io.Writer) !void {
+    try std.Io.Dir.cwd().createDirPath(io, "bench/.cache");
+    const argv = try workload.argv(gpa, &.{ "perf", "record", "-F", "999", "--call-graph", "dwarf", "-o", perf_data, "--" });
+    defer gpa.free(argv);
+    var child = try std.process.spawn(io, .{
+        .argv = argv,
+        .stdin = .ignore,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    });
+    const term = try child.wait(io);
+    if (term != .exited or term.exited != 0) fatal(stderr, "perf record exited non-zero\n", .{});
+}
+
+fn findHotspots(gpa: Allocator, io: std.Io, hotspots: *std.ArrayList(Hotspot), stderr: *std.Io.Writer) !void {
+    const result = try std.process.run(gpa, io, .{
+        .argv = &.{
+            "perf",            "report",
+            "-i",              perf_data,
+            "--stdio",         "--no-children",
+            "--percent-limit", min_percent_arg,
+        },
+        .stdout_limit = .limited(1 << 22),
+        .stderr_limit = .limited(1 << 22),
+    });
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+    if (result.term != .exited or result.term.exited != 0) {
+        fatal(stderr, "perf report failed:\n{s}\n", .{result.stderr});
+    }
+    try parsePerfReport(gpa, result.stdout, hotspots);
+}
+
+// The report still prints without hot instructions if this fails.
+fn annotateHottest(
+    gpa: Allocator,
+    io: std.Io,
+    symbol: []const u8,
+    hot_insns: *std.ArrayList(HotInsn),
+    stderr: *std.Io.Writer,
+) !void {
+    const result = try std.process.run(gpa, io, .{
+        .argv = &.{
+            "perf",            "annotate",
+            "-i",              perf_data,
+            "--stdio",         "--no-source",
+            "--percent-limit", min_percent_arg,
+            symbol,
+        },
+        .stdout_limit = .limited(1 << 23),
+        .stderr_limit = .limited(1 << 23),
+    });
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+    if (result.term != .exited or result.term.exited != 0) {
+        try stderr.print("sat-profile: perf annotate failed, so the report has no hot instructions:\n{s}\n", .{result.stderr});
+        return;
+    }
+    try parsePerfAnnotate(gpa, result.stdout, hot_insns);
 }
 
 fn readPerfEventParanoid(io: std.Io) ?i32 {
