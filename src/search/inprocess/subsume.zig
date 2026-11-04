@@ -27,15 +27,13 @@ const Result = solver_mod.Result;
 // overwhelming majority of candidate pairs without a subset check.
 //
 // Hashing literals rather than variables also rejects most SSR pairs
-// (ℓ ∈ C, ¬ℓ ∈ D), so long-clause SSR is rare. Hashing variables enables
-// it but measured ~6% slower on uf/uuf200-250 and no better on a SAT
-// Competition 2025 subset (7 vs 8 of 40 solved at 120 s).
+// (ℓ ∈ C, ¬ℓ ∈ D), so long-clause SSR is rare. Hashing variables would
+// admit those pairs, but measured slower overall.
 //
 // Binaries in bin_watchers ARE used as subsumers and can be strengthened
 // to units via SSR. They are NOT themselves subsumable or strengthenable
-// into shorter binaries in this pass — doing so correctly would require
-// swap-removing from two bin_watchers lists and re-scanning cursors used
-// by concurrent subsumption; we defer that to a separate session.
+// into shorter binaries in this pass: that would swap-remove from two
+// bin_watchers lists while the binary subsumer loop holds cursors into them.
 //
 // Precondition: level == 0; the pass propagates to a fixpoint first.
 // Locked clauses are skipped. Strengthened long clauses are re-queued onto a

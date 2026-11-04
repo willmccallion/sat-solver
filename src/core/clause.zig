@@ -42,8 +42,7 @@ pub const Watcher = struct {
 
 // Binary-clause watcher. 2-literal clauses never need the "find a new
 // watch" dance of the two-watched scheme — the other literal IS the only
-// alternative, so BCP is a single value lookup. Eliminating the arena
-// touch per binary watcher is one of the bigger BCP wins.
+// alternative, so BCP is a single value lookup that never touches the arena.
 pub const BinaryWatch = struct {
     other: Literal,
 };

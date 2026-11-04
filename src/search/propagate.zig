@@ -67,7 +67,7 @@ pub fn propagate(self: *Solver) !?Conflict {
             const w = ws.items[i];
             i += 1;
 
-            // Blocker-satisfied is the dominant exit on the bench (~70%).
+            // A true blocker is the most common exit.
             if (lit_values[w.blocker.raw] == .true) {
                 @branchHint(.likely);
                 ws.items[j] = w;
@@ -75,10 +75,8 @@ pub fn propagate(self: *Solver) !?Conflict {
                 continue;
             }
 
-            // Prefetch the next watcher's clause line before we touch
-            // this one's. The clause-body load was 12% in the old perf
-            // profile; issuing this prefetch hides its L2/L3 latency
-            // behind the current iteration's arithmetic.
+            // Prefetching the next watcher's clause hides its cache miss
+            // behind this iteration's work.
             if (i < end) {
                 const next_cref = ws.items[i].clause;
                 @prefetch(arena_ptr + next_cref, .{ .locality = 3 });

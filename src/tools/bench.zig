@@ -13,7 +13,7 @@ const solver_mod = search.solver;
 //   --timeout-sec N   Per-instance wall-clock cap. A watchdog thread
 //                     flips solver_mod.interrupted after N seconds and
 //                     the instance is scored as .unknown. Default 0 =
-//                     no cap (legacy behaviour for uf200/uuf200 bench).
+//                     no cap.
 //
 // Summary format on stdout (sat-profile depends on these lines):
 //
@@ -106,8 +106,7 @@ pub fn main(init: std.process.Init) !void {
     // PAR-2 accumulator in ns. Solved instance contributes its solve
     // time; unsolved contributes 2 × timeout. Matches SAT Competition
     // scoring exactly. Collapses to raw wall time when timeout_sec=0.
-    // u64 holds ≈ 584 years of ns, comfortably beyond any realistic
-    // (instances × timeout) product.
+    // A u64 of nanoseconds overflows only after 584 years.
     var par2_ns: u64 = 0;
     const timeout_ns: u64 = @as(u64, timeout_sec) * std.time.ns_per_s;
 

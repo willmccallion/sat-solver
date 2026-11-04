@@ -17,9 +17,8 @@ pub const Value = enum(u8) { unassigned, true, false };
 //
 // Binary reasons inline their partner literal so BCP on 2-literal
 // clauses never touches the clause arena: propagation, conflict analysis,
-// and minimization reconstruct the 2-lit clause as [forced_lit, binaryOther].
-// This is the single biggest reason modern solvers (Kissat, CaDiCaL)
-// treat binaries separately — the arena cache miss per watcher is gone.
+// and minimization reconstruct the 2-lit clause as [forced_lit, binaryOther],
+// which saves an arena cache miss per binary watcher.
 pub const Reason = struct {
     raw: u32,
 
@@ -70,12 +69,9 @@ pub const Assignment = struct {
     allocator: Allocator,
     vars: []VarInfo,
 
-    // Literal-indexed value table. Length is 2 * num_vars. Lookup is a
-    // single `lit_values[lit.raw]` load — no shift, no multiply, no
-    // sign test, no if-then-else chain. Every `valueOfLiteral` call in
-    // BCP and analyze collapses from an 8-instruction / 3-branch chain
-    // down to one load + one compare. This is *the* reason propagate's
-    // bad-speculation stall budget dropped.
+    // Literal-indexed value table. Length is 2 * num_vars, so a literal's
+    // value is one `lit_values[lit.raw]` load with no shift or sign test;
+    // BCP and analyze read it for every literal they visit.
     //
     // Invariant maintained by `assignAtLevel` and Solver.backtrack:
     //   lit_values[v*2 + 0]  is the truth value of the positive literal  v

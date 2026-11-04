@@ -158,9 +158,8 @@ pub fn analyze(self: *Solver, conflict: Conflict, conflict_level: u32) !u32 {
     // Recursive clause minimization (MiniSat 2.2 litRedundant)
     // A literal p in the learned clause is redundant if it is implied
     // by the other literals — checked via iterative self-subsuming
-    // resolution over reason chains. Typically removes 15–30% of
-    // literals on uniform random 3-SAT, compounding into smaller watcher
-    // lists and cheaper future propagate passes.
+    // resolution over reason chains. Shorter learned clauses mean
+    // shorter watch lists and cheaper propagation.
     {
         self.analyze_seen[self.analyze_learned.items[0].variable()] = true;
 
