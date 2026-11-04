@@ -69,6 +69,7 @@ pub fn vivify(self: *Solver) !?Result {
         if (budget > 0 and self.stats.propagations - props_start > budget) break;
         if (solver_mod.interruptRequested()) break;
         if (self.clauseIsDeleted(cref)) continue;
+        if (self.clauseIsLocked(cref)) continue;
 
         // Copy lits before any decision-level push. Arena slices are
         // only safe between allocations; we intentionally don't hold one
@@ -77,20 +78,6 @@ pub fn vivify(self: *Solver) !?Result {
         scratch.clearRetainingCapacity();
         try scratch.ensureTotalCapacity(self.allocator, lits_now.len);
         scratch.appendSliceAssumeCapacity(lits_now);
-
-        // Locked-clause check: if this clause is currently a reason for
-        // a level-0 literal, mutating it would break reason chains.
-        var locked = false;
-        for (scratch.items) |lit| {
-            const vi = self.assignment.vars[lit.variable()];
-            if (vi.level == 0 and !vi.reason.isNone() and
-                !vi.reason.isBinary() and vi.reason.clauseRef() == cref)
-            {
-                locked = true;
-                break;
-            }
-        }
-        if (locked) continue;
 
         var shrink_len: ?usize = null;
         var subsumed = false;

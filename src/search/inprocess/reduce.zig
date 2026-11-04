@@ -22,14 +22,6 @@ const Solver = state.Solver;
 pub fn reduceDB(self: *Solver) !void {
     std.debug.assert(self.assignment.level == 0);
 
-    var locked: std.AutoHashMap(ClauseRef, void) = .init(self.allocator);
-    defer locked.deinit();
-    for (self.assignment.trail.items) |lit| {
-        const r = self.assignment.vars[lit.variable()].reason;
-        if (r.isNone() or r.isBinary()) continue;
-        try locked.put(r.clauseRef(), {});
-    }
-
     const Candidate = struct { cref: ClauseRef, lbd: u32 };
     var candidates: std.ArrayList(Candidate) = .empty;
     defer candidates.deinit(self.allocator);
@@ -39,7 +31,7 @@ pub fn reduceDB(self: *Solver) !void {
     );
     for (self.learned_clauses.items) |cref| {
         if (self.clauseIsDeleted(cref)) continue;
-        if (locked.contains(cref)) continue;
+        if (self.clauseIsLocked(cref)) continue;
         const lbd = self.clauseLbd(cref);
         if (lbd <= 2) continue;
         candidates.appendAssumeCapacity(.{ .cref = cref, .lbd = lbd });

@@ -256,7 +256,7 @@ fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
             switch (o) {
                 .long => |cref| {
                     if (self.clauseIsDeleted(cref)) continue;
-                    if (clauseIsLockedAtLevel0(self, cref)) {
+                    if (self.clauseIsLocked(cref)) {
                         locked = true;
                         break;
                     }
@@ -298,7 +298,7 @@ fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
             switch (o) {
                 .long => |cref| {
                     if (self.clauseIsDeleted(cref)) continue;
-                    if (clauseIsLockedAtLevel0(self, cref)) {
+                    if (self.clauseIsLocked(cref)) {
                         locked = true;
                         break;
                     }
@@ -515,20 +515,6 @@ fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
 
     self.stats.bve_passes += 1;
     return null;
-}
-
-// Returns true when `cref` is currently the reason for a level-0 literal.
-fn clauseIsLockedAtLevel0(self: *Solver, cref: ClauseRef) bool {
-    const lits = self.clauseLits(cref);
-    for (lits) |lit| {
-        const vi = self.assignment.vars[lit.variable()];
-        if (vi.level == 0 and !vi.reason.isNone() and
-            !vi.reason.isBinary() and vi.reason.clauseRef() == cref)
-        {
-            return true;
-        }
-    }
-    return false;
 }
 
 // Performs the six-step commit for one variable's elimination:

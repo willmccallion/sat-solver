@@ -37,9 +37,8 @@ const Result = solver_mod.Result;
 // swap-removing from two bin_watchers lists and re-scanning cursors used
 // by concurrent subsumption; we defer that to a separate session.
 //
-// Precondition: level == 0; the pass propagates to a fixpoint first. The
-// locked-clause check mirrors vivify.zig's: a clause that is currently a
-// reason for a level-0 literal is skipped. Strengthened long clauses are re-queued onto a
+// Precondition: level == 0; the pass propagates to a fixpoint first.
+// Locked clauses are skipped. Strengthened long clauses are re-queued onto a
 // work-list so cascading subsumptions can fire in the same pass, bounded
 // per-clause by `max_revisits_per_clause` to prevent pathological loops.
 //
@@ -169,7 +168,7 @@ fn subsumeImpl(self: *Solver, is_preprocess: bool) !?Result {
 
         const c_cref = queue.items[qi];
         if (self.clauseIsDeleted(c_cref)) continue;
-        if (clauseIsLockedAtLevel0(self, c_cref)) continue;
+        if (self.clauseIsLocked(c_cref)) continue;
 
         try processSubsumerLong(
             self,
@@ -243,22 +242,6 @@ fn hasBinaryClause(self: *const Solver, a: Literal, b: Literal) bool {
     return false;
 }
 
-// Returns true when `cref` is currently the reason for a level-0 literal.
-// Those clauses cannot be mutated without breaking analyze()'s reason
-// walks on the trail.
-fn clauseIsLockedAtLevel0(self: *Solver, cref: ClauseRef) bool {
-    const lits = self.clauseLits(cref);
-    for (lits) |lit| {
-        const vi = self.assignment.vars[lit.variable()];
-        if (vi.level == 0 and !vi.reason.isNone() and
-            !vi.reason.isBinary() and vi.reason.clauseRef() == cref)
-        {
-            return true;
-        }
-    }
-    return false;
-}
-
 // Processes one long clause C as a potential subsumer. Walks occ[ℓ] for
 // the shortest-occurrence literal of C and tries subsumption / SSR on
 // each candidate D.
@@ -326,7 +309,7 @@ fn processSubsumerLong(
 
         const outcome = checkSubsumeOrSSR(scratch.items, d_lits);
         op_count.* += 1;
-        if (outcome != .none and clauseIsLockedAtLevel0(self, d_cref)) continue;
+        if (outcome != .none and self.clauseIsLocked(d_cref)) continue;
 
         switch (outcome) {
             .none => {},
@@ -393,7 +376,7 @@ fn processSubsumerBinary(
         }
         const outcome = checkSubsumeOrSSR(scratch.items, d_lits);
         op_count.* += 1;
-        if (outcome != .none and clauseIsLockedAtLevel0(self, d_cref)) continue;
+        if (outcome != .none and self.clauseIsLocked(d_cref)) continue;
         switch (outcome) {
             .none => {},
             .subsumed => {

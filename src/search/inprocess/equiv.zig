@@ -249,7 +249,7 @@ pub fn equiv(self: *Solver) !?Result {
                 }
             }
             if (!any_changed) continue;
-            if (clauseIsLockedAtLevel0(self, cref)) continue;
+            if (self.clauseIsLocked(cref)) continue;
 
             // Build substituted literal list: rename, sort, dedupe,
             // detect tautology.
@@ -523,20 +523,6 @@ pub fn equiv(self: *Solver) !?Result {
 
     self.stats.equiv_passes += 1;
     return null;
-}
-
-// Returns true when `cref` is currently the reason for a level-0 literal.
-fn clauseIsLockedAtLevel0(self: *Solver, cref: ClauseRef) bool {
-    const lits = self.clauseLits(cref);
-    for (lits) |lit| {
-        const vi = self.assignment.vars[lit.variable()];
-        if (vi.level == 0 and !vi.reason.isNone() and
-            !vi.reason.isBinary() and vi.reason.clauseRef() == cref)
-        {
-            return true;
-        }
-    }
-    return false;
 }
 
 // Swap-remove the binary (a, other) from both sides of bin_watchers.

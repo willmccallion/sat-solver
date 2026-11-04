@@ -406,6 +406,20 @@ pub const Solver = struct {
         return self.arena.items[start .. start + len];
     }
 
+    // A locked clause is the reason for a level-0 assignment, so deleting
+    // or rewriting it would break the reason chain analyze follows.
+    pub fn clauseIsLocked(self: *Solver, cref: ClauseRef) bool {
+        for (self.clauseLits(cref)) |lit| {
+            const vi = self.assignment.vars[lit.variable()];
+            if (vi.level == 0 and !vi.reason.isNone() and
+                !vi.reason.isBinary() and vi.reason.clauseRef() == cref)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // A learned clause that subsumes an irredundant one takes over its
     // role in the formula, so it must no longer be eligible for reduceDB.
     pub fn promoteToIrredundant(self: *Solver, cref: ClauseRef) void {
