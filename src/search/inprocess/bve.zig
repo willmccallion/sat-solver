@@ -626,41 +626,35 @@ fn commitElimination(
         }
     }
 
-    // (e) Install resolvents. Uses addClauseToArena for ≥3; may
-    // realloc the arena. Update occ lists so later variables' commits
-    // see the new clauses.
+    // (e) Install resolvents and add them to occ so later variables'
+    // commits see them.
     for (resolvents_offsets.items) |off| {
         const r_len_u: u32 = resolvents_flat.items[off].raw;
         const r_len: usize = @intCast(r_len_u);
         const r_lits = resolvents_flat.items[off + 1 .. off + 1 + r_len];
 
-        if (r_len == 1) {
-            if (try self.assertRootUnit(r_lits[0]) == .refuted) {
+        switch (try self.installClause(r_lits, .irredundant, 0)) {
+            .refuted => {
                 unsat_derived.* = true;
                 return;
-            }
-        } else if (r_len == 2) {
-            const a = r_lits[0];
-            const b = r_lits[1];
-            try self.addBinary(a, b);
-            // Extend occ[a] and occ[b] so subsequent pops see this clause.
-            try clause_mod.reserveSlot(Occurrence, &occ[a.raw], self.allocator);
-            try clause_mod.reserveSlot(Occurrence, &occ[b.raw], self.allocator);
-            occ[a.raw].appendAssumeCapacity(.{ .binary = b });
-            occ[b.raw].appendAssumeCapacity(.{ .binary = a });
-        } else {
-            const new_cref = try self.addClauseToArena(r_lits, .irredundant, 0);
-            try self.attachWatches(new_cref);
-            // Do NOT append to learned_clauses — these are effectively
-            // new originals derived by resolution.
-
-            // Register with occ. We must re-fetch the slice since
-            // addClauseToArena may have reallocated the arena.
-            const new_lits = self.clauseLits(new_cref);
-            for (new_lits) |lit| {
-                try clause_mod.reserveSlot(Occurrence, &occ[lit.raw], self.allocator);
-                occ[lit.raw].appendAssumeCapacity(.{ .long = new_cref });
-            }
+            },
+            .unit => {},
+            .binary => {
+                const a = r_lits[0];
+                const b = r_lits[1];
+                // Extend occ[a] and occ[b] so subsequent pops see this clause.
+                try clause_mod.reserveSlot(Occurrence, &occ[a.raw], self.allocator);
+                try clause_mod.reserveSlot(Occurrence, &occ[b.raw], self.allocator);
+                occ[a.raw].appendAssumeCapacity(.{ .binary = b });
+                occ[b.raw].appendAssumeCapacity(.{ .binary = a });
+            },
+            .long => |new_cref| {
+                // Re-fetch: installing may have reallocated the arena.
+                for (self.clauseLits(new_cref)) |lit| {
+                    try clause_mod.reserveSlot(Occurrence, &occ[lit.raw], self.allocator);
+                    occ[lit.raw].appendAssumeCapacity(.{ .long = new_cref });
+                }
+            },
         }
     }
 

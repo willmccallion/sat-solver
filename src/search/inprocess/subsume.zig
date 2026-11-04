@@ -556,31 +556,15 @@ fn strengthenLongClause(
     any_deleted.* = true;
     self.stats.strengthened_clauses += 1;
 
-    if (new_len == 0) {
-        unsat_derived.* = true;
-        return;
-    }
-
-    if (new_len == 1) {
-        if (try self.assertRootUnit(new_lits.items[0]) == .refuted) unsat_derived.* = true;
-        return;
-    }
-
-    if (new_len == 2) {
-        const a = new_lits.items[0];
-        const bb = new_lits.items[1];
-        try self.addBinary(a, bb);
-        return;
-    }
-
-    // ≥3: install in arena. addClauseToArena may realloc arena — any
-    // cached ClauseLits pointer from before is invalid after.
     const new_lbd = clause_mod.rewrittenLbd(self.clauseLbd(d_cref), new_len);
-    const new_cref = try self.addClauseToArena(new_lits.items, kind, new_lbd);
-    try self.attachWatches(new_cref);
-    if (kind == .learned) {
-        try self.learned_clauses.append(self.allocator, new_cref);
-    }
+    const new_cref = switch (try self.installClause(new_lits.items, kind, new_lbd)) {
+        .refuted => {
+            unsat_derived.* = true;
+            return;
+        },
+        .unit, .binary => return,
+        .long => |cref| cref,
+    };
 
     // Register in occ lists so subsequent subsumers find it.
     for (new_lits.items) |lit| {

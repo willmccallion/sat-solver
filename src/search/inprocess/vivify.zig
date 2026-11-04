@@ -143,18 +143,10 @@ pub fn vivify(self: *Solver) !?Result {
         any_deleted = true;
         self.stats.vivified_clauses += 1;
 
-        if (new_len == 1) {
-            if (try self.assertRootUnit(new_lits[0]) == .refuted) {
-                try self.proof.empty();
-                return .unsat;
-            }
-        } else if (new_len == 2) {
-            try self.addBinary(new_lits[0], new_lits[1]);
-        } else {
-            const new_lbd = clause_mod.rewrittenLbd(self.clauseLbd(cref), new_len);
-            const new_cref = try self.addClauseToArena(new_lits, .learned, new_lbd);
-            try self.learned_clauses.append(self.allocator, new_cref);
-            try self.attachWatches(new_cref);
+        const new_lbd = clause_mod.rewrittenLbd(self.clauseLbd(cref), new_len);
+        if (try self.installClause(new_lits, .learned, new_lbd) == .refuted) {
+            try self.proof.empty();
+            return .unsat;
         }
     }
 

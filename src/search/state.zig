@@ -79,6 +79,14 @@ pub const EquivFrame = struct {
 // Whether a level-0 unit is consistent with the root assignment.
 pub const RootUnit = enum { consistent, refuted };
 
+// Where `Solver.installClause` put a clause.
+pub const Installed = union(enum) {
+    refuted,
+    unit,
+    binary,
+    long: ClauseRef,
+};
+
 pub const Solver = struct {
     allocator: Allocator,
     num_vars: u32,
@@ -335,22 +343,10 @@ pub const Solver = struct {
         }
 
         for (0..formula.clauseCount()) |i| {
-            const lits = formula.clause(i);
-            if (self.unsat_at_init) continue;
-            if (lits.len == 0) {
+            if (try self.installClause(formula.clause(i), .irredundant, 0) == .refuted) {
                 self.unsat_at_init = true;
-                continue;
+                break;
             }
-            if (lits.len == 1) {
-                if (try self.assertRootUnit(lits[0]) == .refuted) self.unsat_at_init = true;
-                continue;
-            }
-            if (lits.len == 2) {
-                try self.addBinary(lits[0], lits[1]);
-                continue;
-            }
-            const cref = try self.addClauseToArena(lits, .irredundant, 0);
-            try self.attachWatches(cref);
         }
 
         return self;
@@ -500,6 +496,29 @@ pub const Solver = struct {
         try clause_mod.reserveSlot(BinaryWatch, w1, self.allocator);
         w0.appendAssumeCapacity(.{ .other = b });
         w1.appendAssumeCapacity(.{ .other = a });
+    }
+
+    // Installs a clause that holds at level 0: an empty clause refutes the
+    // formula, a unit is assigned, a binary joins the binary watch lists
+    // and a longer clause the arena. `lbd` only matters for the last.
+    pub fn installClause(self: *Solver, lits: []const Literal, kind: ClauseKind, lbd: u32) !Installed {
+        switch (lits.len) {
+            0 => return .refuted,
+            1 => return switch (try self.assertRootUnit(lits[0])) {
+                .refuted => .refuted,
+                .consistent => .unit,
+            },
+            2 => {
+                try self.addBinary(lits[0], lits[1]);
+                return .binary;
+            },
+            else => {
+                const cref = try self.addClauseToArena(lits, kind, lbd);
+                try self.attachWatches(cref);
+                if (kind == .learned) try self.learned_clauses.append(self.allocator, cref);
+                return .{ .long = cref };
+            },
+        }
     }
 
     // Assigns `lit` at level 0 unless it already holds.

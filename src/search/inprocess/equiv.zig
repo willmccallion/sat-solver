@@ -450,30 +450,10 @@ pub fn equiv(self: *Solver) !?Result {
         if (lw.new_len == 0) continue; // tautology
 
         const new_lits = work_new_lits.items[lw.new_off .. lw.new_off + lw.new_len];
-
-        if (lw.new_len == 1) {
-            if (try self.assertRootUnit(new_lits[0]) == .refuted) {
-                try self.proof.empty();
-                return .unsat;
-            }
-            continue;
-        }
-
-        if (lw.new_len == 2) {
-            const a = new_lits[0];
-            const b = new_lits[1];
-            try self.addBinary(a, b);
-            continue;
-        }
-
-        // new_len >= 3: install as arena clause. addClauseToArena may
-        // reallocate self.arena; new_lits is a slice into work_new_lits
-        // which is a separate allocation, so it stays valid.
         const lbd = clause_mod.rewrittenLbd(self.clauseLbd(lw.old_cref), lw.new_len);
-        const new_cref = try self.addClauseToArena(new_lits, lw.kind, lbd);
-        try self.attachWatches(new_cref);
-        if (lw.kind == .learned) {
-            try self.learned_clauses.append(self.allocator, new_cref);
+        if (try self.installClause(new_lits, lw.kind, lbd) == .refuted) {
+            try self.proof.empty();
+            return .unsat;
         }
     }
 
