@@ -6,8 +6,8 @@ pub fn build(b: *std.Build) void {
 
     // --- Layer module graph ------------------------------------------------
     // Dependency DAG, strictly downward:
-    //   core  ←  io, heuristics
-    //   core, heuristics  ←  search
+    //   core  ←  io
+    //   core, io, heuristics  ←  search
     //   everything  ←  tools, main, root (the `sat` public module)
     const core = b.createModule(.{
         .root_source_file = b.path("src/core/mod.zig"),
@@ -26,7 +26,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    heuristics.addImport("core", core);
 
     const search = b.createModule(.{
         .root_source_file = b.path("src/search/mod.zig"),

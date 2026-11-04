@@ -1,3 +1,4 @@
+const std = @import("std");
 const core = @import("core");
 const clause_mod = core.clause;
 const Conflict = clause_mod.Conflict;
@@ -155,8 +156,6 @@ pub fn propagate(self: *Solver) !?Conflict {
 
     return null;
 }
-
-const std = @import("std");
 
 // Propagates at level 0, where a conflict refutes the formula: logs the
 // empty clause and returns .unsat.

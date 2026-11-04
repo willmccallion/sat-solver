@@ -8,7 +8,6 @@ const Formula = cnf.Formula;
 const ClauseRef = cnf.ClauseRef;
 const assignment_mod = core.assignment;
 const Assignment = assignment_mod.Assignment;
-const Value = assignment_mod.Value;
 const Reason = assignment_mod.Reason;
 const clause_mod = core.clause;
 const Watcher = clause_mod.Watcher;

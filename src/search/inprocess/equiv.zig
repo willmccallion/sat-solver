@@ -7,7 +7,6 @@ const clause_mod = core.clause;
 
 const state = @import("../state.zig");
 const Solver = state.Solver;
-const EquivFrame = state.EquivFrame;
 const solver_mod = @import("../solver.zig");
 const Result = solver_mod.Result;
 

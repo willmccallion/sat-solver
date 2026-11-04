@@ -1,8 +1,5 @@
-const std = @import("std");
 const core = @import("core");
-const Literal = core.cnf.Literal;
 const Reason = core.assignment.Reason;
-const Conflict = core.clause.Conflict;
 
 const heuristics = @import("heuristics");
 const restart = heuristics.restart;
