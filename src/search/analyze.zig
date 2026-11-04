@@ -9,13 +9,17 @@ const Solver = state.Solver;
 
 // The false literals whose assignment forced the literal that `reason`
 // implies: every literal of the reason clause after the implied one at
-// index 0, or a binary reason's partner, copied into `scratch`.
+// index 0, or a binary reason's partner, copied into `scratch`. Only an
+// implied literal has antecedents.
 inline fn antecedents(self: *Solver, reason: Reason, scratch: *[1]Literal) []const Literal {
-    if (reason.isBinary()) {
-        scratch[0] = reason.binaryOther();
-        return scratch;
+    switch (reason.decode()) {
+        .binary => |other| {
+            scratch[0] = other;
+            return scratch;
+        },
+        .clause => |cref| return self.arena.literals(cref)[1..],
+        .decision => unreachable,
     }
-    return self.arena.literals(reason.clauseRef())[1..];
 }
 
 // One bit per decision level, folded mod 64: a cheap superset test for
@@ -92,7 +96,6 @@ fn resolveToFirstUip(self: *Solver, conflict: Conflict, conflict_level: u32) !Li
         if (counter == 0) return resolved;
 
         const reason = self.assignment.vars[rv].reason;
-        std.debug.assert(!reason.isNone());
         lits = antecedents(self, reason, &antecedent_scratch);
     }
 }
@@ -146,7 +149,6 @@ fn litRedundant(self: *Solver, start_var: u32, abstract_levels: u64) bool {
 
     while (self.analyze_stack.pop()) |v| {
         const reason = self.assignment.vars[v].reason;
-        std.debug.assert(!reason.isNone());
         for (antecedents(self, reason, &antecedent_scratch)) |q| {
             const qv = q.variable();
             const q_level = self.assignment.vars[qv].level;

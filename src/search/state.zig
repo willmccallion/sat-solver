@@ -351,10 +351,10 @@ pub const Solver = struct {
     pub fn clauseIsLocked(self: *Solver, cref: ClauseRef) bool {
         for (self.arena.literals(cref)) |lit| {
             const vi = self.assignment.vars[lit.variable()];
-            if (vi.level == 0 and !vi.reason.isNone() and
-                !vi.reason.isBinary() and vi.reason.clauseRef() == cref)
-            {
-                return true;
+            if (vi.level != 0) continue;
+            switch (vi.reason.decode()) {
+                .clause => |reason| if (reason == cref) return true,
+                .decision, .binary => {},
             }
         }
         return false;

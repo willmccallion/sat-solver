@@ -101,8 +101,11 @@ fn relocateWatchers(self: *Solver, relocation: *const clause_mod.Relocation) voi
 fn relocateReasons(self: *Solver, relocation: *const clause_mod.Relocation) void {
     for (self.assignment.trail.items) |lit| {
         const info = &self.assignment.vars[lit.variable()];
-        if (info.reason.isNone() or info.reason.isBinary()) continue;
-        info.reason = Reason.fromClause(relocation.newRef(info.reason.clauseRef()).?);
+        const cref = switch (info.reason.decode()) {
+            .clause => |cref| cref,
+            .decision, .binary => continue,
+        };
+        info.reason = Reason.fromClause(relocation.newRef(cref).?);
     }
 }
 

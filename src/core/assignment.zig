@@ -57,6 +57,18 @@ pub const Reason = struct {
         std.debug.assert(self.isBinary());
         return .{ .raw = self.raw & ~binary_bit };
     }
+
+    pub const Decoded = union(enum) {
+        decision,
+        clause: ClauseRef,
+        binary: Literal,
+    };
+
+    pub inline fn decode(self: Reason) Decoded {
+        if (self.raw == none.raw) return .decision;
+        if ((self.raw & binary_bit) != 0) return .{ .binary = .{ .raw = self.raw & ~binary_bit } };
+        return .{ .clause = self.raw };
+    }
 };
 
 pub const VarInfo = struct {
