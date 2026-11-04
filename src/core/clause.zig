@@ -21,6 +21,10 @@ pub const len_mask: u32 = 0x3fff_ffff;
 pub const max_arena_slots: usize = 1 << 31;
 pub const header_slots: u32 = 2;
 
+// Learned clauses are implied by the irredundant ones, so reduceDB may
+// delete them.
+pub const ClauseKind = enum { irredundant, learned };
+
 // The LBD of a clause rewritten to `new_len` literals by inprocessing at
 // level 0, where the levels that would recompute it are gone: its old LBD,
 // capped at the new length.

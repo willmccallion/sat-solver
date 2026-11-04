@@ -433,8 +433,8 @@ test "subsume: learned clause that subsumes an irredundant clause survives reduc
     // and a bystander at LBD 3 the subsumer is the one it would pick.
     const subsumer_lits = [_]Literal{ Literal.fromDimacs(1), Literal.fromDimacs(2), Literal.fromDimacs(3) };
     const bystander_lits = [_]Literal{ Literal.fromDimacs(-1), Literal.fromDimacs(-2), Literal.fromDimacs(-4) };
-    const subsumer = try solver.addClauseToArena(&subsumer_lits, true, 9);
-    const bystander = try solver.addClauseToArena(&bystander_lits, true, 3);
+    const subsumer = try solver.addClauseToArena(&subsumer_lits, .learned, 9);
+    const bystander = try solver.addClauseToArena(&bystander_lits, .learned, 3);
     try solver.learned_clauses.appendSlice(gpa, &.{ subsumer, bystander });
     try solver.attachWatches(subsumer);
     try solver.attachWatches(bystander);
@@ -805,7 +805,7 @@ test "bve: locked protection — a clause that reasons a level-0 unit stays unto
 fn addLearnedClause(solver: *solver_mod.Solver, dimacs: []const i32, lbd: u32) !ClauseRef {
     var lits: [16]Literal = undefined;
     for (dimacs, 0..) |d, i| lits[i] = Literal.fromDimacs(d);
-    const cref = try solver.addClauseToArena(lits[0..dimacs.len], true, lbd);
+    const cref = try solver.addClauseToArena(lits[0..dimacs.len], .learned, lbd);
     try solver.learned_clauses.append(testing.allocator, cref);
     try solver.attachWatches(cref);
     return cref;
@@ -911,12 +911,12 @@ test "a learned clause rewritten by equiv keeps a non-zero LBD" {
     try testing.expectEqual(@as(u32, 2), solver.clauseLbd(rewritten));
 }
 
-fn countLiveClauses(solver: *solver_mod.Solver, dimacs: []const i32, learned: bool) usize {
+fn countLiveClauses(solver: *solver_mod.Solver, dimacs: []const i32, kind: clause_mod.ClauseKind) usize {
     var count: usize = 0;
     var cref: ClauseRef = 0;
     while (cref < solver.arena.items.len) {
         const len = solver.clauseLen(cref);
-        if (!solver.clauseIsDeleted(cref) and solver.clauseIsLearned(cref) == learned and
+        if (!solver.clauseIsDeleted(cref) and solver.clauseKind(cref) == kind and
             isLiteralSet(solver.clauseLits(cref), dimacs)) count += 1;
         cref += clause_mod.header_slots + len;
     }
@@ -965,7 +965,7 @@ test "bve never installs a resolvent of a learned clause as an irredundant claus
 
     try testing.expect(r == null);
     try testing.expect(hasEliminated(&solver, 0));
-    try testing.expectEqual(@as(usize, 0), countLiveClauses(&solver, &.{ 2, 3, 4, 5 }, false));
+    try testing.expectEqual(@as(usize, 0), countLiveClauses(&solver, &.{ 2, 3, 4, 5 }, .irredundant));
 }
 
 test "bve deletes the learned clauses of a variable it eliminates" {
@@ -977,7 +977,7 @@ test "bve deletes the learned clauses of a variable it eliminates" {
     _ = try solver.preprocessBVE();
 
     try testing.expect(hasEliminated(&solver, 0));
-    try testing.expectEqual(@as(usize, 0), countLiveClauses(&solver, &.{ -1, 4, 5 }, true));
+    try testing.expectEqual(@as(usize, 0), countLiveClauses(&solver, &.{ -1, 4, 5 }, .learned));
     try testing.expectEqual(@as(usize, 0), solver.learned_clauses.items.len);
 }
 

@@ -152,7 +152,7 @@ pub fn vivify(self: *Solver) !?Result {
             try self.addBinary(new_lits[0], new_lits[1]);
         } else {
             const new_lbd = clause_mod.rewrittenLbd(self.clauseLbd(cref), new_len);
-            const new_cref = try self.addClauseToArena(new_lits, true, new_lbd);
+            const new_cref = try self.addClauseToArena(new_lits, .learned, new_lbd);
             try self.learned_clauses.append(self.allocator, new_cref);
             try self.attachWatches(new_cref);
         }

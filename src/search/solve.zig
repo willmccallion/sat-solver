@@ -114,7 +114,7 @@ pub fn solve(self: *Solver) !Result {
                 try self.proof.addClause(self.analyze_learned.items);
                 const cref = try self.addClauseToArena(
                     self.analyze_learned.items,
-                    true,
+                    .learned,
                     lbd,
                 );
                 try self.learned_clauses.append(self.allocator, cref);

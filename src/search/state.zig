@@ -12,6 +12,7 @@ const Reason = assignment_mod.Reason;
 const clause_mod = core.clause;
 const Watcher = clause_mod.Watcher;
 const BinaryWatch = clause_mod.BinaryWatch;
+const ClauseKind = clause_mod.ClauseKind;
 const learned_bit = clause_mod.learned_bit;
 const deleted_bit = clause_mod.deleted_bit;
 const len_mask = clause_mod.len_mask;
@@ -348,7 +349,7 @@ pub const Solver = struct {
                 try self.addBinary(lits[0], lits[1]);
                 continue;
             }
-            const cref = try self.addClauseToArena(lits, false, 0);
+            const cref = try self.addClauseToArena(lits, .irredundant, 0);
             try self.attachWatches(cref);
         }
 
@@ -387,6 +388,10 @@ pub const Solver = struct {
 
     pub inline fn clauseIsLearned(self: *const Solver, cref: ClauseRef) bool {
         return (self.arena.items[cref].raw & learned_bit) != 0;
+    }
+
+    pub inline fn clauseKind(self: *const Solver, cref: ClauseRef) ClauseKind {
+        return if (self.clauseIsLearned(cref)) .learned else .irredundant;
     }
 
     pub inline fn clauseIsDeleted(self: *const Solver, cref: ClauseRef) bool {
@@ -461,7 +466,7 @@ pub const Solver = struct {
     pub fn addClauseToArena(
         self: *Solver,
         lits: []const Literal,
-        learned: bool,
+        kind: ClauseKind,
         lbd: u32,
     ) !ClauseRef {
         if (self.arena.items.len + header_slots + lits.len > clause_mod.max_arena_slots) {
@@ -469,7 +474,7 @@ pub const Solver = struct {
         }
         const ref: ClauseRef = @intCast(self.arena.items.len);
         const header_raw: u32 = @as(u32, @intCast(lits.len)) |
-            (if (learned) learned_bit else 0);
+            (if (kind == .learned) learned_bit else 0);
         try self.arena.append(self.allocator, .{ .raw = header_raw });
         try self.arena.append(self.allocator, .{ .raw = lbd });
         try self.arena.appendSlice(self.allocator, lits);

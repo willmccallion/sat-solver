@@ -544,7 +544,7 @@ fn strengthenLongClause(
     }
 
     const new_len = new_lits.items.len;
-    const is_learned = self.clauseIsLearned(d_cref);
+    const kind = self.clauseKind(d_cref);
 
     // Emit DRAT add FIRST, then delete (required for DRAT-RUP correctness
     // when the strengthened clause is the resolvent).
@@ -576,9 +576,9 @@ fn strengthenLongClause(
     // ≥3: install in arena. addClauseToArena may realloc arena — any
     // cached ClauseLits pointer from before is invalid after.
     const new_lbd = clause_mod.rewrittenLbd(self.clauseLbd(d_cref), new_len);
-    const new_cref = try self.addClauseToArena(new_lits.items, is_learned, new_lbd);
+    const new_cref = try self.addClauseToArena(new_lits.items, kind, new_lbd);
     try self.attachWatches(new_cref);
-    if (is_learned) {
+    if (kind == .learned) {
         try self.learned_clauses.append(self.allocator, new_cref);
     }
 

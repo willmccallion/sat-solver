@@ -213,7 +213,7 @@ pub fn equiv(self: *Solver) !?Result {
 
     const LongWork = struct {
         old_cref: ClauseRef,
-        is_learned: bool,
+        kind: clause_mod.ClauseKind,
         new_off: u32,
         new_len: u32,
         old_off: u32,
@@ -311,7 +311,7 @@ pub fn equiv(self: *Solver) !?Result {
             }
             try long_work.append(self.allocator, .{
                 .old_cref = cref,
-                .is_learned = (header & clause_mod.learned_bit) != 0,
+                .kind = self.clauseKind(cref),
                 .new_off = new_off,
                 .new_len = new_len,
                 .old_off = old_off,
@@ -470,9 +470,9 @@ pub fn equiv(self: *Solver) !?Result {
         // reallocate self.arena; new_lits is a slice into work_new_lits
         // which is a separate allocation, so it stays valid.
         const lbd = clause_mod.rewrittenLbd(self.clauseLbd(lw.old_cref), lw.new_len);
-        const new_cref = try self.addClauseToArena(new_lits, lw.is_learned, lbd);
+        const new_cref = try self.addClauseToArena(new_lits, lw.kind, lbd);
         try self.attachWatches(new_cref);
-        if (lw.is_learned) {
+        if (lw.kind == .learned) {
             try self.learned_clauses.append(self.allocator, new_cref);
         }
     }

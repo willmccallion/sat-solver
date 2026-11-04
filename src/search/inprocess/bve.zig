@@ -649,7 +649,7 @@ fn commitElimination(
             occ[a.raw].appendAssumeCapacity(.{ .binary = b });
             occ[b.raw].appendAssumeCapacity(.{ .binary = a });
         } else {
-            const new_cref = try self.addClauseToArena(r_lits, false, 0);
+            const new_cref = try self.addClauseToArena(r_lits, .irredundant, 0);
             try self.attachWatches(new_cref);
             // Do NOT append to learned_clauses — these are effectively
             // new originals derived by resolution.
