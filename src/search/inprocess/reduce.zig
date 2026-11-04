@@ -8,8 +8,8 @@ const clause_mod = core.clause;
 const state = @import("../state.zig");
 const Solver = state.Solver;
 
-// Clause DB reduction. Called at level 0 after a restart when the
-// learned clause count has outgrown `max_learned`. Keeps the better half
+// Clause DB reduction. Called at level 0, on its own conflict schedule,
+// when the learned clause count has outgrown `max_learned`. Keeps the better half
 // (by LBD — lower is better). Clauses that are currently reasons for
 // trail literals are "locked" and must never be deleted, since `analyze`
 // follows reasons. Glue clauses (LBD ≤ 2) are also kept unconditionally
@@ -146,9 +146,8 @@ pub fn compact(self: *Solver) !void {
         self.assignment.vars[v].reason = Reason.fromClause(new_cref);
     }
 
-    // Pass 2c: rewrite learned-clauses index. Deleted entries were
-    // already swept by reduceDB, but vivify's shrink path leaves deleted
-    // entries in place — strain them out here.
+    // Pass 2c: rewrite learned-clauses index, straining out the entries
+    // of clauses deleted since the last sweep.
     {
         var j: usize = 0;
         for (self.learned_clauses.items) |cref| {

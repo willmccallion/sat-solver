@@ -53,7 +53,7 @@ pub const Stats = struct {
 };
 
 // BVE witness frame. Records the original clauses touching an eliminated
-// variable so the .sat reconstruction path in main.zig can pick a value
+// variable so the .sat reconstruction in model.zig can pick a value
 // that satisfies all of them in reverse elimination order.
 //
 // Layout inside bve_witness_lits (length-prefixed runs):
@@ -88,8 +88,9 @@ pub const Solver = struct {
 
     // Per-literal binary watcher lists. Indexed by literal.raw. Each
     // entry carries the partner literal directly — no clause ref, no
-    // arena load. Monotonic: entries are never moved or removed, because
-    // there is no "find a different literal to watch" step for a 2-clause.
+    // arena load. Propagation never moves an entry, since a 2-clause has no
+    // other literal to watch; subsume, equiv and BVE swap-remove the
+    // entries of binaries they delete.
     bin_watchers: []std.ArrayList(BinaryWatch),
 
     assignment: Assignment,
@@ -150,7 +151,7 @@ pub const Solver = struct {
     // BVE — bit-indexed by variable. Eliminated variables must never be
     // branched on (pickBranching filters them), must never reappear as a
     // literal in a learned clause, and must have their values filled in
-    // during the .sat reconstruction path by main.zig.
+    // during the .sat reconstruction in model.zig.
     eliminated: std.DynamicBitSet,
     // Flat buffer of length-prefixed literal runs recording the original
     // clauses touching every eliminated variable. Each frame in

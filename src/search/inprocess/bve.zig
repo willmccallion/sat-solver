@@ -31,8 +31,8 @@ const Result = solver_mod.Result;
 // resolvents are added first, all originals deleted second, then per-v
 // bookkeeping runs. The original literals are buffered into
 // `bve_witness_lits` (as length-prefixed runs, two sides: +v side then
-// -v side) so the .sat branch in main.zig can reconstruct an assignment
-// for every eliminated variable by walking the witness frames in reverse.
+// -v side) so the .sat reconstruction in model.zig can give a value to
+// every eliminated variable by walking the witness frames in reverse.
 //
 // Precondition: level == 0; the pass propagates to a fixpoint first. Any
 // 1-literal resolvent is asserted as a root-level unit; any empty
@@ -587,7 +587,7 @@ fn commitElimination(
     }
 
     // (b) Push the witness frame. Record pos_start, neg_start, end into
-    // bve_witness_lits so main.zig can walk the frame in reverse for
+    // bve_witness_lits so model.zig can walk the frame in reverse for
     // model reconstruction. Length-prefixed runs carry the original
     // clause literals verbatim.
     const pos_start: u32 = @intCast(self.bve_witness_lits.items.len);

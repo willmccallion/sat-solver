@@ -23,12 +23,14 @@ BCP, modern clause learning, and SAT Competition-format I/O.
 - **Chronological backtracking** when the backjump would skip many levels
 - **Focused / stable mode alternation** with **rephasing** (best, original,
   inverted and random phases)
-- **Preprocessing and level-0 inprocessing**, each on a propagation budget:
-  backward subsumption with self-subsuming resolution (in practice mostly
-  between binary clauses; see `subsume.zig`), equivalent-literal
-  substitution (SCCs of the binary implication graph), bounded variable
-  elimination, failed-literal probing, and vivification of low-LBD learned
-  clauses
+- **Preprocessing and level-0 inprocessing**: backward subsumption with
+  self-subsuming resolution (in practice mostly between binary clauses; see
+  `subsume.zig`), equivalent-literal substitution (SCCs of the binary
+  implication graph), bounded variable elimination, failed-literal probing,
+  and vivification of low-LBD learned clauses. Probing and vivification may
+  spend a tenth of the propagations made since their last run; subsumption
+  and elimination cap the clause pairs they examine at a share of that
+  count; equivalent-literal substitution runs in full
 - **Arena compaction** to reclaim the holes left by deleted clauses
 - **DRAT proof emission** (`--proof PATH`) for UNSAT verification
 - **Model check against the input** — eliminated variables are
