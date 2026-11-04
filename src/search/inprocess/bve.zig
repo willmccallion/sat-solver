@@ -153,8 +153,8 @@ const Elimination = struct {
         while (live.next()) |cref| {
             for (solver.arena.literals(cref)) |lit| long_counts[lit.raw] += 1;
         }
-        for (self.occ, long_counts, 0..) |*o, n, lit_raw| {
-            const binary_count = solver.bin_watchers[lit_raw ^ 1].items.len;
+        for (self.occ, long_counts, 0..) |*o, n, index| {
+            const binary_count = solver.bin_watchers[Literal.fromIndex(index).negate().raw].items.len;
             try o.ensureTotalCapacityPrecise(solver.allocator, n + binary_count);
         }
 

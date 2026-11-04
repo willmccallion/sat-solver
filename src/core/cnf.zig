@@ -14,6 +14,12 @@ pub const Literal = struct {
         return .{ .raw = (var_index << 1) | @intFromBool(negated) };
     }
 
+    // The literal whose `.raw` is `index`, for walking arrays indexed by
+    // literal.
+    pub fn fromIndex(index: usize) Literal {
+        return .{ .raw = @intCast(index) };
+    }
+
     pub fn variable(self: Literal) u32 {
         return self.raw >> 1;
     }

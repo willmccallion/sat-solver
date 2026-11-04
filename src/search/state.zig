@@ -527,7 +527,7 @@ pub const BinaryClauses = struct {
             self.watched += 1;
             self.entry = 0;
         }) {
-            const a = (Literal{ .raw = @intCast(self.watched) }).negate();
+            const a = Literal.fromIndex(self.watched).negate();
             const entries = lists[self.watched].items;
             while (self.entry < entries.len) {
                 const b = entries[self.entry].other;

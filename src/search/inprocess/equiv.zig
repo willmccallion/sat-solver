@@ -134,7 +134,7 @@ const Tarjan = struct {
     }
 
     fn isActive(self: *const Tarjan, lit_raw: u32) bool {
-        return self.solver.varIsActive((Literal{ .raw = lit_raw }).variable());
+        return self.solver.varIsActive(Literal.fromIndex(lit_raw).variable());
     }
 
     fn visitFrom(self: *Tarjan, start: u32) !void {
@@ -208,19 +208,19 @@ fn contradictedVariable(component: []const ?u32) ?u32 {
 // Maps each literal to the smallest literal of its component, and a
 // literal in no component to itself.
 fn representatives(allocator: std.mem.Allocator, component: []const ?u32, component_count: u32) ![]Literal {
-    const smallest = try allocator.alloc(?u32, component_count);
+    const smallest = try allocator.alloc(?Literal, component_count);
     defer allocator.free(smallest);
     @memset(smallest, null);
     const lit_remap = try allocator.alloc(Literal, component.len);
     for (component, 0..) |id_or_null, idx| {
-        const lit_raw: u32 = @intCast(idx);
+        const lit = Literal.fromIndex(idx);
         const id = id_or_null orelse {
-            lit_remap[idx] = .{ .raw = lit_raw };
+            lit_remap[idx] = lit;
             continue;
         };
         // Literals are visited in increasing order, so the first is smallest.
-        if (smallest[id] == null) smallest[id] = lit_raw;
-        lit_remap[idx] = .{ .raw = smallest[id].? };
+        if (smallest[id] == null) smallest[id] = lit;
+        lit_remap[idx] = smallest[id].?;
     }
     return lit_remap;
 }

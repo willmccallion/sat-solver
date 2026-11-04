@@ -181,13 +181,13 @@ pub const Assignment = struct {
 
     pub inline fn unassign(self: *Assignment, v: u32) void {
         self.vars[v] = .{};
-        self.lit_values[v << 1] = .unassigned;
-        self.lit_values[(v << 1) | 1] = .unassigned;
+        self.lit_values[Literal.init(v, false).raw] = .unassigned;
+        self.lit_values[Literal.init(v, true).raw] = .unassigned;
     }
 
     inline fn setLitValues(self: *Assignment, v: u32, is_true: bool) void {
-        self.lit_values[v << 1] = if (is_true) .true else .false;
-        self.lit_values[(v << 1) | 1] = if (is_true) .false else .true;
+        self.lit_values[Literal.init(v, false).raw] = if (is_true) .true else .false;
+        self.lit_values[Literal.init(v, true).raw] = if (is_true) .false else .true;
     }
 
     pub fn pushDecisionLevel(self: *Assignment) !void {
