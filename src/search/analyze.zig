@@ -6,8 +6,8 @@ const Conflict = core.clause.Conflict;
 const Reason = core.assignment.Reason;
 const Level = core.assignment.Level;
 
-const state = @import("state.zig");
-const Solver = state.Solver;
+const solver_mod = @import("solver.zig");
+const Solver = solver_mod.Solver;
 
 // The false literals whose assignment forced the literal that `reason`
 // implies: every literal of the reason clause after the implied one at

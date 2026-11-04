@@ -5,14 +5,13 @@ const Level = core.assignment.Level;
 const Conflict = core.clause.Conflict;
 
 const backtrack_mod = @import("backtrack.zig");
-const state = @import("state.zig");
-const Solver = state.Solver;
 const solver_mod = @import("solver.zig");
+const Solver = solver_mod.Solver;
 const Result = solver_mod.Result;
 
 const reduce_mod = @import("inprocess/reduce.zig");
 
-pub fn solve(self: *Solver) state.Error!Result {
+pub fn solve(self: *Solver) solver_mod.Error!Result {
     if (self.unsat_at_init) {
         try self.proof.empty();
         return .unsat;

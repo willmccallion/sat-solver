@@ -1,5 +1,5 @@
-const state = @import("state.zig");
-const Solver = state.Solver;
+const solver_mod = @import("solver.zig");
+const Solver = solver_mod.Solver;
 const Level = @import("core").assignment.Level;
 
 // Chronological backtracking gate (Möhle/Biere 2018, Kissat default).

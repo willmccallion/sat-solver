@@ -6,8 +6,8 @@ const clause_mod = core.clause;
 
 const Schedule = @import("heuristics").schedule.Schedule;
 
-const state = @import("../state.zig");
-const Solver = state.Solver;
+const solver_mod = @import("../solver.zig");
+const Solver = solver_mod.Solver;
 
 // ReduceDB cadence — fires on its own conflict-count budget, independent
 // of restarts. The interval grows by a fixed step each trigger so long
@@ -34,7 +34,7 @@ const glue_lbd: u32 = 2;
 // ClauseRefs. BCP never visits them because we also strip their watchers
 // from every watcher list. Arena compaction (see `compact`) reclaims the
 // holes on a separate cadence.
-pub fn reduceDB(self: *Solver) state.Error!void {
+pub fn reduceDB(self: *Solver) solver_mod.Error!void {
     std.debug.assert(self.assignment.level == .root);
 
     const Candidate = struct { cref: ClauseRef, lbd: u32 };

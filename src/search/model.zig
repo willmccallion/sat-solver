@@ -1,8 +1,8 @@
 const core = @import("core");
 const Formula = core.cnf.Formula;
 
-const state = @import("state.zig");
-const Solver = state.Solver;
+const solver_mod = @import("solver.zig");
+const Solver = solver_mod.Solver;
 const bve = @import("inprocess/bve.zig");
 const equiv = @import("inprocess/equiv.zig");
 

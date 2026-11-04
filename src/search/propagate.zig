@@ -5,8 +5,8 @@ const Conflict = clause_mod.Conflict;
 const Watcher = clause_mod.Watcher;
 const Reason = core.assignment.Reason;
 
-const state = @import("state.zig");
-const Solver = state.Solver;
+const solver_mod = @import("solver.zig");
+const Solver = solver_mod.Solver;
 const Result = @import("solver.zig").Result;
 
 // Two-watched-literal propagation with a specialized binary-clause fast
@@ -146,7 +146,7 @@ pub fn propagate(self: *Solver) std.mem.Allocator.Error!?Conflict {
 
 // Propagates at level 0, where a conflict refutes the formula: logs the
 // empty clause and returns .unsat.
-pub fn propagateAtRoot(self: *Solver) state.Error!?Result {
+pub fn propagateAtRoot(self: *Solver) solver_mod.Error!?Result {
     std.debug.assert(self.assignment.level == .root);
     if ((try self.propagate()) == null) return null;
     try self.proof.empty();

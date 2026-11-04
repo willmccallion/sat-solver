@@ -9,9 +9,8 @@ const clause_mod = core.clause;
 const Schedule = @import("heuristics").schedule.Schedule;
 
 const common = @import("common.zig");
-const state = @import("../state.zig");
-const Solver = state.Solver;
 const solver_mod = @import("../solver.zig");
+const Solver = solver_mod.Solver;
 const Result = solver_mod.Result;
 
 // Equivalent-literal substitution via binary-implication-graph SCC.
@@ -41,7 +40,7 @@ const Result = solver_mod.Result;
 
 pub const schedule: Schedule = .every(10_000, .by_half);
 
-pub fn equiv(self: *Solver) state.Error!?Result {
+pub fn equiv(self: *Solver) solver_mod.Error!?Result {
     std.debug.assert(self.assignment.level == .root);
     if (try self.propagateAtRoot()) |r| return r;
     if (self.num_vars == 0) return null;
@@ -345,7 +344,7 @@ const Rewrite = struct {
         for (self.binaries.items) |rewrite| try proof.deleteClause(&rewrite.old);
     }
 
-    fn apply(self: *const Rewrite) !state.RootUnit {
+    fn apply(self: *const Rewrite) !solver_mod.RootUnit {
         const solver = self.solver;
         for (self.long.items) |rewrite| {
             solver.arena.markDeleted(rewrite.old_cref);

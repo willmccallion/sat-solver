@@ -8,9 +8,8 @@ const clause_mod = core.clause;
 const Schedule = @import("heuristics").schedule.Schedule;
 
 const common = @import("common.zig");
-const state = @import("../state.zig");
-const Solver = state.Solver;
 const solver_mod = @import("../solver.zig");
+const Solver = solver_mod.Solver;
 const Result = solver_mod.Result;
 
 // Vivification — at level 0, walk low-LBD learned clauses and assume the
@@ -39,7 +38,7 @@ const lbd_cap: u32 = 6;
 // watchers dangling in `watchers[...]` pointing at deleted arena clauses.
 // Propagate does not check `isDeleted`, so we must sweep
 // watcher lists before returning.
-pub fn vivify(self: *Solver) state.Error!?Result {
+pub fn vivify(self: *Solver) solver_mod.Error!?Result {
     std.debug.assert(self.assignment.level == .root);
     if (try self.propagateAtRoot()) |r| return r;
     self.stats.vivify_passes += 1;

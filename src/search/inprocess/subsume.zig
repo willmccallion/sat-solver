@@ -7,9 +7,8 @@ const clause_mod = core.clause;
 const Schedule = @import("heuristics").schedule.Schedule;
 
 const common = @import("common.zig");
-const state = @import("../state.zig");
-const Solver = state.Solver;
 const solver_mod = @import("../solver.zig");
+const Solver = solver_mod.Solver;
 const Result = solver_mod.Result;
 
 // Backward subsumption + self-subsuming resolution (SSR).
@@ -59,7 +58,7 @@ const max_revisits_per_clause: u8 = 4;
 
 // Inprocessing entry point, on a share of the propagations since the last
 // call. Returns .unsat if SSR derives an empty clause or a conflicting unit.
-pub fn subsume(self: *Solver) state.Error!?Result {
+pub fn subsume(self: *Solver) solver_mod.Error!?Result {
     if (try self.propagateAtRoot()) |r| return r;
     const share = common.propagationBudget(self.stats.propagations, &self.props_at_last_subsume, budget_share);
     return subsumeWithin(self, @max(inprocess_floor, share));
@@ -67,14 +66,14 @@ pub fn subsume(self: *Solver) state.Error!?Result {
 
 // Preprocessing entry point, on the large `preprocess_cap` budget because
 // no search has happened yet.
-pub fn preprocessSubsume(self: *Solver) state.Error!?Result {
+pub fn preprocessSubsume(self: *Solver) solver_mod.Error!?Result {
     if (try self.propagateAtRoot()) |r| return r;
     self.props_at_last_subsume = self.stats.propagations;
     return subsumeWithin(self, preprocess_cap);
 }
 
 // Subsumption and SSR stopping once `budget` candidate checks are spent.
-pub fn subsumeWithin(self: *Solver, budget: u64) state.Error!?Result {
+pub fn subsumeWithin(self: *Solver, budget: u64) solver_mod.Error!?Result {
     std.debug.assert(self.assignment.level == .root);
     self.stats.subsume_passes += 1;
 

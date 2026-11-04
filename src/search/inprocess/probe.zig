@@ -7,9 +7,8 @@ const Reason = core.assignment.Reason;
 const Schedule = @import("heuristics").schedule.Schedule;
 
 const common = @import("common.zig");
-const state = @import("../state.zig");
-const Solver = state.Solver;
 const solver_mod = @import("../solver.zig");
+const Solver = solver_mod.Solver;
 const Result = solver_mod.Result;
 
 // Failed literal probing (FLP) — cheapest inprocessing technique that
@@ -19,7 +18,7 @@ const Result = solver_mod.Result;
 // polarity is implied by the formula, so we assert it as a root-level
 // unit and DRAT-log the addition. Only runs at level 0 and only touches
 // the level-1 scratch trail, so it slots cleanly between a restart and
-// the next decision without disturbing the search state.
+// the next decision without disturbing the search solver_mod.
 //
 // `budget_share` controls how much work each probe call may do
 // relative to the propagations accumulated since the last probe; the
@@ -33,7 +32,7 @@ const max_probed_vars: usize = 1024;
 // follow-up propagation) derives an empty clause at level 0, otherwise
 // null. Expects self.level == 0, and propagates to a fixed point first,
 // since a probe at level 1 would claim any implication still pending.
-pub fn probe(self: *Solver) state.Error!?Result {
+pub fn probe(self: *Solver) solver_mod.Error!?Result {
     std.debug.assert(self.assignment.level == .root);
     if (try self.propagateAtRoot()) |r| return r;
     self.stats.probe_passes += 1;
