@@ -200,12 +200,19 @@ fn solveAndReport(
     defer solver.deinit();
     if (proof) |p| solver.setProofWriter(&p.writer.interface);
 
-    const result = solver.solve() catch |err|
-        return reportUnknown(stdout, "error: {s}", .{@errorName(err)});
+    const result = solver.solve() catch |err| switch (err) {
+        // Search writes nothing but the proof.
+        error.WriteFailed => return reportProofFailure(stdout, proof.?, err),
+        else => return reportUnknown(stdout, "error: {s}", .{@errorName(err)}),
+    };
     // Flushed explicitly, so a failed write is reported instead of lost.
-    if (proof) |p| p.writer.interface.flush() catch |err|
-        return reportUnknown(stdout, "error: cannot write proof: {s}", .{@errorName(p.writer.err orelse err)});
+    if (proof) |p| p.writer.interface.flush() catch |err| return reportProofFailure(stdout, p, err);
     return reportResult(stdout, &solver, &formula, result);
+}
+
+// Names the I/O error behind a failed proof write, such as NoSpaceLeft.
+fn reportProofFailure(out: *std.Io.Writer, proof: *const ProofFile, err: anyerror) !u8 {
+    return reportUnknown(out, "error: cannot write proof: {s}", .{@errorName(proof.writer.err orelse err)});
 }
 
 // The DRAT proof output. It must stay in place once created, since the

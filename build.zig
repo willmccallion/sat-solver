@@ -304,6 +304,14 @@ pub fn build(b: *std.Build) void {
         e2e_proof_write_failure.expectStdOutEqual("c error: cannot write proof: NoSpaceLeft\ns UNKNOWN\n");
         test_step.dependOn(&e2e_proof_write_failure.step);
 
+        // This proof outgrows its buffer, so the write fails during search.
+        const e2e_proof_search_write_failure = b.addRunArtifact(exe);
+        e2e_proof_search_write_failure.addArgs(&.{ "--proof", "/dev/full" });
+        e2e_proof_search_write_failure.addFileArg(b.path("tests/fixtures/pigeonhole_7_6.cnf"));
+        e2e_proof_search_write_failure.expectExitCode(0);
+        e2e_proof_search_write_failure.expectStdOutEqual("c error: cannot write proof: NoSpaceLeft\ns UNKNOWN\n");
+        test_step.dependOn(&e2e_proof_search_write_failure.step);
+
         const e2e_stdout_write_failure = b.addSystemCommand(&.{ "sh", "-c", "exec \"$0\" \"$1\" > /dev/full" });
         e2e_stdout_write_failure.addArtifactArg(exe);
         e2e_stdout_write_failure.addFileArg(b.path("tests/fixtures/trivial_sat.cnf"));
