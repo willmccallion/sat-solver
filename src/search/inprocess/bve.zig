@@ -392,34 +392,21 @@ const Elimination = struct {
 // the proof writer (if any) has already seen the final add-sequence.
 pub fn reconstructEliminatedVars(self: *Solver) void {
     const frames = self.bve_witness_frames.items;
-    if (frames.len == 0) return;
-
     var idx: usize = frames.len;
     while (idx > 0) {
         idx -= 1;
-        const frame = frames[idx];
-        const pivot = frame.pivot;
-
-        // Walk every -pivot clause; confirm each has a satisfied
-        // non-pivot literal. If any clause lacks one, pivot=true would
-        // leave that clause unsatisfied, so we must flip to pivot=false.
-        var pick_true = true;
-        for (frame.neg_start..frame.end) |i| {
-            const clause_lits = self.bve_witness.get(i);
-            var clause_satisfied = false;
-            for (clause_lits) |lit| {
-                if (lit.variable() == pivot) continue;
-                if (self.assignment.valueOfLiteral(lit) == .true) {
-                    clause_satisfied = true;
-                    break;
-                }
-            }
-            if (!clause_satisfied) {
-                pick_true = false;
-                break;
-            }
-        }
-
-        self.assignment.setValue(pivot, pick_true);
+        self.assignment.setValue(frames[idx].pivot, negativeSideHolds(self, frames[idx]));
     }
+}
+
+// Whether every ¬pivot clause of `frame` has a true literal besides the
+// pivot's, so that pivot = true satisfies both sides.
+fn negativeSideHolds(self: *const Solver, frame: state.WitnessFrame) bool {
+    for (frame.neg_start..frame.end) |i| {
+        const holds = for (self.bve_witness.get(i)) |lit| {
+            if (lit.variable() != frame.pivot and self.assignment.valueOfLiteral(lit) == .true) break true;
+        } else false;
+        if (!holds) return false;
+    }
+    return true;
 }
