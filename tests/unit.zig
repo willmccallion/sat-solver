@@ -71,7 +71,7 @@ const trivial_sat_src = @embedFile("fixtures/trivial_sat.cnf");
 const trivial_unsat_src = @embedFile("fixtures/trivial_unsat.cnf");
 const small_sat_src = @embedFile("fixtures/small_sat.cnf");
 
-test "literal encoding round-trips" {
+test "a literal reports the variable and sign it was built from" {
     const lit = Literal.init(7, false);
     try testing.expectEqual(@as(u32, 7), lit.variable());
     try testing.expectEqual(false, lit.isNegative());
@@ -83,14 +83,14 @@ test "literal encoding round-trips" {
     try testing.expect(neg.negate().eql(lit));
 }
 
-test "literal fromDimacs / toDimacs round-trip" {
+test "a literal converts to and from DIMACS unchanged" {
     try testing.expectEqual(@as(i32, 3), Literal.fromDimacs(3).toDimacs());
     try testing.expectEqual(@as(i32, -3), Literal.fromDimacs(-3).toDimacs());
     try testing.expectEqual(@as(i32, 1), Literal.fromDimacs(1).toDimacs());
     try testing.expectEqual(@as(i32, -42), Literal.fromDimacs(-42).toDimacs());
 }
 
-test "parser: trivial_sat fixture" {
+test "parser reads trivial_sat's variable and clause counts" {
     var formula = try parseSource(trivial_sat_src);
     defer formula.deinit();
     try testing.expectEqual(@as(u32, 2), formula.num_vars);
@@ -98,7 +98,7 @@ test "parser: trivial_sat fixture" {
     try testing.expectEqual(@as(usize, 2), formula.clause(0).len);
 }
 
-test "parser: trivial_unsat fixture" {
+test "parser reads trivial_unsat's literals in order" {
     var formula = try parseSource(trivial_unsat_src);
     defer formula.deinit();
     try testing.expectEqual(@as(u32, 1), formula.num_vars);
@@ -108,14 +108,14 @@ test "parser: trivial_unsat fixture" {
     try testing.expectEqual(@as(i32, -1), formula.clause(1)[0].toDimacs());
 }
 
-test "parser: small_sat fixture" {
+test "parser reads every clause of small_sat" {
     var formula = try parseSource(small_sat_src);
     defer formula.deinit();
     try testing.expectEqual(@as(u32, 10), formula.num_vars);
     try testing.expectEqual(@as(usize, 20), formula.clauseCount());
 }
 
-test "parser: tokens split across reader refills parse the same as one buffer" {
+test "parser reads tokens split across reader refills as if from one buffer" {
     var buffer: [16]u8 = undefined;
     var chunked: std.testing.Reader = .init(&buffer, &.{.{ .buffer = small_sat_src }});
     chunked.artificial_limit = .limited(3);
@@ -130,7 +130,7 @@ test "parser: tokens split across reader refills parse the same as one buffer" {
     try testing.expectEqualSlices(Literal, expected.clauses.literals.items, formula.clauses.literals.items);
 }
 
-test "parser: clauses span multiple lines" {
+test "parser reads a clause that spans several lines" {
     const src =
         \\p cnf 3 2
         \\1 2
@@ -145,7 +145,7 @@ test "parser: clauses span multiple lines" {
     try testing.expectEqual(@as(usize, 3), formula.clause(1).len);
 }
 
-test "parser: tolerates blank lines, tabs, CRLF, extra whitespace" {
+test "parser accepts blank lines, tabs, CRLF and extra whitespace" {
     const src = "c leading comment\r\n\r\np cnf 2 1\r\n\t1  \t -2 \t0 \r\n";
     var formula = try parseSource(src);
     defer formula.deinit();
@@ -154,7 +154,7 @@ test "parser: tolerates blank lines, tabs, CRLF, extra whitespace" {
     try testing.expectEqual(@as(usize, 2), formula.clause(0).len);
 }
 
-test "parser: rejects missing p cnf header" {
+test "parser rejects input without a p cnf header" {
     const src =
         \\c just a comment
         \\1 2 0
@@ -162,7 +162,7 @@ test "parser: rejects missing p cnf header" {
     try testing.expectError(error.MissingHeader, parseSource(src));
 }
 
-test "parser: rejects unterminated clause" {
+test "parser rejects a clause missing its 0 terminator" {
     const src =
         \\p cnf 3 1
         \\1 2 3
@@ -170,7 +170,7 @@ test "parser: rejects unterminated clause" {
     try testing.expectError(error.UnterminatedClause, parseSource(src));
 }
 
-test "parser: rejects non-integer token" {
+test "parser rejects a token that is not an integer" {
     const src =
         \\p cnf 2 1
         \\1 foo 0
@@ -178,7 +178,7 @@ test "parser: rejects non-integer token" {
     try testing.expectError(error.InvalidToken, parseSource(src));
 }
 
-test "parser: rejects variable out of range" {
+test "parser rejects a variable above the header's count" {
     const src =
         \\p cnf 2 1
         \\1 7 0
@@ -186,7 +186,7 @@ test "parser: rejects variable out of range" {
     try testing.expectError(error.VariableOutOfRange, parseSource(src));
 }
 
-test "parser: stops at SATLIB % end-of-content marker" {
+test "parser stops at SATLIB's % end-of-content marker" {
     const src =
         \\p cnf 2 1
         \\1 2 0
@@ -199,7 +199,7 @@ test "parser: stops at SATLIB % end-of-content marker" {
     try testing.expectEqual(@as(usize, 1), formula.clauseCount());
 }
 
-test "parser: rejects clause count mismatch > 5% (malformed DIMACS)" {
+test "parser rejects a clause count more than 5% off the header" {
     // Declares 10 clauses but only provides 2 — mimics the malformed
     // SATLIB dubois100.cnf which is missing `0` terminators and gets
     // silently joined into a handful of giant tautology clauses.
@@ -223,7 +223,7 @@ test "parser accepts a clause count within 5% of the header" {
     try testing.expectEqual(@as(usize, 19), formula.clauseCount());
 }
 
-test "parser: drops tautological clauses but counts them against the header" {
+test "parser drops tautological clauses but counts them against the header" {
     const src =
         \\p cnf 3 2
         \\1 -1 3 0
@@ -235,7 +235,7 @@ test "parser: drops tautological clauses but counts them against the header" {
     try testing.expectEqual(@as(usize, 2), formula.clause(0).len);
 }
 
-test "parser: merges duplicate literals within a clause" {
+test "parser merges duplicate literals within a clause" {
     const src =
         \\p cnf 3 1
         \\2 -3 2 2 0
@@ -248,7 +248,7 @@ test "parser: merges duplicate literals within a clause" {
     try testing.expect(clause[1].eql(Literal.fromDimacs(-3)));
 }
 
-test "parser: rejects malformed p line" {
+test "parser rejects a malformed p line" {
     const src =
         \\p cnf 2
         \\1 0
@@ -256,18 +256,18 @@ test "parser: rejects malformed p line" {
     try testing.expectError(error.InvalidHeader, parseSource(src));
 }
 
-test "solver: trivial_sat returns sat with verified model" {
+test "solver finds a model of trivial_sat" {
     const out = try solveSource(trivial_sat_src);
     try testing.expectEqual(solver_mod.Result.sat, out.result);
     try testing.expect(out.verified);
 }
 
-test "solver: trivial_unsat returns unsat" {
+test "solver refutes trivial_unsat" {
     const out = try solveSource(trivial_unsat_src);
     try testing.expectEqual(solver_mod.Result.unsat, out.result);
 }
 
-test "solver: small_sat returns sat with verified model" {
+test "solver finds a model of small_sat" {
     const out = try solveSource(small_sat_src);
     try testing.expectEqual(solver_mod.Result.sat, out.result);
     try testing.expect(out.verified);
@@ -279,7 +279,7 @@ fn initAndSolve(allocator: std.mem.Allocator, formula: *const cnf.Formula) !void
     _ = try solver.solve();
 }
 
-test "solver: frees what it allocated when any allocation fails" {
+test "solver frees what it allocated when any allocation fails" {
     // Four pigeons in three holes, plus a unit: init loads every clause
     // kind and solve learns clauses before refuting it.
     var formula = try parseSource(
@@ -314,13 +314,13 @@ test "solver: frees what it allocated when any allocation fails" {
     try testing.checkAllAllocationFailures(testing.allocator, initAndSolve, .{&formula});
 }
 
-test "solver: empty formula is trivially sat" {
+test "solver finds the empty formula satisfiable" {
     const out = try solveSource("p cnf 0 0\n");
     try testing.expectEqual(solver_mod.Result.sat, out.result);
     try testing.expect(out.verified);
 }
 
-test "solver: tautological and duplicate-literal clauses yield a correct model" {
+test "solver finds a correct model despite tautological and duplicate-literal clauses" {
     // Fuzzer-minimized. Treating (-2 1 2) as a subsumer once produced the
     // model -1 -2 -3, which falsifies (2 3 1).
     const src =
@@ -335,7 +335,7 @@ test "solver: tautological and duplicate-literal clauses yield a correct model" 
     try testing.expect(out.verified);
 }
 
-test "solver: 3-literal unsat (pigeonhole-ish)" {
+test "solver refutes all eight clauses over three variables" {
     // Forces all eight clauses over x1,x2,x3 — i.e. every assignment falsifies
     // some clause. Exercises conflict analysis and learning.
     const src =
@@ -353,7 +353,7 @@ test "solver: 3-literal unsat (pigeonhole-ish)" {
     try testing.expectEqual(solver_mod.Result.unsat, out.result);
 }
 
-test "solver: chained implications propagate to sat" {
+test "solver satisfies a chain of implications from a unit" {
     // 1 -> 2 -> 3 -> 4, with x1 forced true. Should be solved by unit
     // propagation alone (no decisions beyond the forced unit).
     const src =
@@ -376,7 +376,7 @@ fn countLiveLongClauses(solver: *solver_mod.Solver) usize {
     return count;
 }
 
-test "equiv: a literal equivalent to its negation is refuted with a RUP unit first" {
+test "equiv refutes a literal equivalent to its negation with a RUP unit first" {
     // 1 ≡ 2 and 1 ≡ ¬2 put 1 and ¬1 in one SCC of the implication graph.
     const src =
         \\p cnf 2 4
@@ -408,7 +408,7 @@ fn hasEliminated(solver: *solver_mod.Solver, var_idx: u32) bool {
 // literal sharing ℓ's bit. -34 (raw 67) shares -2's (raw 3), so the SSR
 // tests below put -34 in each clause that (1 -2) strengthens on 2.
 
-test "subsume: trivial — (1 2 3) subsumed by (1 2)" {
+test "subsume deletes a long clause that a binary subsumes" {
     // (1 2) is stored as a binary in bin_watchers; (1 2 3) is the only
     // long clause in the arena. preprocessSubsume should mark (1 2 3)
     // deleted via the binary-subsumer pass.
@@ -429,7 +429,7 @@ test "subsume: trivial — (1 2 3) subsumed by (1 2)" {
     try testing.expectEqual(@as(u64, 1), solver.stats.subsumed_clauses);
 }
 
-test "subsume: learned clause that subsumes an irredundant clause survives reduceDB" {
+test "a learned clause that subsumes an irredundant one becomes irredundant and survives reduceDB" {
     const src =
         \\p cnf 4 1
         \\1 2 3 4 0
@@ -457,7 +457,7 @@ test "subsume: learned clause that subsumes an irredundant clause survives reduc
     try testing.expectEqual(@as(usize, 2), countLiveLongClauses(solver));
 }
 
-test "subsume: SSR to unit — (1 2) and (1 -2) derive unit 1" {
+test "subsume strengthens a binary to a unit against its resolution partner" {
     // Binary subsumer (1, 2) resolves with its sibling (1, -2) on 2 to
     // derive the level-0 unit (1). Both binaries should leave
     // bin_watchers, stats.strengthened_clauses increments.
@@ -477,7 +477,7 @@ test "subsume: SSR to unit — (1 2) and (1 -2) derive unit 1" {
     try testing.expectEqual(@as(u64, 1), solver.stats.strengthened_clauses);
 }
 
-test "subsume: SSR to binary — long clause strengthened to a new binary" {
+test "subsume strengthens a long clause to a new binary" {
     // SSR case: binary (1 -2) resolves with the 3-literal clause
     // (1 2 -34) on variable 2 to derive the binary (1 -34). The old
     // 3-literal clause gets the deleted bit set, and the new binary is
@@ -558,7 +558,7 @@ test "subsume stops at its budget partway through one binary's occurrences" {
     try testing.expectEqual(@as(u64, 11), solver.stats.subsumed_clauses);
 }
 
-test "subsume: a level-0 reason clause is never a subsumption target" {
+test "subsume never deletes a clause that is a level-0 reason" {
     // The units make (1 2 3 4) the reason for 1; (1 2 3) subsumes it.
     const src =
         \\p cnf 4 5
@@ -595,7 +595,7 @@ test "subsume: a level-0 reason clause is never a subsumption target" {
     try testing.expect(!solver.clauseIsDeleted(locked_cref));
 }
 
-test "subsume: unsat — (1 2), (1 -2), (-1) derives contradiction" {
+test "subsume refutes the formula when a unit it derives conflicts at level 0" {
     // SSR derives the unit (1) from (1 2) ⊕ (1 -2). With (-1) also in
     // the formula, the level-0 propagation that subsume runs at the
     // end finds the conflict and returns .unsat.
@@ -609,14 +609,11 @@ test "subsume: unsat — (1 2), (1 -2), (-1) derives contradiction" {
     defer t.deinit();
     const solver = &t.solver;
 
-    // Propagate the (-1) unit first so BCP is at fixpoint before
-    // preprocessSubsume is invoked (invariant required by subsume).
-
     const r = try solver.preprocessSubsume();
     try testing.expectEqual(solver_mod.Result.unsat, r.?);
 }
 
-test "bve: resolves (1 2) and (-1 3) into (2 3)" {
+test "bve replaces a variable's clauses with their resolvent" {
     // Vars 2 and 3 each occur in two -2 / -3 clauses, so var 1 has the
     // smallest occurrence product among the non-pure variables and is
     // resolved before 2 and 3 become pure. Vars 4..11 are pure from the
@@ -641,7 +638,7 @@ test "bve: resolves (1 2) and (-1 3) into (2 3)" {
     try testing.expectEqual(@as(u64, 1), solver.stats.resolvents_added);
 }
 
-test "bve: growth skip — eliminating a var would create more resolvents than originals" {
+test "bve keeps a variable whose elimination would add clauses" {
     // Two +1 clauses and two -1 clauses, chosen so none of the four
     // resolvents is tautological and all are length ≤ 16. 2+2 originals
     // vs 4 resolvents: 4 > 2+2+0 so the growth test skips the variable.
@@ -667,7 +664,7 @@ test "bve: growth skip — eliminating a var would create more resolvents than o
     try testing.expect(!hasEliminated(solver, 0));
 }
 
-test "bve: length cap — resolvent would exceed max_resolvent_len, skip" {
+test "bve keeps a variable whose resolvent would exceed the length cap" {
     // Pair one +1 clause of length 9 with one -1 clause of length 9,
     // all variables distinct, so the unique resolvent has length 16.
     // That's ≤ 16, still allowed. Bump to length 10 × length 9 → 17,
@@ -707,7 +704,7 @@ test "bve refutes the formula when a resolvent is false under a unit it derived 
     try testing.expectEqual(@as(u64, 1), solver.stats.eliminated_vars);
 }
 
-test "bve: sat reconstruction end-to-end on a formula with an eliminated var" {
+test "bve gives an eliminated variable a value that satisfies its clauses" {
     // BVE eliminates var 1 (its clauses are satisfied at level 0 by the
     // units, so the only resolvent is dropped); the reconstructed value
     // must still satisfy (1 2) and (-1 3).
@@ -729,7 +726,7 @@ test "bve: sat reconstruction end-to-end on a formula with an eliminated var" {
     try testing.expectEqual(@as(?usize, null), solver.findFalsifiedClause(&t.formula));
 }
 
-test "bve: locked protection — a clause that reasons a level-0 unit stays untouched" {
+test "bve never eliminates through a clause that is a level-0 reason" {
     // Setup: (1 2 3), unit (-2), unit (-3). BCP forces x1=true with
     // reason = cref(1 2 3). That clause is locked and must not be
     // eliminated away. Variable 1 has +1 only in the locked clause,
