@@ -571,9 +571,10 @@ fn subsumeClause(
     self.stats.subsumed += 1;
 }
 
-// Self-subsuming resolution on a long clause D. Removes `neg_lit` from
-// D's literals, emits DRAT add-new then delete-old, and transitions to
-// the appropriate length:
+// Self-subsuming resolution on a long clause D. Removes `neg_lit` and
+// any literal false at level 0 from D's literals (deleting D instead if
+// one is true there), emits DRAT add-new then delete-old, and transitions
+// to the appropriate length:
 //   0  → derive empty clause (.unsat).
 //   1  → assign unit at level 0 (or conflict → unsat).
 //   2  → install into bin_watchers.
@@ -602,7 +603,13 @@ fn strengthenLongClause(
 
     try new_lits.ensureTotalCapacity(self.allocator, d_lits_snapshot.len);
     for (d_lits_snapshot) |lit| {
-        if (lit.raw != neg_lit.raw) new_lits.appendAssumeCapacity(lit);
+        if (lit.raw == neg_lit.raw) continue;
+        switch (self.assignment.valueOfLiteral(lit)) {
+            .true => return subsumeClause(self, d_cref, any_deleted),
+            // Already propagated at level 0, so a watch on it would never fire.
+            .false => {},
+            .unassigned => new_lits.appendAssumeCapacity(lit),
+        }
     }
 
     const new_len = new_lits.items.len;

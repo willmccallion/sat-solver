@@ -1026,3 +1026,34 @@ test "probe never assigns an eliminated variable" {
         try testing.expectEqual(phases_before[v], solver.assignment.saved_phases[v]);
     }
 }
+
+test "a long clause strengthened by subsume propagates its last non-false literal" {
+    // With 34 and 35 true at level 0, SSR turns (1 2 -34 -35) into
+    // (1 -34 -35), which forces 1.
+    var formula = try parseSource("p cnf 35 5\n1 2 -34 -35 0\n1 -2 0\n-2 5 6 0\n34 0\n35 0\n");
+    defer formula.deinit();
+    var solver = try solver_mod.Solver.init(testing.allocator, &formula);
+    defer solver.deinit();
+    _ = try solver.propagate();
+
+    const r = try solver.preprocessSubsume();
+
+    try testing.expect(r == null);
+    try testing.expect(solver.stats.strengthened >= 1);
+    try testing.expectEqual(assignment_mod.Value.true, solver.assignment.valueOfVar(0));
+}
+
+test "a clause subsume strengthens to a binary with a level-0 false literal propagates" {
+    // SSR turns (1 2 -34) into (1 -34), and 34 is true at level 0.
+    var formula = try parseSource("p cnf 34 4\n1 2 -34 0\n1 -2 0\n-2 5 6 0\n34 0\n");
+    defer formula.deinit();
+    var solver = try solver_mod.Solver.init(testing.allocator, &formula);
+    defer solver.deinit();
+    _ = try solver.propagate();
+
+    const r = try solver.preprocessSubsume();
+
+    try testing.expect(r == null);
+    try testing.expect(solver.stats.strengthened >= 1);
+    try testing.expectEqual(assignment_mod.Value.true, solver.assignment.valueOfVar(0));
+}
