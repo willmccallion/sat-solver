@@ -45,6 +45,11 @@ fn watchdogFn(ctx: WatchdogCtx) void {
     }
 }
 
+const Options = struct {
+    timeout_sec: u32,
+    dirs: []const []const u8,
+};
+
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
@@ -59,224 +64,170 @@ pub fn main(init: std.process.Init) !void {
     const stderr = &stderr_writer.interface;
     defer stderr.flush() catch {};
 
-    const args = try init.minimal.args.toSlice(init.arena.allocator());
+    const arena = init.arena.allocator();
+    const options = try parseArgs(arena, try init.minimal.args.toSlice(arena), stderr);
+    const timeout_ns: u64 = @as(u64, options.timeout_sec) * std.time.ns_per_s;
 
+    var tally: Tally = .{};
+    defer tally.per_instance_ns.deinit(gpa);
+    const start = std.Io.Clock.Timestamp.now(io, .awake);
+    for (options.dirs) |dir_path| try runDirectory(gpa, io, dir_path, timeout_ns, &tally, stderr);
+    const elapsed_ms = @as(f64, @floatFromInt(start.untilNow(io).raw.nanoseconds)) / 1e6;
+    try tally.printSummary(stdout, elapsed_ms, options.timeout_sec);
+}
+
+// Prints the message and exits; with stderr failing too there is nowhere
+// left to report that.
+fn fatal(stderr: *std.Io.Writer, comptime fmt: []const u8, args: anytype, exit_code: u8) noreturn {
+    stderr.print(fmt, args) catch {};
+    stderr.flush() catch {};
+    std.process.exit(exit_code);
+}
+
+fn parseArgs(arena: std.mem.Allocator, args: []const []const u8, stderr: *std.Io.Writer) !Options {
     var timeout_sec: u32 = 0;
     var dirs: std.ArrayList([]const u8) = .empty;
-    defer dirs.deinit(gpa);
-
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
-        const a = args[i];
-        if (std.mem.eql(u8, a, "--timeout-sec")) {
-            i += 1;
-            if (i >= args.len) {
-                try stderr.writeAll("sat-bench: --timeout-sec requires a value\n");
-                try stderr.flush();
-                std.process.exit(1);
-            }
-            timeout_sec = std.fmt.parseInt(u32, args[i], 10) catch {
-                try stderr.print("sat-bench: invalid --timeout-sec value `{s}`\n", .{args[i]});
-                try stderr.flush();
-                std.process.exit(1);
-            };
-        } else {
-            try dirs.append(gpa, a);
+        const arg = args[i];
+        if (!std.mem.eql(u8, arg, "--timeout-sec")) {
+            try dirs.append(arena, arg);
+            continue;
         }
+        i += 1;
+        if (i >= args.len) fatal(stderr, "sat-bench: --timeout-sec requires a value\n", .{}, 1);
+        timeout_sec = std.fmt.parseInt(u32, args[i], 10) catch
+            fatal(stderr, "sat-bench: invalid --timeout-sec value `{s}`\n", .{args[i]}, 1);
     }
-
-    if (dirs.items.len == 0) {
-        try stderr.writeAll(
-            "usage: sat-bench [--timeout-sec N] <dir-of-cnfs> [dir-of-cnfs ...]\n",
-        );
-        try stderr.flush();
-        std.process.exit(1);
-    }
-
-    var total: u32 = 0;
-    var sat_count: u32 = 0;
-    var unsat_count: u32 = 0;
-    var unknown_count: u32 = 0;
-    var agg_stats: solver_mod.Stats = .{};
-
-    // Per-instance timings (ns) for distribution. Bounded memory:
-    // a few tens of thousands of instances × 8 bytes is fine.
-    var per_instance_ns: std.ArrayList(u64) = .empty;
-    defer per_instance_ns.deinit(gpa);
-
-    // PAR-2 accumulator in ns. Solved instance contributes its solve
-    // time; unsolved contributes 2 × timeout. Matches SAT Competition
-    // scoring exactly. Collapses to raw wall time when timeout_sec=0.
-    // A u64 of nanoseconds overflows only after 584 years.
-    var par2_ns: u64 = 0;
-    const timeout_ns: u64 = @as(u64, timeout_sec) * std.time.ns_per_s;
-
-    const start = std.Io.Clock.Timestamp.now(io, .awake);
-
-    for (dirs.items) |dir_path| {
-        try runDirectory(
-            gpa,
-            io,
-            dir_path,
-            timeout_ns,
-            &total,
-            &sat_count,
-            &unsat_count,
-            &unknown_count,
-            &agg_stats,
-            &per_instance_ns,
-            &par2_ns,
-            stderr,
-        );
-    }
-
-    const elapsed_ms = @as(f64, @floatFromInt(start.untilNow(io).raw.nanoseconds)) / 1e6;
-    const per_inst_ms: f64 = if (total > 0)
-        elapsed_ms / @as(f64, @floatFromInt(total))
-    else
-        0;
-
-    try stdout.print(
-        "solved {d} instances: {d} SAT, {d} UNSAT, {d} unknown\n" ++
-            "total {d:.1} ms ({d:.3} ms/instance)\n",
-        .{ total, sat_count, unsat_count, unknown_count, elapsed_ms, per_inst_ms },
-    );
-
-    // Distribution: sort per-instance times, report min / p50 / p90 /
-    // p99 / max. Cheap for thousands of instances.
-    if (per_instance_ns.items.len > 0) {
-        std.mem.sort(u64, per_instance_ns.items, {}, std.sort.asc(u64));
-        const n = per_instance_ns.items.len;
-        const min = per_instance_ns.items[0];
-        const p50 = per_instance_ns.items[n / 2];
-        const p90 = per_instance_ns.items[(n * 9) / 10];
-        const p99 = per_instance_ns.items[(n * 99) / 100];
-        const max = per_instance_ns.items[n - 1];
-        try stdout.print(
-            "dist_ms: min={d:.3} p50={d:.3} p90={d:.3} p99={d:.3} max={d:.3}\n",
-            .{
-                nsToMs(min),
-                nsToMs(p50),
-                nsToMs(p90),
-                nsToMs(p99),
-                nsToMs(max),
-            },
-        );
-    }
-
-    try stdout.writeAll("stats:");
-    inline for (comptime std.meta.fieldNames(solver_mod.Stats)) |name| {
-        try stdout.print(" {s}={d}", .{ name, @field(agg_stats, name) });
-    }
-    try stdout.writeAll("\n");
-
-    // Peak RSS from getrusage. On Linux ru_maxrss is in kilobytes.
-    const ru = std.posix.getrusage(std.posix.rusage.SELF);
-    try stdout.print("peak_rss_kb: {d}\n", .{ru.maxrss});
-
-    const par2_s: f64 = @as(f64, @floatFromInt(par2_ns)) / 1e9;
-    try stdout.print("par2_s: {d:.3}\n", .{par2_s});
-    try stdout.print("timeout_s: {d}\n", .{timeout_sec});
+    if (dirs.items.len == 0) fatal(stderr, "usage: sat-bench [--timeout-sec N] <dir-of-cnfs> [dir-of-cnfs ...]\n", .{}, 1);
+    return .{ .timeout_sec = timeout_sec, .dirs = dirs.items };
 }
+
+// What every instance solved so far adds up to.
+const Tally = struct {
+    total: u32 = 0,
+    sat_count: u32 = 0,
+    unsat_count: u32 = 0,
+    unknown_count: u32 = 0,
+    stats: solver_mod.Stats = .{},
+    per_instance_ns: std.ArrayList(u64) = .empty,
+    // PAR-2, as SAT Competition scores it: a solved instance costs its
+    // solve time and an unsolved one twice the timeout, or with no timeout
+    // the time it ran. A u64 of nanoseconds overflows only after 584 years.
+    par2_ns: u64 = 0,
+
+    fn record(self: *Tally, gpa: std.mem.Allocator, result: solver_mod.Result, stats: *const solver_mod.Stats, ns: u64, timeout_ns: u64) !void {
+        try self.per_instance_ns.append(gpa, ns);
+        inline for (comptime std.meta.fieldNames(solver_mod.Stats)) |name| {
+            @field(self.stats, name) += @field(stats, name);
+        }
+        self.total += 1;
+        switch (result) {
+            .sat => self.sat_count += 1,
+            .unsat => self.unsat_count += 1,
+            .unknown => self.unknown_count += 1,
+        }
+        self.par2_ns += if (result == .unknown and timeout_ns > 0) 2 * timeout_ns else ns;
+    }
+
+    fn printSummary(self: *Tally, out: *std.Io.Writer, elapsed_ms: f64, timeout_sec: u32) !void {
+        const per_inst_ms: f64 = if (self.total > 0) elapsed_ms / @as(f64, @floatFromInt(self.total)) else 0;
+        try out.print(
+            "solved {d} instances: {d} SAT, {d} UNSAT, {d} unknown\n" ++
+                "total {d:.1} ms ({d:.3} ms/instance)\n",
+            .{ self.total, self.sat_count, self.unsat_count, self.unknown_count, elapsed_ms, per_inst_ms },
+        );
+        try self.printDistribution(out);
+
+        try out.writeAll("stats:");
+        inline for (comptime std.meta.fieldNames(solver_mod.Stats)) |name| {
+            try out.print(" {s}={d}", .{ name, @field(self.stats, name) });
+        }
+        try out.writeAll("\n");
+
+        // On Linux ru_maxrss is in kilobytes.
+        const ru = std.posix.getrusage(std.posix.rusage.SELF);
+        try out.print("peak_rss_kb: {d}\n", .{ru.maxrss});
+        try out.print("par2_s: {d:.3}\n", .{@as(f64, @floatFromInt(self.par2_ns)) / 1e9});
+        try out.print("timeout_s: {d}\n", .{timeout_sec});
+    }
+
+    fn printDistribution(self: *Tally, out: *std.Io.Writer) !void {
+        const times = self.per_instance_ns.items;
+        if (times.len == 0) return;
+        std.mem.sort(u64, times, {}, std.sort.asc(u64));
+        const n = times.len;
+        try out.print(
+            "dist_ms: min={d:.3} p50={d:.3} p90={d:.3} p99={d:.3} max={d:.3}\n",
+            .{ nsToMs(times[0]), nsToMs(times[n / 2]), nsToMs(times[(n * 9) / 10]), nsToMs(times[(n * 99) / 100]), nsToMs(times[n - 1]) },
+        );
+    }
+};
 
 fn nsToMs(ns: u64) f64 {
     return @as(f64, @floatFromInt(ns)) / 1e6;
 }
 
-fn runDirectory(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    dir_path: []const u8,
-    timeout_ns: u64,
-    total: *u32,
-    sat_count: *u32,
-    unsat_count: *u32,
-    unknown_count: *u32,
-    agg_stats: *solver_mod.Stats,
-    per_instance_ns: *std.ArrayList(u64),
-    par2_ns: *u64,
-    stderr: *std.Io.Writer,
-) !void {
-    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| {
-        try stderr.print("sat-bench: cannot open {s}: {s}\n", .{ dir_path, @errorName(err) });
-        try stderr.flush();
-        std.process.exit(1);
-    };
+fn runDirectory(gpa: std.mem.Allocator, io: std.Io, dir_path: []const u8, timeout_ns: u64, tally: *Tally, stderr: *std.Io.Writer) !void {
+    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err|
+        fatal(stderr, "sat-bench: cannot open {s}: {s}\n", .{ dir_path, @errorName(err) }, 1);
     defer dir.close(io);
-
     const names = try CnfNames.list(gpa, io, dir);
     defer names.deinit(gpa);
-
-    for (names.items) |name| {
-        const file = try dir.openFile(io, name, .{});
-        defer file.close(io);
-
-        var file_buffer: [64 * 1024]u8 = undefined;
-        var file_reader = file.readerStreaming(io, &file_buffer);
-        var formula = try parser.parse(gpa, &file_reader.interface);
-        defer formula.deinit();
-
-        var solver = try solver_mod.Solver.init(gpa, &formula);
-        defer solver.deinit();
-
-        // Per-instance: reset the global interrupt flag, arm a watchdog
-        // if we have a timeout. The watchdog holds an Io.Event we set
-        // the moment solve() returns, so short instances don't pay the
-        // full timeout waiting on a detached thread.
-        solver_mod.interrupted.store(false, .monotonic);
-        var finished: std.Io.Event = .unset;
-        const wd_thread: ?std.Thread = if (timeout_ns > 0)
-            try std.Thread.spawn(.{}, watchdogFn, .{WatchdogCtx{
-                .io = io,
-                .deadline = .fromNow(io, .{ .raw = .fromNanoseconds(timeout_ns), .clock = .awake }),
-                .finished = &finished,
-                .interrupted = &solver_mod.interrupted,
-            }})
-        else
-            null;
-
-        const inst_start = std.Io.Clock.Timestamp.now(io, .awake);
-        const result = try solver.solve();
-        const inst_ns: u64 = @intCast(inst_start.untilNow(io).raw.nanoseconds);
-
-        // Signal and join before touching shared state for the next
-        // instance, so a late-waking watchdog can never set
-        // `interrupted` across the instance boundary.
-        finished.set(io);
-        if (wd_thread) |t| t.join();
-
-        try per_instance_ns.append(gpa, inst_ns);
-
-        accumulate(agg_stats, &solver.stats);
-
-        total.* += 1;
-        switch (result) {
-            .sat => {
-                solver.extendModel();
-                if (solver.findFalsifiedClause(&formula)) |index| {
-                    try stderr.print("sat-bench: BUG: model falsifies clause {d} of {s}\n", .{ index + 1, name });
-                    try stderr.flush();
-                    std.process.exit(2);
-                }
-                sat_count.* += 1;
-                par2_ns.* += inst_ns;
-            },
-            .unsat => {
-                unsat_count.* += 1;
-                par2_ns.* += inst_ns;
-            },
-            .unknown => {
-                unknown_count.* += 1;
-                // PAR-2 penalty: unsolved costs 2× the timeout. If no
-                // timeout was set, charge the wall time we already spent.
-                par2_ns.* += if (timeout_ns > 0) 2 * timeout_ns else inst_ns;
-            },
-        }
-    }
+    for (names.items) |name| try solveInstance(gpa, io, dir, name, timeout_ns, tally, stderr);
 }
 
-fn accumulate(dst: *solver_mod.Stats, src: *const solver_mod.Stats) void {
-    inline for (comptime std.meta.fieldNames(solver_mod.Stats)) |name| {
-        @field(dst, name) += @field(src, name);
+fn solveInstance(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+    name: []const u8,
+    timeout_ns: u64,
+    tally: *Tally,
+    stderr: *std.Io.Writer,
+) !void {
+    const file = try dir.openFile(io, name, .{});
+    defer file.close(io);
+    var file_buffer: [64 * 1024]u8 = undefined;
+    var file_reader = file.readerStreaming(io, &file_buffer);
+    var formula = try parser.parse(gpa, &file_reader.interface);
+    defer formula.deinit();
+
+    var solver = try solver_mod.Solver.init(gpa, &formula);
+    defer solver.deinit();
+
+    const start = std.Io.Clock.Timestamp.now(io, .awake);
+    const result = try solveWithin(io, &solver, timeout_ns);
+    const ns: u64 = @intCast(start.untilNow(io).raw.nanoseconds);
+
+    if (result == .sat) {
+        solver.extendModel();
+        if (solver.findFalsifiedClause(&formula)) |index| {
+            fatal(stderr, "sat-bench: BUG: model falsifies clause {d} of {s}\n", .{ index + 1, name }, 2);
+        }
     }
+    try tally.record(gpa, result, &solver.stats, ns, timeout_ns);
+}
+
+// Solves with a watchdog that interrupts the solver after `timeout_ns`, if
+// set. The watchdog waits on an event set when solve returns, so a short
+// instance does not wait out the whole timeout.
+fn solveWithin(io: std.Io, solver: *solver_mod.Solver, timeout_ns: u64) !solver_mod.Result {
+    solver_mod.interrupted.store(false, .monotonic);
+    var finished: std.Io.Event = .unset;
+    const watchdog: ?std.Thread = if (timeout_ns > 0)
+        try std.Thread.spawn(.{}, watchdogFn, .{WatchdogCtx{
+            .io = io,
+            .deadline = .fromNow(io, .{ .raw = .fromNanoseconds(timeout_ns), .clock = .awake }),
+            .finished = &finished,
+            .interrupted = &solver_mod.interrupted,
+        }})
+    else
+        null;
+    const result = solver.solve();
+    // Joined before the next instance resets `interrupted`, so a late
+    // watchdog can never interrupt it.
+    finished.set(io);
+    if (watchdog) |thread| thread.join();
+    return result;
 }
