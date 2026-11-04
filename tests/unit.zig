@@ -10,6 +10,7 @@ const assignment_mod = sat.assignment;
 const Literal = cnf.Literal;
 const ClauseRef = cnf.ClauseRef;
 const Reason = assignment_mod.Reason;
+const Level = assignment_mod.Level;
 
 fn parseSource(source: []const u8) !cnf.Formula {
     var reader: std.Io.Reader = .fixed(source);
@@ -584,7 +585,7 @@ test "subsume never deletes a clause that is a level-0 reason" {
     // a long clause.)
     const v0_info = solver.assignment.vars[0];
     try testing.expectEqual(assignment_mod.Value.true, v0_info.value);
-    try testing.expectEqual(@as(u32, 0), v0_info.level);
+    try testing.expectEqual(Level.root, v0_info.level);
     try testing.expect(!v0_info.reason.isNone());
     try testing.expect(!v0_info.reason.isBinary());
     try testing.expectEqual(locked_cref, v0_info.reason.clauseRef());
@@ -747,7 +748,7 @@ test "bve never eliminates through a clause that is a level-0 reason" {
 
     const v0_info = solver.assignment.vars[0];
     try testing.expectEqual(assignment_mod.Value.true, v0_info.value);
-    try testing.expectEqual(@as(u32, 0), v0_info.level);
+    try testing.expectEqual(Level.root, v0_info.level);
     try testing.expect(!v0_info.reason.isNone());
     try testing.expect(!v0_info.reason.isBinary());
 
@@ -1049,13 +1050,13 @@ test "vivify run right after a learned unit keeps the unit's level-0 implication
     const solver = &t.solver;
     _ = try addLearnedClause(solver, &.{ 2, 3, 4 }, 2);
     _ = try solver.propagate();
-    try solver.assignment.assignAtLevel(Literal.fromDimacs(1), Reason.none, 0);
+    try solver.assignment.assignAtLevel(Literal.fromDimacs(1), Reason.none, .root);
 
     const r = try solver.vivify();
 
     try testing.expect(r == null);
     try testing.expectEqual(assignment_mod.Value.false, solver.assignment.valueOfVar(1));
-    try testing.expectEqual(@as(u32, 0), solver.assignment.vars[1].level);
+    try testing.expectEqual(Level.root, solver.assignment.vars[1].level);
 }
 
 test "parser rejects -0 instead of reading it as a clause terminator" {

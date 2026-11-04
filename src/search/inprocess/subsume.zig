@@ -75,7 +75,7 @@ pub fn preprocessSubsume(self: *Solver) !?Result {
 
 // Subsumption and SSR stopping once `budget` candidate checks are spent.
 pub fn subsumeWithin(self: *Solver, budget: u64) !?Result {
-    std.debug.assert(self.assignment.level == 0);
+    std.debug.assert(self.assignment.level == .root);
     self.stats.subsume_passes += 1;
 
     var pass = try Subsumption.init(self, budget);

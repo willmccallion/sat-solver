@@ -40,7 +40,7 @@ const lbd_cap: u32 = 6;
 // Propagate does not check `isDeleted`, so we must sweep
 // watcher lists before returning.
 pub fn vivify(self: *Solver) !?Result {
-    std.debug.assert(self.assignment.level == 0);
+    std.debug.assert(self.assignment.level == .root);
     if (try self.propagateAtRoot()) |r| return r;
     self.stats.vivify_passes += 1;
 
@@ -82,7 +82,7 @@ pub fn vivify(self: *Solver) !?Result {
             const lit = scratch.items[i];
             const vi = self.assignment.vars[lit.variable()];
 
-            if (vi.level == 0 and vi.value != .unassigned) {
+            if (vi.level == .root and vi.value != .unassigned) {
                 if (self.assignment.valueOfLiteral(lit) == .true) {
                     subsumed = true;
                     break;
@@ -111,7 +111,7 @@ pub fn vivify(self: *Solver) !?Result {
             i += 1;
         }
 
-        self.backtrack(0);
+        self.backtrack(.root);
 
         if (subsumed) {
             try self.proof.deleteClause(self.arena.literals(cref));

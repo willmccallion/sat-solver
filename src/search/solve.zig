@@ -1,6 +1,7 @@
 const std = @import("std");
 const core = @import("core");
 const Reason = core.assignment.Reason;
+const Level = core.assignment.Level;
 const Conflict = core.clause.Conflict;
 
 const backtrack_mod = @import("backtrack.zig");
@@ -48,7 +49,7 @@ fn handleConflict(self: *Solver, conflict: Conflict) !?Result {
     self.stats.conflicts += 1;
     self.restarts.conflicts_since_restart += 1;
     const conflict_level = conflictLevel(self, conflict);
-    if (conflict_level == 0) {
+    if (conflict_level == .root) {
         try self.proof.empty();
         return .unsat;
     }
@@ -69,15 +70,15 @@ fn handleConflict(self: *Solver, conflict: Conflict) !?Result {
 }
 
 // The highest level among the conflict's literals, which are all false.
-fn conflictLevel(self: *Solver, conflict: Conflict) u32 {
+fn conflictLevel(self: *Solver, conflict: Conflict) Level {
     const vars = self.assignment.vars;
     return switch (conflict) {
         .clause => |cref| blk: {
-            var highest: u32 = 0;
-            for (self.arena.literals(cref)) |lit| highest = @max(highest, vars[lit.variable()].level);
+            var highest: Level = .root;
+            for (self.arena.literals(cref)) |lit| highest = .max(highest, vars[lit.variable()].level);
             break :blk highest;
         },
-        .binary => |two| @max(vars[two[0].variable()].level, vars[two[1].variable()].level),
+        .binary => |two| .max(vars[two[0].variable()].level, vars[two[1].variable()].level),
     };
 }
 
@@ -99,19 +100,19 @@ fn saveBestPhases(self: *Solver) void {
 }
 
 // A backjump past `chrono_level_gap` levels pops only the conflict level.
-fn backtrackTarget(self: *Solver, conflict_level: u32, backjump_level: u32) u32 {
-    if (conflict_level <= backjump_level + backtrack_mod.chrono_level_gap) return backjump_level;
+fn backtrackTarget(self: *Solver, conflict_level: Level, backjump_level: Level) Level {
+    if (conflict_level.int() <= backjump_level.int() + backtrack_mod.chrono_level_gap) return backjump_level;
     self.stats.chrono_backtracks += 1;
-    return conflict_level - 1;
+    return conflict_level.prev();
 }
 
 // Logs and installs the learned clause and asserts its UIP, which a unit
 // clause asserts at level 0.
-fn learnClause(self: *Solver, lbd: u32, backjump_level: u32) !void {
+fn learnClause(self: *Solver, lbd: u32, backjump_level: Level) !void {
     const learned = self.analyze_learned.items;
     try self.proof.addClause(learned);
     switch (learned.len) {
-        1 => try self.assignment.assignAtLevel(learned[0], Reason.none, 0),
+        1 => try self.assignment.assignAtLevel(learned[0], Reason.none, .root),
         2 => {
             try self.addBinary(learned[0], learned[1]);
             try self.assignment.assignAtLevel(learned[0], Reason.fromBinary(learned[1]), backjump_level);
@@ -170,7 +171,7 @@ fn runDueTasks(self: *Solver, due: DueTasks) !?Result {
         self.stats.restarts += 1;
         self.restarts.conflicts_since_restart = 0;
     }
-    self.backtrack(0);
+    self.backtrack(.root);
 
     const schedules = &self.schedules;
     if (due.reduce) {

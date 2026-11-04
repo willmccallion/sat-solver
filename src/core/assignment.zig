@@ -71,9 +71,41 @@ pub const Reason = struct {
     }
 };
 
+// A decision level. The root, level 0, holds what the formula implies
+// with no decision. Zig has no operator overloading, so levels are
+// compared and stepped through methods.
+pub const Level = enum(u32) {
+    root = 0,
+    _,
+
+    pub inline fn int(self: Level) u32 {
+        return @backingInt(self);
+    }
+
+    pub inline fn isAbove(self: Level, other: Level) bool {
+        return self.int() > other.int();
+    }
+
+    pub inline fn isBelow(self: Level, other: Level) bool {
+        return self.int() < other.int();
+    }
+
+    pub inline fn max(a: Level, b: Level) Level {
+        return if (a.isAbove(b)) a else b;
+    }
+
+    pub inline fn next(self: Level) Level {
+        return @fromBackingInt(@intCast(self.int() + 1));
+    }
+
+    pub inline fn prev(self: Level) Level {
+        return @fromBackingInt(@intCast(self.int() - 1));
+    }
+};
+
 pub const VarInfo = struct {
     value: Value = .unassigned,
-    level: u32 = 0,
+    level: Level = .root,
     reason: Reason = Reason.none,
 };
 
@@ -104,7 +136,7 @@ pub const Assignment = struct {
 
     trail: std.ArrayList(Literal),
     trail_lim: std.ArrayList(u32),
-    level: u32,
+    level: Level,
     propagation_head: usize,
 
     pub fn init(allocator: Allocator, num_vars: u32) !Assignment {
@@ -132,7 +164,7 @@ pub const Assignment = struct {
             .best_phases = best,
             .trail = .empty,
             .trail_lim = .empty,
-            .level = 0,
+            .level = .root,
             .propagation_head = 0,
         };
     }
@@ -170,10 +202,10 @@ pub const Assignment = struct {
     //
     // Breaks the "trail is monotonically increasing in level" invariant —
     // callers in analyze / backtrack must not rely on it.
-    pub fn assignAtLevel(self: *Assignment, lit: Literal, reason: Reason, lvl: u32) !void {
+    pub fn assignAtLevel(self: *Assignment, lit: Literal, reason: Reason, lvl: Level) !void {
         const var_index = lit.variable();
         std.debug.assert(self.vars[var_index].value == .unassigned);
-        std.debug.assert(lvl <= self.level);
+        std.debug.assert(!lvl.isAbove(self.level));
         const is_true = !lit.isNegative();
         self.vars[var_index] = .{
             .value = if (is_true) .true else .false,
@@ -204,6 +236,6 @@ pub const Assignment = struct {
 
     pub fn pushDecisionLevel(self: *Assignment) !void {
         try self.trail_lim.append(self.allocator, @intCast(self.trail.items.len));
-        self.level += 1;
+        self.level = self.level.next();
     }
 };

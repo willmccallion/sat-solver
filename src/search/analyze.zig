@@ -3,6 +3,7 @@ const core = @import("core");
 const Literal = core.cnf.Literal;
 const Conflict = core.clause.Conflict;
 const Reason = core.assignment.Reason;
+const Level = core.assignment.Level;
 
 const state = @import("state.zig");
 const Solver = state.Solver;
@@ -24,8 +25,8 @@ inline fn antecedents(self: *Solver, reason: Reason, scratch: *[1]Literal) []con
 
 // One bit per decision level, folded mod 64: a cheap superset test for
 // "some learned literal has this level".
-inline fn levelBit(level: u32) u64 {
-    return @as(u64, 1) << @intCast(level & 63);
+inline fn levelBit(level: Level) u64 {
+    return @as(u64, 1) << @intCast(level.int() & 63);
 }
 
 // 1-UIP conflict analysis. Builds the learned clause into
@@ -38,7 +39,7 @@ inline fn levelBit(level: u32) u64 {
 // level; under chronological backtracking the trail may be out-of-order
 // and the conflict can fire at a level below self.level, so the caller
 // computes it from the conflict lits.
-pub fn analyze(self: *Solver, conflict: Conflict, conflict_level: u32) !u32 {
+pub fn analyze(self: *Solver, conflict: Conflict, conflict_level: Level) !Level {
     self.analyze_learned.clearRetainingCapacity();
     self.analyze_levels.clearRetainingCapacity();
     try self.analyze_learned.append(self.allocator, undefined);
@@ -51,7 +52,7 @@ pub fn analyze(self: *Solver, conflict: Conflict, conflict_level: u32) !u32 {
 // Resolves the conflict with the reasons of its conflict-level literals,
 // latest first, until one such literal is left: the first UIP, which it
 // returns. The learned clause's other literals are appended as found.
-fn resolveToFirstUip(self: *Solver, conflict: Conflict, conflict_level: u32) !Literal {
+fn resolveToFirstUip(self: *Solver, conflict: Conflict, conflict_level: Level) !Literal {
     var counter: u32 = 0;
     var trail_idx: isize = @as(isize, @intCast(self.assignment.trail.items.len)) - 1;
     var binary_scratch: [2]Literal = undefined;
@@ -69,11 +70,11 @@ fn resolveToFirstUip(self: *Solver, conflict: Conflict, conflict_level: u32) !Li
             const v = q.variable();
             if (self.analyze_seen[v]) continue;
             const q_level = self.assignment.vars[v].level;
-            if (q_level == 0) continue;
+            if (q_level == .root) continue;
 
             self.analyze_seen[v] = true;
             self.bumpVarActivity(v);
-            if (q_level >= conflict_level) {
+            if (!q_level.isBelow(conflict_level)) {
                 counter += 1;
             } else {
                 try self.analyze_learned.append(self.allocator, q);
@@ -152,7 +153,7 @@ fn litRedundant(self: *Solver, start_var: u32, abstract_levels: u64) bool {
         for (antecedents(self, reason, &antecedent_scratch)) |q| {
             const qv = q.variable();
             const q_level = self.assignment.vars[qv].level;
-            if (self.analyze_seen[qv] or q_level == 0) continue;
+            if (self.analyze_seen[qv] or q_level == .root) continue;
 
             if (!self.assignment.vars[qv].reason.isNone() and (abstract_levels & levelBit(q_level)) != 0) {
                 self.analyze_seen[qv] = true;
@@ -170,14 +171,14 @@ fn litRedundant(self: *Solver, start_var: u32, abstract_levels: u64) bool {
 
 // Moves the highest-level literal after the UIP to index 1, where it will
 // be watched, and returns its level: the backjump level.
-fn placeBackjumpLiteral(self: *Solver) u32 {
+fn placeBackjumpLiteral(self: *Solver) Level {
     const learned = self.analyze_learned.items;
-    if (learned.len == 1) return 0;
+    if (learned.len == 1) return .root;
     var highest_index: usize = 1;
     var highest_level = self.assignment.vars[learned[1].variable()].level;
     for (learned[2..], 2..) |lit, k| {
         const level = self.assignment.vars[lit.variable()].level;
-        if (level > highest_level) {
+        if (level.isAbove(highest_level)) {
             highest_level = level;
             highest_index = k;
         }
@@ -190,7 +191,7 @@ pub fn computeLbd(self: *Solver, lits: []const Literal) u32 {
     self.analyze_levels.clearRetainingCapacity();
     outer: for (lits) |lit| {
         const lv = self.assignment.vars[lit.variable()].level;
-        if (lv == 0) continue;
+        if (lv == .root) continue;
         for (self.analyze_levels.items) |existing| {
             if (existing == lv) continue :outer;
         }

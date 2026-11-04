@@ -65,7 +65,7 @@ pub fn preprocessBVE(self: *Solver) !?Result {
 }
 
 fn eliminateWithin(self: *Solver, budget: u64) !?Result {
-    std.debug.assert(self.assignment.level == 0);
+    std.debug.assert(self.assignment.level == .root);
 
     var pass = try Elimination.init(self, budget);
     defer pass.deinit();

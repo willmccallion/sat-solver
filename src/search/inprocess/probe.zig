@@ -33,7 +33,7 @@ const max_probed_vars: usize = 1024;
 // null. Expects self.level == 0, and propagates to a fixed point first,
 // since a probe at level 1 would claim any implication still pending.
 pub fn probe(self: *Solver) !?Result {
-    std.debug.assert(self.assignment.level == 0);
+    std.debug.assert(self.assignment.level == .root);
     if (try self.propagateAtRoot()) |r| return r;
     self.stats.probe_passes += 1;
 
@@ -76,7 +76,7 @@ pub fn probe(self: *Solver) !?Result {
             try self.assignment.pushDecisionLevel();
             try self.assignment.assign(probe_lit, Reason.none);
             const conflict = try self.propagate();
-            self.backtrack(0);
+            self.backtrack(.root);
 
             if (conflict != null) {
                 const unit = probe_lit.negate();

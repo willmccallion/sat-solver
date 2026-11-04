@@ -124,11 +124,11 @@ pub fn propagate(self: *Solver) !?Conflict {
             } else {
                 // The highest level among the clause's false literals. A
                 // helper call here costs 4% more instructions on the bench.
-                var force_level: u32 = p_level;
+                var force_level = p_level;
                 var lit_idx: usize = 2;
                 while (lit_idx < lits.len) : (lit_idx += 1) {
                     const level = self.assignment.vars[lits[lit_idx].variable()].level;
-                    if (level > force_level) force_level = level;
+                    if (level.isAbove(force_level)) force_level = level;
                 }
                 try self.assignment.assignAtLevel(
                     other,
@@ -147,7 +147,7 @@ pub fn propagate(self: *Solver) !?Conflict {
 // Propagates at level 0, where a conflict refutes the formula: logs the
 // empty clause and returns .unsat.
 pub fn propagateAtRoot(self: *Solver) !?Result {
-    std.debug.assert(self.assignment.level == 0);
+    std.debug.assert(self.assignment.level == .root);
     if ((try self.propagate()) == null) return null;
     try self.proof.empty();
     return .unsat;

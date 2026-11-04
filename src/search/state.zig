@@ -9,6 +9,7 @@ const ClauseRef = cnf.ClauseRef;
 const assignment_mod = core.assignment;
 const Assignment = assignment_mod.Assignment;
 const Reason = assignment_mod.Reason;
+const Level = assignment_mod.Level;
 const clause_mod = core.clause;
 const Watcher = clause_mod.Watcher;
 const BinaryWatch = clause_mod.BinaryWatch;
@@ -123,7 +124,7 @@ pub const Solver = struct {
 
     analyze_seen: []bool,
     analyze_learned: std.ArrayList(Literal),
-    analyze_levels: std.ArrayList(u32),
+    analyze_levels: std.ArrayList(Level),
     analyze_to_clear: std.ArrayList(u32),
     analyze_stack: std.ArrayList(u32),
 
@@ -351,7 +352,7 @@ pub const Solver = struct {
     pub fn clauseIsLocked(self: *Solver, cref: ClauseRef) bool {
         for (self.arena.literals(cref)) |lit| {
             const vi = self.assignment.vars[lit.variable()];
-            if (vi.level != 0) continue;
+            if (vi.level != .root) continue;
             switch (vi.reason.decode()) {
                 .clause => |reason| if (reason == cref) return true,
                 .decision, .binary => {},
@@ -486,7 +487,7 @@ pub const Solver = struct {
     // Applies the next `RephaseKind` to saved_phases. Only at level 0, so
     // it biases the next descent rather than an active trail.
     pub fn rephase(self: *Solver) void {
-        std.debug.assert(self.assignment.level == 0);
+        std.debug.assert(self.assignment.level == .root);
         const saved = self.assignment.saved_phases;
         switch (self.rephase_kind) {
             .best => @memcpy(saved, self.assignment.best_phases),

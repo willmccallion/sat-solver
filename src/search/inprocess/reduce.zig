@@ -35,7 +35,7 @@ const glue_lbd: u32 = 2;
 // from every watcher list. Arena compaction (see `compact`) reclaims the
 // holes on a separate cadence.
 pub fn reduceDB(self: *Solver) !void {
-    std.debug.assert(self.assignment.level == 0);
+    std.debug.assert(self.assignment.level == .root);
 
     const Candidate = struct { cref: ClauseRef, lbd: u32 };
     var candidates: std.ArrayList(Candidate) = .empty;
@@ -75,7 +75,7 @@ pub fn reduceDB(self: *Solver) !void {
 // after preprocessing and after each level-0 maintenance round once deleted
 // clauses fill half the arena, when no arena slice is in flight.
 pub fn compact(self: *Solver) !void {
-    std.debug.assert(self.assignment.level == 0);
+    std.debug.assert(self.assignment.level == .root);
     var relocation = try self.arena.compact(self.allocator);
     defer relocation.deinit(self.allocator);
     relocateWatchers(self, &relocation);

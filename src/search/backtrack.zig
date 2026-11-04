@@ -1,5 +1,6 @@
 const state = @import("state.zig");
 const Solver = state.Solver;
+const Level = @import("core").assignment.Level;
 
 // Chronological backtracking gate (Möhle/Biere 2018, Kissat default).
 // When a learned clause would jump more than this many levels down from
@@ -23,17 +24,17 @@ pub const chrono_level_gap: u32 = 100;
 // chronological backtracking, where earlier chrono-asserted literals
 // can live at lower levels than their trail neighbours, the compact
 // pass is required for correctness.
-pub fn backtrack(self: *Solver, target_level: u32) void {
+pub fn backtrack(self: *Solver, target_level: Level) void {
     const a = &self.assignment;
-    if (a.level <= target_level) return;
-    const scan_start = a.trail_lim.items[target_level];
+    if (!a.level.isAbove(target_level)) return;
+    const scan_start = a.trail_lim.items[target_level.int()];
     var j: usize = scan_start;
     var i: usize = scan_start;
     const trail_items = a.trail.items;
     while (i < trail_items.len) : (i += 1) {
         const lit = trail_items[i];
         const v = lit.variable();
-        if (a.vars[v].level > target_level) {
+        if (a.vars[v].level.isAbove(target_level)) {
             a.saved_phases[v] = (a.vars[v].value == .true);
             a.unassign(v);
             self.order_heap.insert(v);
@@ -43,7 +44,7 @@ pub fn backtrack(self: *Solver, target_level: u32) void {
         }
     }
     a.trail.shrinkRetainingCapacity(j);
-    a.trail_lim.shrinkRetainingCapacity(target_level);
+    a.trail_lim.shrinkRetainingCapacity(target_level.int());
     a.level = target_level;
     // Re-propagate everything from the compact boundary on. Kept
     // literals at the current level may still have watcher work to do
