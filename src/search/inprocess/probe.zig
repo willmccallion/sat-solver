@@ -66,12 +66,12 @@ pub fn probe(self: *Solver) state.Error!?Result {
         // Try up to two polarities per variable. After the first succeeds
         // or fails, the second is attempted only if v is still unassigned
         // (a cascade from an earlier probe can have fixed it).
-        var iter: u32 = 0;
-        while (iter < 2) : (iter += 1) {
+        var attempt: u32 = 0;
+        while (attempt < 2) : (attempt += 1) {
             if (self.assignment.vars[v.index()].value != .unassigned) break;
 
             const first_neg = !self.assignment.saved_phases[v.index()];
-            const neg = if (iter == 0) first_neg else !first_neg;
+            const neg = if (attempt == 0) first_neg else !first_neg;
             const probe_lit = Literal.init(v, neg);
 
             try self.assignment.pushDecisionLevel();

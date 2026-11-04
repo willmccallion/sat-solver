@@ -25,30 +25,30 @@ pub const chrono_level_gap: u32 = 100;
 // can live at lower levels than their trail neighbours, the compact
 // pass is required for correctness.
 pub fn backtrack(self: *Solver, target_level: Level) void {
-    const a = &self.assignment;
-    if (!a.level.isAbove(target_level)) return;
-    const scan_start = a.trail_lim.items[target_level.int()];
+    const assignment = &self.assignment;
+    if (!assignment.level.isAbove(target_level)) return;
+    const scan_start = assignment.trail_lim.items[target_level.int()];
     var j: usize = scan_start;
     var i: usize = scan_start;
-    const trail_items = a.trail.items;
+    const trail_items = assignment.trail.items;
     while (i < trail_items.len) : (i += 1) {
         const lit = trail_items[i];
         const v = lit.variable();
-        if (a.vars[v.index()].level.isAbove(target_level)) {
-            a.saved_phases[v.index()] = (a.vars[v.index()].value == .true);
-            a.unassign(v);
+        if (assignment.vars[v.index()].level.isAbove(target_level)) {
+            assignment.saved_phases[v.index()] = (assignment.vars[v.index()].value == .true);
+            assignment.unassign(v);
             self.order_heap.insert(@backingInt(v));
         } else {
             trail_items[j] = lit;
             j += 1;
         }
     }
-    a.trail.shrinkRetainingCapacity(j);
-    a.trail_lim.shrinkRetainingCapacity(target_level.int());
-    a.level = target_level;
+    assignment.trail.shrinkRetainingCapacity(j);
+    assignment.trail_lim.shrinkRetainingCapacity(target_level.int());
+    assignment.level = target_level;
     // Re-propagate everything from the compact boundary on. Kept
     // literals at the current level may still have watcher work to do
     // against the new trail shape, and the UIP we're about to
     // chrono-assert will land at exactly this index.
-    if (a.propagation_head > scan_start) a.propagation_head = scan_start;
+    if (assignment.propagation_head > scan_start) assignment.propagation_head = scan_start;
 }

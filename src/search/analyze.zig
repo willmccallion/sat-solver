@@ -191,12 +191,12 @@ fn placeBackjumpLiteral(self: *Solver) Level {
 pub fn computeLbd(self: *Solver, lits: []const Literal) u32 {
     self.analysis.levels.clearRetainingCapacity();
     outer: for (lits) |lit| {
-        const lv = self.assignment.vars[lit.variable().index()].level;
-        if (lv == .root) continue;
+        const level = self.assignment.vars[lit.variable().index()].level;
+        if (level == .root) continue;
         for (self.analysis.levels.items) |existing| {
-            if (existing == lv) continue :outer;
+            if (existing == level) continue :outer;
         }
-        self.analysis.levels.appendAssumeCapacity(lv);
+        self.analysis.levels.appendAssumeCapacity(level);
     }
     return @intCast(self.analysis.levels.items.len);
 }

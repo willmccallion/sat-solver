@@ -525,8 +525,8 @@ pub const Solver = struct {
             },
             .random => {
                 var rng = std.Random.DefaultPrng.init(self.stats.conflicts);
-                const r = rng.random();
-                for (saved) |*b| b.* = r.boolean();
+                const random = rng.random();
+                for (saved) |*b| b.* = random.boolean();
             },
         }
         self.rephase_kind = rephase_mod.next(self.rephase_kind);
