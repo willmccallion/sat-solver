@@ -26,7 +26,7 @@ pub const initial_interval: u64 = 10_000;
 pub const grow_num: u64 = 3;
 pub const grow_den: u64 = 2;
 const budget_share: common.BudgetShare = .{ .num = 1, .den = 10 };
-pub const max_vars: usize = 1024;
+pub const max_probed_vars: usize = 1024;
 
 // Failed literal probing pass. Returns .unsat if the probe (or its
 // follow-up propagation) derives an empty clause at level 0, otherwise
@@ -53,7 +53,7 @@ pub fn probe(self: *Solver) !?Result {
         }
     }.lessThan);
 
-    const k = @min(candidates.items.len, max_vars);
+    const k = @min(candidates.items.len, max_probed_vars);
 
     var probed: usize = 0;
     while (probed < k) : (probed += 1) {
