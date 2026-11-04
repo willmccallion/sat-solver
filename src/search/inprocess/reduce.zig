@@ -59,25 +59,7 @@ pub fn reduceDB(self: *Solver) !void {
     self.stats.reductions += 1;
     self.stats.deleted_clauses += to_delete;
 
-    for (self.watchers) |*wlist| {
-        var j: usize = 0;
-        for (wlist.items) |w| {
-            if (!self.clauseIsDeleted(w.clause)) {
-                wlist.items[j] = w;
-                j += 1;
-            }
-        }
-        wlist.shrinkRetainingCapacity(j);
-    }
-
-    var j: usize = 0;
-    for (self.learned_clauses.items) |cref| {
-        if (!self.clauseIsDeleted(cref)) {
-            self.learned_clauses.items[j] = cref;
-            j += 1;
-        }
-    }
-    self.learned_clauses.shrinkRetainingCapacity(j);
+    self.dropDeletedClauseRefs();
 }
 
 // Arena compaction. Rebuilds `self.arena` without deleted-clause holes

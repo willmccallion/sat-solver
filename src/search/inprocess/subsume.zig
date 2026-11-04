@@ -229,30 +229,7 @@ fn subsumeImpl(self: *Solver, is_preprocess: bool) !?Result {
         return .unsat;
     }
 
-    // Watcher sweep — drop entries pointing at any clause marked deleted
-    // this pass. Mirrors vivify.zig's post-delete sweep so propagate never
-    // dereferences a tombstoned arena slot.
-    if (any_deleted) {
-        for (self.watchers) |*wlist| {
-            var j: usize = 0;
-            for (wlist.items) |entry| {
-                if (!self.clauseIsDeleted(entry.clause)) {
-                    wlist.items[j] = entry;
-                    j += 1;
-                }
-            }
-            wlist.shrinkRetainingCapacity(j);
-        }
-
-        var j: usize = 0;
-        for (self.learned_clauses.items) |cref| {
-            if (!self.clauseIsDeleted(cref) and self.clauseIsLearned(cref)) {
-                self.learned_clauses.items[j] = cref;
-                j += 1;
-            }
-        }
-        self.learned_clauses.shrinkRetainingCapacity(j);
-    }
+    if (any_deleted) self.dropDeletedClauseRefs();
 
     if (try self.propagateAtRoot()) |r| return r;
 

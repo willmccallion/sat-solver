@@ -509,28 +509,7 @@ fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
         return .unsat;
     }
 
-    // Watcher / learned sweep
-    if (any_deleted) {
-        for (self.watchers) |*wlist| {
-            var j: usize = 0;
-            for (wlist.items) |entry| {
-                if (!self.clauseIsDeleted(entry.clause)) {
-                    wlist.items[j] = entry;
-                    j += 1;
-                }
-            }
-            wlist.shrinkRetainingCapacity(j);
-        }
-
-        var j: usize = 0;
-        for (self.learned_clauses.items) |cref| {
-            if (!self.clauseIsDeleted(cref)) {
-                self.learned_clauses.items[j] = cref;
-                j += 1;
-            }
-        }
-        self.learned_clauses.shrinkRetainingCapacity(j);
-    }
+    if (any_deleted) self.dropDeletedClauseRefs();
 
     if (try self.propagateAtRoot()) |r| return r;
 

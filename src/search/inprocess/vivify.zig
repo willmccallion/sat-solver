@@ -176,30 +176,7 @@ pub fn vivify(self: *Solver) !?Result {
         }
     }
 
-    // Watcher sweep — drop entries pointing at any clause marked deleted
-    // this pass. Mirrors reduceDB's post-delete sweep so propagate never
-    // dereferences a tombstoned arena slot.
-    if (any_deleted) {
-        for (self.watchers) |*wlist| {
-            var j: usize = 0;
-            for (wlist.items) |w| {
-                if (!self.clauseIsDeleted(w.clause)) {
-                    wlist.items[j] = w;
-                    j += 1;
-                }
-            }
-            wlist.shrinkRetainingCapacity(j);
-        }
-
-        var j: usize = 0;
-        for (self.learned_clauses.items) |cref| {
-            if (!self.clauseIsDeleted(cref)) {
-                self.learned_clauses.items[j] = cref;
-                j += 1;
-            }
-        }
-        self.learned_clauses.shrinkRetainingCapacity(j);
-    }
+    if (any_deleted) self.dropDeletedClauseRefs();
 
     // Any new level-0 unit we derived (from a 1-lit shrink) needs
     // propagating before we return to search.
