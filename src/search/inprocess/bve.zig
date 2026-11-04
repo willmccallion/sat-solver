@@ -609,7 +609,7 @@ fn commitElimination(
             },
             .binary => |other| {
                 // Binary (pos_lit, other): swap-remove from both sides.
-                removeBinary(self, pos_lit, other);
+                self.removeBinary(pos_lit, other);
             },
         }
     }
@@ -622,7 +622,7 @@ fn commitElimination(
                 any_deleted.* = true;
             },
             .binary => |other| {
-                removeBinary(self, neg_lit, other);
+                self.removeBinary(neg_lit, other);
             },
         }
     }
@@ -730,29 +730,5 @@ pub fn reconstructEliminatedVars(self: *Solver) void {
             if (pick_true) .true else .false;
         self.assignment.lit_values[pos_slot | 1] =
             if (pick_true) .false else .true;
-    }
-}
-
-// Swap-remove the binary (a, other) from both sides of bin_watchers.
-// Each binary clause is represented as .other=b in bin_watchers[a.negate()]
-// and .other=a in bin_watchers[b.negate()]. Remove both halves.
-fn removeBinary(self: *Solver, a: Literal, other: Literal) void {
-    const a_neg_idx = a.negate().raw;
-    var i: usize = 0;
-    while (i < self.bin_watchers[a_neg_idx].items.len) {
-        if (self.bin_watchers[a_neg_idx].items[i].other.raw == other.raw) {
-            _ = self.bin_watchers[a_neg_idx].swapRemove(i);
-            break;
-        }
-        i += 1;
-    }
-    const other_neg_idx = other.negate().raw;
-    var j: usize = 0;
-    while (j < self.bin_watchers[other_neg_idx].items.len) {
-        if (self.bin_watchers[other_neg_idx].items[j].other.raw == a.raw) {
-            _ = self.bin_watchers[other_neg_idx].swapRemove(j);
-            break;
-        }
-        j += 1;
     }
 }

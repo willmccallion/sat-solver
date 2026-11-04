@@ -364,16 +364,6 @@ fn countLiveLongClauses(solver: *solver_mod.Solver) usize {
     return live;
 }
 
-// True iff bin_watchers contains a binary clause {a, b}. Matches the
-// registration invariant: the binary appears as {.other = b} in
-// bin_watchers[a.negate().raw].
-fn hasBinary(solver: *solver_mod.Solver, a: Literal, b: Literal) bool {
-    for (solver.bin_watchers[a.negate().raw].items) |entry| {
-        if (entry.other.raw == b.raw) return true;
-    }
-    return false;
-}
-
 test "equiv: a literal equivalent to its negation is refuted with a RUP unit first" {
     // 1 ≡ 2 and 1 ≡ ¬2 put 1 and ¬1 in one SCC of the implication graph.
     const src =
@@ -425,7 +415,7 @@ test "subsume: trivial — (1 2 3) subsumed by (1 2)" {
     try testing.expect(r == null);
 
     try testing.expectEqual(@as(usize, 0), countLiveLongClauses(&solver));
-    try testing.expect(hasBinary(&solver, Literal.fromDimacs(1), Literal.fromDimacs(2)));
+    try testing.expect(solver.hasBinary(Literal.fromDimacs(1), Literal.fromDimacs(2)));
     try testing.expectEqual(@as(u64, 1), solver.stats.subsumed_clauses);
 }
 
@@ -551,11 +541,7 @@ test "subsume: SSR to binary — long clause strengthened to a new binary" {
     try testing.expect(solver.clauseIsDeleted(cref_long));
 
     // bin_watchers must contain the new binary (1, -34).
-    try testing.expect(hasBinary(
-        &solver,
-        Literal.fromDimacs(1),
-        Literal.fromDimacs(-34),
-    ));
+    try testing.expect(solver.hasBinary(Literal.fromDimacs(1), Literal.fromDimacs(-34)));
 
     try testing.expectEqual(@as(u64, 1), solver.stats.strengthened_clauses);
 }

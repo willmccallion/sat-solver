@@ -500,6 +500,19 @@ pub const Solver = struct {
         w1.appendAssumeCapacity(.{ .other = a });
     }
 
+    // Removes one copy of the 2-clause (a ∨ b) from both binary watch lists.
+    pub fn removeBinary(self: *Solver, a: Literal, b: Literal) void {
+        removeBinaryWatch(&self.bin_watchers[a.negate().raw], b);
+        removeBinaryWatch(&self.bin_watchers[b.negate().raw], a);
+    }
+
+    pub fn hasBinary(self: *const Solver, a: Literal, b: Literal) bool {
+        for (self.bin_watchers[a.negate().raw].items) |w| {
+            if (w.other.eql(b)) return true;
+        }
+        return false;
+    }
+
     pub fn bumpVarActivity(self: *Solver, var_idx: u32) void {
         self.activities[var_idx] += self.var_inc;
         if (self.activities[var_idx] > restart.rescale_threshold) {
@@ -556,3 +569,12 @@ pub const Solver = struct {
         self.stats.rephases += 1;
     }
 };
+
+fn removeBinaryWatch(list: *std.ArrayList(BinaryWatch), other: Literal) void {
+    for (list.items, 0..) |w, i| {
+        if (w.other.eql(other)) {
+            _ = list.swapRemove(i);
+            return;
+        }
+    }
+}

@@ -493,7 +493,7 @@ pub fn equiv(self: *Solver) !?Result {
     // Phase D: mutate state for binaries
     for (bin_work.items) |bw| {
         if (unsat_derived) break;
-        removeBinary(self, bw.old_a, bw.old_b);
+        self.removeBinary(bw.old_a, bw.old_b);
         switch (bw.kind) {
             .tautology => {},
             .unit => {
@@ -523,28 +523,6 @@ pub fn equiv(self: *Solver) !?Result {
 
     self.stats.equiv_passes += 1;
     return null;
-}
-
-// Swap-remove the binary (a, other) from both sides of bin_watchers.
-fn removeBinary(self: *Solver, a: Literal, other: Literal) void {
-    const a_neg_idx = a.negate().raw;
-    var i: usize = 0;
-    while (i < self.bin_watchers[a_neg_idx].items.len) {
-        if (self.bin_watchers[a_neg_idx].items[i].other.raw == other.raw) {
-            _ = self.bin_watchers[a_neg_idx].swapRemove(i);
-            break;
-        }
-        i += 1;
-    }
-    const other_neg_idx = other.negate().raw;
-    var j: usize = 0;
-    while (j < self.bin_watchers[other_neg_idx].items.len) {
-        if (self.bin_watchers[other_neg_idx].items[j].other.raw == a.raw) {
-            _ = self.bin_watchers[other_neg_idx].swapRemove(j);
-            break;
-        }
-        j += 1;
-    }
 }
 
 // Walk `equiv_witness` in reverse and synthesize a value for every

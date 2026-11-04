@@ -207,7 +207,7 @@ fn subsumeImpl(self: *Solver, is_preprocess: bool) !?Result {
                 @branchHint(.cold);
                 break;
             }
-            if (!hasBinaryClause(self, pair[0], pair[1])) continue;
+            if (!self.hasBinary(pair[0], pair[1])) continue;
             try processSubsumerBinary(
                 self,
                 pair[0],
@@ -233,13 +233,6 @@ fn subsumeImpl(self: *Solver, is_preprocess: bool) !?Result {
     if (try self.propagateAtRoot()) |r| return r;
 
     return null;
-}
-
-fn hasBinaryClause(self: *const Solver, a: Literal, b: Literal) bool {
-    for (self.bin_watchers[a.negate().raw].items) |entry| {
-        if (entry.other.eql(b)) return true;
-    }
-    return false;
 }
 
 // Processes one long clause C as a potential subsumer. Walks occ[ℓ] for
@@ -436,21 +429,8 @@ fn binarySSRAgainstBinaries(
         try self.proof.addClause(&[_]Literal{unit});
         try self.proof.deleteClause(&[_]Literal{ unit, neg_b });
 
-        // Remove from bin_watchers[target_idx] at position i.
-        _ = self.bin_watchers[target_idx].swapRemove(i);
-        // Remove the sibling entry in bin_watchers[a.negate().raw]
-        // whose .other == neg_b (the full clause is (a, -b) so the
-        // pair registered the other direction too).
-        {
-            const sibling_idx = a.negate().raw;
-            var j: usize = 0;
-            while (j < self.bin_watchers[sibling_idx].items.len) : (j += 1) {
-                if (self.bin_watchers[sibling_idx].items[j].other.raw == neg_b.raw) {
-                    _ = self.bin_watchers[sibling_idx].swapRemove(j);
-                    break;
-                }
-            }
-        }
+        // Removes the entry at i: no earlier one in this list is `a`.
+        self.removeBinary(unit, neg_b);
 
         self.stats.strengthened_clauses += 1;
 
