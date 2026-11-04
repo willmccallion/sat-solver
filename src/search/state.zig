@@ -278,15 +278,18 @@ pub const Solver = struct {
 
         self.order_heap = try OrderHeap.init(allocator, formula.num_vars, self.activities);
         errdefer self.order_heap.deinit(allocator);
-        {
-            var v: u32 = 0;
-            while (v < formula.num_vars) : (v += 1) {
-                self.order_heap.insert(v);
-            }
-        }
+        for (0..formula.num_vars) |v| self.order_heap.insert(@intCast(v));
 
-        // Reserve the arena and every watch list at its exact final size.
-        // Binaries live in bin_watchers, not in the arena.
+        try self.reserveClauseStorage(formula);
+        errdefer self.arena.deinit(allocator);
+        try self.loadClauses(formula);
+        return self;
+    }
+
+    // Reserves the arena and every watch list at its exact final size.
+    // Binaries live in bin_watchers, not in the arena.
+    fn reserveClauseStorage(self: *Solver, formula: *const Formula) !void {
+        const allocator = self.allocator;
         var total_slots: usize = 0;
         const WatchCounts = struct { long: u32 = 0, binary: u32 = 0 };
         const watch_counts = try allocator.alloc(WatchCounts, @as(usize, formula.num_vars) * 2);
@@ -309,15 +312,15 @@ pub const Solver = struct {
             try w.ensureTotalCapacityPrecise(allocator, counts.long);
             try bw.ensureTotalCapacityPrecise(allocator, counts.binary);
         }
+    }
 
+    fn loadClauses(self: *Solver, formula: *const Formula) !void {
         for (0..formula.clauseCount()) |i| {
             if (try self.installClause(formula.clause(i), .irredundant, 0) == .refuted) {
                 self.unsat_at_init = true;
-                break;
+                return;
             }
         }
-
-        return self;
     }
 
     pub fn deinit(self: *Solver) void {
