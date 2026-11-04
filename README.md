@@ -85,8 +85,8 @@ zig build sudoku -- '53..7....6..195....98....6.8...6...34..8.3..17...2...6.6...
 ./zig-out/bin/sat-sudoku < puzzle.txt   # a 9-line grid works too
 ```
 
-Cells are `1`-`9`, with `.` or `0` for blanks. Exit code **0** = solved,
-**1** = no solution, **2** = bad input.
+Cells are `1`-`9`, with `.` or `0` for blanks; input over 64 KiB is refused.
+Exit code **0** = solved, **1** = no solution, **2** = bad input or no answer.
 
 ## Benchmarks
 

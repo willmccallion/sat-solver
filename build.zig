@@ -250,10 +250,18 @@ pub fn build(b: *std.Build) void {
         \\
     );
 
+    const oversized_puzzle = b.allocator.alloc(u8, 64 * 1024 + 1) catch @panic("OOM");
+    @memset(oversized_puzzle, '.');
+    const e2e_sudoku_oversized = b.addRunArtifact(sudoku_exe);
+    e2e_sudoku_oversized.setStdIn(.{ .bytes = oversized_puzzle });
+    e2e_sudoku_oversized.expectExitCode(2);
+    e2e_sudoku_oversized.expectStdErrEqual("sat-sudoku: input is over 64 KiB\n");
+
     const test_step = b.step("test", "Run unit tests and end-to-end round-trip");
     test_step.dependOn(&run_unit_tests.step);
     test_step.dependOn(&run_sudoku_tests.step);
     test_step.dependOn(&e2e_sudoku.step);
+    test_step.dependOn(&e2e_sudoku_oversized.step);
     test_step.dependOn(&e2e_sat.step);
     test_step.dependOn(&e2e_unsat.step);
     test_step.dependOn(&e2e_small.step);

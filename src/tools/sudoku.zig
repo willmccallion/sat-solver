@@ -17,7 +17,8 @@ const usage =
     \\empty cell. Whitespace is ignored, so a 9-line grid works too. With no
     \\argument the puzzle is read from stdin.
     \\
-    \\Exit code: 0 = solved, 1 = the puzzle has no solution, 2 = bad input.
+    \\Exit code: 0 = solved, 1 = the puzzle has no solution, 2 = bad input or
+    \\no answer.
     \\
 ;
 
@@ -188,20 +189,25 @@ fn describePuzzleError(err: PuzzleError) []const u8 {
     };
 }
 
-pub fn main(init: std.process.Init) !u8 {
-    const gpa = init.gpa;
-    const io = init.io;
-
+pub fn main(init: std.process.Init) u8 {
     var stdout_buffer: [4096]u8 = undefined;
-    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
     defer stdout.flush() catch {};
 
     var stderr_buffer: [1024]u8 = undefined;
-    var stderr_writer = std.Io.File.stderr().writer(io, &stderr_buffer);
+    var stderr_writer = std.Io.File.stderr().writer(init.io, &stderr_buffer);
     const stderr = &stderr_writer.interface;
     defer stderr.flush() catch {};
 
+    // Exit code 1 means "no solution", so no failure may fall through to it.
+    return run(init, stdout, stderr) catch |err| {
+        stderr.print("sat-sudoku: {s}\n", .{@errorName(err)}) catch {};
+        return 2;
+    };
+}
+
+fn run(init: std.process.Init, stdout: *std.Io.Writer, stderr: *std.Io.Writer) !u8 {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len > 2) {
         try stderr.writeAll(usage);
@@ -212,10 +218,12 @@ pub fn main(init: std.process.Init) !u8 {
         return 0;
     }
 
-    const text = if (args.len == 2) args[1] else blk: {
-        var stdin_buffer: [4096]u8 = undefined;
-        var stdin_reader = std.Io.File.stdin().readerStreaming(io, &stdin_buffer);
-        break :blk try stdin_reader.interface.allocRemaining(init.arena.allocator(), .limited(max_input_bytes));
+    const text = if (args.len == 2) args[1] else readStdin(init) catch |err| switch (err) {
+        error.StreamTooLong => {
+            try stderr.print("sat-sudoku: input is over {d} KiB\n", .{max_input_bytes / 1024});
+            return 2;
+        },
+        else => |e| return e,
     };
 
     const puzzle = parsePuzzle(text) catch |err| {
@@ -223,7 +231,7 @@ pub fn main(init: std.process.Init) !u8 {
         return 2;
     };
 
-    switch (try solvePuzzle(gpa, &puzzle)) {
+    switch (try solvePuzzle(init.gpa, &puzzle)) {
         .solved => |grid| {
             try writeGrid(stdout, &grid);
             return 0;
@@ -237,6 +245,12 @@ pub fn main(init: std.process.Init) !u8 {
             return 2;
         },
     }
+}
+
+fn readStdin(init: std.process.Init) ![]u8 {
+    var stdin_buffer: [4096]u8 = undefined;
+    var stdin_reader = std.Io.File.stdin().readerStreaming(init.io, &stdin_buffer);
+    return stdin_reader.interface.allocRemaining(init.arena.allocator(), .limited(max_input_bytes));
 }
 
 const testing = std.testing;
