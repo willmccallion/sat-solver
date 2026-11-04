@@ -1,4 +1,5 @@
 const std = @import("std");
+const CnfNames = @import("instances.zig").CnfNames;
 const search = @import("search");
 const parser = @import("io").parser;
 const solver_mod = search.solver;
@@ -203,25 +204,8 @@ fn runDirectory(
     };
     defer dir.close(io);
 
-    // Collect a sorted list of .cnf names so profiling runs are reproducible.
-    var names: std.ArrayList([]u8) = .empty;
-    defer {
-        for (names.items) |n| gpa.free(n);
-        names.deinit(gpa);
-    }
-
-    var it = dir.iterate();
-    while (try it.next(io)) |entry| {
-        if (entry.kind != .file) continue;
-        if (!std.mem.endsWith(u8, entry.name, ".cnf")) continue;
-        try names.append(gpa, try gpa.dupe(u8, entry.name));
-    }
-
-    std.mem.sort([]u8, names.items, {}, struct {
-        fn lessThan(_: void, a: []u8, b: []u8) bool {
-            return std.mem.lessThan(u8, a, b);
-        }
-    }.lessThan);
+    const names = try CnfNames.list(gpa, io, dir);
+    defer names.deinit(gpa);
 
     for (names.items) |name| {
         const file = try dir.openFile(io, name, .{});

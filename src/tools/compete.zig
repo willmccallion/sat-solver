@@ -1,4 +1,5 @@
 const std = @import("std");
+const CnfNames = @import("instances.zig").CnfNames;
 const Allocator = std.mem.Allocator;
 const report = @import("report.zig");
 const Color = report.Color;
@@ -491,22 +492,8 @@ fn collectCapacity(gpa: Allocator, io: std.Io, sat_path: []const u8, out: *Capac
     const per_inst_limit_s: u32 = 5;
     const max_samples: u32 = 10;
 
-    var names: std.ArrayList([]u8) = .empty;
-    defer {
-        for (names.items) |n| gpa.free(n);
-        names.deinit(gpa);
-    }
-    var it = dir.iterate();
-    while (try it.next(io)) |entry| {
-        if (entry.kind != .file) continue;
-        if (!std.mem.endsWith(u8, entry.name, ".cnf")) continue;
-        try names.append(gpa, try gpa.dupe(u8, entry.name));
-    }
-    std.mem.sort([]u8, names.items, {}, struct {
-        fn lt(_: void, a: []u8, b: []u8) bool {
-            return std.mem.lessThan(u8, a, b);
-        }
-    }.lt);
+    const names = try CnfNames.list(gpa, io, dir);
+    defer names.deinit(gpa);
 
     const sample_count = @min(@as(usize, max_samples), names.items.len);
     const start = std.Io.Clock.Timestamp.now(io, .awake);
