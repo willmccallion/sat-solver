@@ -3,7 +3,6 @@ const Reason = core.assignment.Reason;
 
 const heuristics = @import("heuristics");
 const restart = heuristics.restart;
-const rephase_mod = heuristics.rephase;
 
 const backtrack_mod = @import("backtrack.zig");
 const state = @import("state.zig");
@@ -12,11 +11,6 @@ const solver_mod = @import("solver.zig");
 const Result = solver_mod.Result;
 
 const reduce_mod = @import("inprocess/reduce.zig");
-const probe_mod = @import("inprocess/probe.zig");
-const vivify_mod = @import("inprocess/vivify.zig");
-const subsume_mod = @import("inprocess/subsume.zig");
-const bve_mod = @import("inprocess/bve.zig");
-const equiv_mod = @import("inprocess/equiv.zig");
 
 pub fn solve(self: *Solver) !Result {
     if (self.unsat_at_init) {
@@ -150,15 +144,17 @@ pub fn solve(self: *Solver) !Result {
             self.trail_fast += restart.lbd_fast_alpha * (conflict_trail_f - self.trail_fast);
             self.trail_fast_bc += restart.lbd_fast_alpha * (1 - self.trail_fast_bc);
 
-            const should_reduce = self.stats.conflicts >= self.next_reduce and
+            const conflicts = self.stats.conflicts;
+            const schedules = &self.schedules;
+            const should_reduce = schedules.reduce.isDue(conflicts) and
                 self.learned_clauses.items.len > self.max_learned;
-            const should_rephase = self.stats.conflicts >= self.rephase_next;
-            const should_probe = self.stats.conflicts >= self.next_probe;
-            const should_vivify = self.stats.conflicts >= self.next_vivify;
-            const should_subsume = self.stats.conflicts >= self.next_subsume;
-            const should_bve = self.stats.conflicts >= self.next_bve;
-            const should_equiv = self.stats.conflicts >= self.next_equiv;
-            const should_flip_mode = self.stats.conflicts >= self.next_mode_switch;
+            const should_rephase = schedules.rephase.isDue(conflicts);
+            const should_probe = schedules.probe.isDue(conflicts);
+            const should_vivify = schedules.vivify.isDue(conflicts);
+            const should_subsume = schedules.subsume.isDue(conflicts);
+            const should_bve = schedules.bve.isDue(conflicts);
+            const should_equiv = schedules.equiv.isDue(conflicts);
+            const should_flip_mode = schedules.mode_switch.isDue(conflicts);
 
             if (should_restart or should_reduce or should_rephase or
                 should_probe or should_vivify or should_subsume or
@@ -172,44 +168,31 @@ pub fn solve(self: *Solver) !Result {
                 if (should_reduce) {
                     try self.reduceDB();
                     self.max_learned = (self.max_learned * reduce_mod.max_learned_grow_num) / reduce_mod.max_learned_grow_den;
-                    self.reduce_interval += reduce_mod.interval_step;
-                    self.next_reduce = self.stats.conflicts + self.reduce_interval;
+                    schedules.reduce.advance(self.stats.conflicts);
                 }
                 if (should_rephase) {
                     self.rephase();
-                    self.rephase_interval =
-                        (self.rephase_interval * rephase_mod.rephase_grow_num) / rephase_mod.rephase_grow_den;
-                    self.rephase_next = self.stats.conflicts + self.rephase_interval;
+                    schedules.rephase.advance(self.stats.conflicts);
                 }
                 if (should_probe) {
                     if (try self.probe()) |r| return r;
-                    self.probe_interval =
-                        (self.probe_interval * probe_mod.grow_num) / probe_mod.grow_den;
-                    self.next_probe = self.stats.conflicts + self.probe_interval;
+                    schedules.probe.advance(self.stats.conflicts);
                 }
                 if (should_vivify) {
                     if (try self.vivify()) |r| return r;
-                    self.vivify_interval =
-                        (self.vivify_interval * vivify_mod.grow_num) / vivify_mod.grow_den;
-                    self.next_vivify = self.stats.conflicts + self.vivify_interval;
+                    schedules.vivify.advance(self.stats.conflicts);
                 }
                 if (should_subsume) {
                     if (try self.subsume()) |r| return r;
-                    self.subsume_interval =
-                        (self.subsume_interval * subsume_mod.grow_num) / subsume_mod.grow_den;
-                    self.next_subsume = self.stats.conflicts + self.subsume_interval;
+                    schedules.subsume.advance(self.stats.conflicts);
                 }
                 if (should_bve) {
                     if (try self.bve()) |r| return r;
-                    self.bve_interval =
-                        (self.bve_interval * bve_mod.grow_num) / bve_mod.grow_den;
-                    self.next_bve = self.stats.conflicts + self.bve_interval;
+                    schedules.bve.advance(self.stats.conflicts);
                 }
                 if (should_equiv) {
                     if (try self.equiv()) |r| return r;
-                    self.equiv_interval =
-                        (self.equiv_interval * equiv_mod.grow_num) / equiv_mod.grow_den;
-                    self.next_equiv = self.stats.conflicts + self.equiv_interval;
+                    schedules.equiv.advance(self.stats.conflicts);
                 }
                 if (should_flip_mode) {
                     self.search_mode = switch (self.search_mode) {
@@ -222,8 +205,7 @@ pub fn solve(self: *Solver) !Result {
                             self.assignment.best_phases,
                         );
                     }
-                    self.mode_budget *= 2;
-                    self.next_mode_switch = self.stats.conflicts + self.mode_budget;
+                    schedules.mode_switch.advance(self.stats.conflicts);
                     self.stats.mode_switches += 1;
                 }
                 if (self.arenaIsMostlyHoles()) try self.compact();

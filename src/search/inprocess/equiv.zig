@@ -5,6 +5,8 @@ const ClauseList = core.cnf.ClauseList;
 const ClauseRef = core.cnf.ClauseRef;
 const clause_mod = core.clause;
 
+const Schedule = @import("heuristics").schedule.Schedule;
+
 const common = @import("common.zig");
 const state = @import("../state.zig");
 const Solver = state.Solver;
@@ -36,9 +38,7 @@ const Result = solver_mod.Result;
 // and copies each variable's value from the current valueOfLiteral of
 // its representative.
 
-pub const inprocess_initial_interval: u64 = 10_000;
-pub const grow_num: u64 = 3;
-pub const grow_den: u64 = 2;
+pub const schedule: Schedule = .every(10_000, .by_half);
 
 pub fn equiv(self: *Solver) !?Result {
     std.debug.assert(self.assignment.level == 0);

@@ -5,14 +5,15 @@ const ClauseRef = core.cnf.ClauseRef;
 const Reason = core.assignment.Reason;
 const clause_mod = core.clause;
 
+const Schedule = @import("heuristics").schedule.Schedule;
+
 const state = @import("../state.zig");
 const Solver = state.Solver;
 
 // ReduceDB cadence — fires on its own conflict-count budget, independent
-// of restarts. The interval grows by `interval_step` each trigger so long
+// of restarts. The interval grows by a fixed step each trigger so long
 // searches don't pay a log-N reduce every few thousand conflicts.
-pub const initial_interval: u64 = 2000;
-pub const interval_step: u64 = 300;
+pub const schedule: Schedule = .every(2000, .{ .additive = 300 });
 
 // The learned-clause limit starts at the formula's clause count, but no
 // lower than `min_max_learned`, and grows by 11/10 after each reduction.

@@ -3,6 +3,8 @@ const core = @import("core");
 const Literal = core.cnf.Literal;
 const Reason = core.assignment.Reason;
 
+const Schedule = @import("heuristics").schedule.Schedule;
+
 const common = @import("common.zig");
 const state = @import("../state.zig");
 const Solver = state.Solver;
@@ -22,9 +24,7 @@ const Result = solver_mod.Result;
 // relative to the propagations accumulated since the last probe; the
 // outer interval grows geometrically so inprocessing doesn't dominate
 // on long searches.
-pub const initial_interval: u64 = 10_000;
-pub const grow_num: u64 = 3;
-pub const grow_den: u64 = 2;
+pub const schedule: Schedule = .every(10_000, .by_half);
 const budget_share: common.BudgetShare = .{ .num = 1, .den = 10 };
 const max_probed_vars: usize = 1024;
 

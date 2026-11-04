@@ -1,11 +1,11 @@
-// Rephase cadence. Every `rephase_next` conflicts the solver backtracks
-// to level 0 and rotates `saved_phases` through a small family of
-// polarities (best / original / inverse / random) so phase saving can
-// escape local minima. The interval grows geometrically so late search
-// doesn't thrash the branching heuristic.
-pub const rephase_initial: u64 = 1000;
-pub const rephase_grow_num: u64 = 3;
-pub const rephase_grow_den: u64 = 2;
+const Schedule = @import("schedule.zig").Schedule;
+
+// Rephase cadence. On schedule the solver backtracks to level 0 and
+// rotates `saved_phases` through a small family of polarities (best /
+// original / inverse / random) so phase saving can escape local minima.
+// The interval grows geometrically so late search doesn't thrash the
+// branching heuristic.
+pub const schedule: Schedule = .every(1000, .by_half);
 
 // Which polarity strategy the next rephase will apply. We cycle through
 // the four in order; `.best` copies the trail-peak snapshot, `.original`

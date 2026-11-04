@@ -4,6 +4,8 @@ const Literal = core.cnf.Literal;
 const ClauseRef = core.cnf.ClauseRef;
 const clause_mod = core.clause;
 
+const Schedule = @import("heuristics").schedule.Schedule;
+
 const common = @import("common.zig");
 const state = @import("../state.zig");
 const Solver = state.Solver;
@@ -46,9 +48,7 @@ const Result = solver_mod.Result;
 // incrementally as clauses are strengthened.
 
 const preprocess_cap: u64 = 100_000_000;
-pub const inprocess_initial_interval: u64 = 20_000;
-pub const grow_num: u64 = 3;
-pub const grow_den: u64 = 2;
+pub const schedule: Schedule = .every(20_000, .by_half);
 const budget_share: common.BudgetShare = .{ .num = 2, .den = 10 };
 const inprocess_floor: u64 = 2_000_000;
 

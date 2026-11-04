@@ -23,6 +23,14 @@ const order_heap_mod = heuristics.order_heap;
 const OrderHeap = order_heap_mod.OrderHeap;
 const rephase_mod = heuristics.rephase;
 const mode_mod = heuristics.mode;
+const Schedule = heuristics.schedule.Schedule;
+
+const reduce_mod = @import("inprocess/reduce.zig");
+const probe_mod = @import("inprocess/probe.zig");
+const vivify_mod = @import("inprocess/vivify.zig");
+const subsume_mod = @import("inprocess/subsume.zig");
+const bve_mod = @import("inprocess/bve.zig");
+const equiv_mod = @import("inprocess/equiv.zig");
 
 const io = @import("io");
 
@@ -84,6 +92,17 @@ pub const Installed = union(enum) {
     long: ClauseRef,
 };
 
+pub const Schedules = struct {
+    reduce: Schedule = reduce_mod.schedule,
+    rephase: Schedule = rephase_mod.schedule,
+    probe: Schedule = probe_mod.schedule,
+    vivify: Schedule = vivify_mod.schedule,
+    subsume: Schedule = subsume_mod.schedule,
+    bve: Schedule = bve_mod.schedule,
+    equiv: Schedule = equiv_mod.schedule,
+    mode_switch: Schedule = mode_mod.schedule,
+};
+
 pub const Solver = struct {
     allocator: Allocator,
     num_vars: u32,
@@ -130,30 +149,18 @@ pub const Solver = struct {
     trail_fast_bc: f64,
     conflicts_since_restart: u64,
 
-    next_reduce: u64,
-    reduce_interval: u64,
+    // When each periodic task next runs.
+    schedules: Schedules,
 
     // Rephase state. `best_trail_len` tracks the longest partial
     // assignment seen at a conflict point — each new peak writes its
     // polarities into assignment.best_phases.
     best_trail_len: usize,
-    rephase_next: u64,
-    rephase_interval: u64,
     rephase_kind: rephase_mod.RephaseKind,
 
-    // Failed literal probing cadence.
-    next_probe: u64,
-    probe_interval: u64,
+    // Propagation counts when each budgeted pass last ran.
     props_at_last_probe: u64,
-
-    // Vivification cadence.
-    next_vivify: u64,
-    vivify_interval: u64,
     props_at_last_vivify: u64,
-
-    // Subsumption cadence.
-    next_subsume: u64,
-    subsume_interval: u64,
     props_at_last_subsume: u64,
 
     // BVE — bit-indexed by variable. Eliminated variables must never be
@@ -165,19 +172,13 @@ pub const Solver = struct {
     // in bve_witness_frames names the pivot and a range of these clauses.
     bve_witness: cnf.ClauseList,
     bve_witness_frames: std.ArrayList(WitnessFrame),
-    next_bve: u64,
-    bve_interval: u64,
     props_at_last_bve: u64,
 
-    // Equivalent-literal substitution cadence + witness.
+    // Equivalent-literal substitution witness.
     equiv_witness: std.ArrayList(EquivFrame),
-    next_equiv: u64,
-    equiv_interval: u64,
 
     // Focused/stable alternation.
     search_mode: mode_mod.SearchMode,
-    mode_budget: u64,
-    next_mode_switch: u64,
 
     // Arena slots held by deleted clauses; compaction runs once they
     // make up half the arena.
@@ -198,16 +199,16 @@ pub const Solver = struct {
     pub const solve = @import("solve.zig").solve;
     pub const extendModel = @import("model.zig").extendModel;
     pub const findFalsifiedClause = @import("model.zig").findFalsifiedClause;
-    pub const probe = @import("inprocess/probe.zig").probe;
-    pub const vivify = @import("inprocess/vivify.zig").vivify;
-    pub const subsume = @import("inprocess/subsume.zig").subsume;
-    pub const preprocessSubsume = @import("inprocess/subsume.zig").preprocessSubsume;
-    pub const subsumeWithin = @import("inprocess/subsume.zig").subsumeWithin;
-    pub const bve = @import("inprocess/bve.zig").bve;
-    pub const preprocessBVE = @import("inprocess/bve.zig").preprocessBVE;
-    pub const equiv = @import("inprocess/equiv.zig").equiv;
-    pub const reduceDB = @import("inprocess/reduce.zig").reduceDB;
-    pub const compact = @import("inprocess/reduce.zig").compact;
+    pub const probe = probe_mod.probe;
+    pub const vivify = vivify_mod.vivify;
+    pub const subsume = subsume_mod.subsume;
+    pub const preprocessSubsume = subsume_mod.preprocessSubsume;
+    pub const subsumeWithin = subsume_mod.subsumeWithin;
+    pub const bve = bve_mod.bve;
+    pub const preprocessBVE = bve_mod.preprocessBVE;
+    pub const equiv = equiv_mod.equiv;
+    pub const reduceDB = reduce_mod.reduceDB;
+    pub const compact = reduce_mod.compact;
 
     pub fn init(allocator: Allocator, formula: *const Formula) !Solver {
         var self: Solver = .{
@@ -226,7 +227,7 @@ pub const Solver = struct {
             .analyze_to_clear = .empty,
             .analyze_stack = .empty,
             .learned_clauses = .empty,
-            .max_learned = @max(formula.clauseCount(), @import("inprocess/reduce.zig").min_max_learned),
+            .max_learned = @max(formula.clauseCount(), reduce_mod.min_max_learned),
             .proof = .{},
             .lbd_fast = 0,
             .lbd_fast_bc = 0,
@@ -235,33 +236,18 @@ pub const Solver = struct {
             .trail_fast = 0,
             .trail_fast_bc = 0,
             .conflicts_since_restart = 0,
-            .next_reduce = @import("inprocess/reduce.zig").initial_interval,
-            .reduce_interval = @import("inprocess/reduce.zig").initial_interval,
+            .schedules = .{},
             .best_trail_len = 0,
-            .rephase_next = rephase_mod.rephase_initial,
-            .rephase_interval = rephase_mod.rephase_initial,
             .rephase_kind = .best,
-            .next_probe = @import("inprocess/probe.zig").initial_interval,
-            .probe_interval = @import("inprocess/probe.zig").initial_interval,
             .props_at_last_probe = 0,
-            .next_vivify = @import("inprocess/vivify.zig").initial_interval,
-            .vivify_interval = @import("inprocess/vivify.zig").initial_interval,
             .props_at_last_vivify = 0,
-            .next_subsume = @import("inprocess/subsume.zig").inprocess_initial_interval,
-            .subsume_interval = @import("inprocess/subsume.zig").inprocess_initial_interval,
             .props_at_last_subsume = 0,
             .eliminated = undefined,
             .bve_witness = .{},
             .bve_witness_frames = .empty,
-            .next_bve = @import("inprocess/bve.zig").inprocess_initial_interval,
-            .bve_interval = @import("inprocess/bve.zig").inprocess_initial_interval,
             .props_at_last_bve = 0,
             .equiv_witness = .empty,
-            .next_equiv = @import("inprocess/equiv.zig").inprocess_initial_interval,
-            .equiv_interval = @import("inprocess/equiv.zig").inprocess_initial_interval,
             .search_mode = .focused,
-            .mode_budget = mode_mod.stable_initial_budget,
-            .next_mode_switch = mode_mod.stable_initial_budget,
             .arena_dead_slots = 0,
             .unsat_at_init = false,
             .stats = .{},

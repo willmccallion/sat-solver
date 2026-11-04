@@ -5,6 +5,8 @@ const ClauseList = core.cnf.ClauseList;
 const ClauseRef = core.cnf.ClauseRef;
 const clause_mod = core.clause;
 
+const Schedule = @import("heuristics").schedule.Schedule;
+
 const common = @import("common.zig");
 const state = @import("../state.zig");
 const Solver = state.Solver;
@@ -39,9 +41,7 @@ const Result = solver_mod.Result;
 // across an allocation boundary.
 
 const preprocess_cap: u64 = 50_000_000;
-pub const inprocess_initial_interval: u64 = 40_000;
-pub const grow_num: u64 = 3;
-pub const grow_den: u64 = 2;
+pub const schedule: Schedule = .every(40_000, .by_half);
 const budget_share: common.BudgetShare = .{ .num = 1, .den = 10 };
 const inprocess_floor: u64 = 1_000_000;
 const max_resolvent_len: u32 = 16;
