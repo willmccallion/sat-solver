@@ -624,11 +624,8 @@ fn printSubmittability(t: Table, checks: []const Check) !bool {
 fn printScoreboard(t: Table) !void {
     try t.sectionHeader("competitive scoreboard");
     var line_buf: [96]u8 = undefined;
-    try t.textRow(Color.dim, try std.fmt.bufPrint(
-        &line_buf,
-        "SAT Comp 2025 main sequential, {d}s timeout, {s}",
-        .{ ref_timeout_seconds, ref_scoring },
-    ));
+    try t.textRow(Color.dim, try std.fmt.bufPrint(&line_buf, "SAT Comp 2025 main sequential, {d}s timeout,", .{ref_timeout_seconds}));
+    try t.textRow(Color.dim, "scored by " ++ ref_scoring);
     try t.blankRow();
     try t.textRow(Color.cyan, try std.fmt.bufPrint(&line_buf, "1. {s:<16} {d}/{d}  PAR-2 {d:.0}", .{
         ref_winner_name, ref_winner_solved, ref_total_instances, ref_winner_par2,
