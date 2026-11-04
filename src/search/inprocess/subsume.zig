@@ -2,7 +2,6 @@ const std = @import("std");
 const core = @import("core");
 const Literal = core.cnf.Literal;
 const ClauseRef = core.cnf.ClauseRef;
-const Reason = core.assignment.Reason;
 const clause_mod = core.clause;
 
 const state = @import("../state.zig");
@@ -434,16 +433,10 @@ fn binarySSRAgainstBinaries(
 
         self.stats.strengthened_clauses += 1;
 
-        // Assign unit or detect conflict.
-        const val = self.assignment.valueOfLiteral(unit);
-        if (val == .false) {
+        if (try self.assertRootUnit(unit) == .refuted) {
             unsat_derived.* = true;
             return;
         }
-        if (val == .unassigned) {
-            try self.assignment.assign(unit, Reason.none);
-        }
-        // If val == .true already, the unit adds no new info.
         // Do NOT increment i — we swap-removed at i.
         // Continue scanning for further matches (unlikely for a distinct
         // binary, but safe).
@@ -569,15 +562,7 @@ fn strengthenLongClause(
     }
 
     if (new_len == 1) {
-        const unit = new_lits.items[0];
-        const val = self.assignment.valueOfLiteral(unit);
-        if (val == .false) {
-            unsat_derived.* = true;
-            return;
-        }
-        if (val == .unassigned) {
-            try self.assignment.assign(unit, Reason.none);
-        }
+        if (try self.assertRootUnit(new_lits.items[0]) == .refuted) unsat_derived.* = true;
         return;
     }
 

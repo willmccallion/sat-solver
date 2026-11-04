@@ -2,7 +2,6 @@ const std = @import("std");
 const core = @import("core");
 const Literal = core.cnf.Literal;
 const ClauseRef = core.cnf.ClauseRef;
-const Reason = core.assignment.Reason;
 const clause_mod = core.clause;
 
 const state = @import("../state.zig");
@@ -442,10 +441,8 @@ pub fn equiv(self: *Solver) !?Result {
 
     // Phase C: mutate state for long clauses
     var any_deleted = false;
-    var unsat_derived = false;
 
     for (long_work.items) |lw| {
-        if (unsat_derived) break;
         // Mark old clause deleted first. We never read it again after this.
         self.markDeleted(lw.old_cref);
         any_deleted = true;
@@ -455,14 +452,9 @@ pub fn equiv(self: *Solver) !?Result {
         const new_lits = work_new_lits.items[lw.new_off .. lw.new_off + lw.new_len];
 
         if (lw.new_len == 1) {
-            const unit = new_lits[0];
-            const val = self.assignment.valueOfLiteral(unit);
-            if (val == .false) {
-                unsat_derived = true;
-                break;
-            }
-            if (val == .unassigned) {
-                try self.assignment.assign(unit, Reason.none);
+            if (try self.assertRootUnit(new_lits[0]) == .refuted) {
+                try self.proof.empty();
+                return .unsat;
             }
             continue;
         }
@@ -485,36 +477,19 @@ pub fn equiv(self: *Solver) !?Result {
         }
     }
 
-    if (unsat_derived) {
-        try self.proof.empty();
-        return .unsat;
-    }
-
     // Phase D: mutate state for binaries
     for (bin_work.items) |bw| {
-        if (unsat_derived) break;
         self.removeBinary(bw.old_a, bw.old_b);
         switch (bw.kind) {
             .tautology => {},
-            .unit => {
-                const val = self.assignment.valueOfLiteral(bw.new_a);
-                if (val == .false) {
-                    unsat_derived = true;
-                    break;
-                }
-                if (val == .unassigned) {
-                    try self.assignment.assign(bw.new_a, Reason.none);
-                }
+            .unit => if (try self.assertRootUnit(bw.new_a) == .refuted) {
+                try self.proof.empty();
+                return .unsat;
             },
             .rebind => {
                 try self.addBinary(bw.new_a, bw.new_b);
             },
         }
-    }
-
-    if (unsat_derived) {
-        try self.proof.empty();
-        return .unsat;
     }
 
     if (any_deleted) self.dropDeletedClauseRefs();

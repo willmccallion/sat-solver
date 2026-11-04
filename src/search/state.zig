@@ -75,6 +75,9 @@ pub const EquivFrame = struct {
     rep_lit: cnf.Literal,
 };
 
+// Whether a level-0 unit is consistent with the root assignment.
+pub const RootUnit = enum { consistent, refuted };
+
 pub const Solver = struct {
     allocator: Allocator,
     num_vars: u32,
@@ -338,13 +341,7 @@ pub const Solver = struct {
                 continue;
             }
             if (lits.len == 1) {
-                const lit = lits[0];
-                const val = self.assignment.valueOfLiteral(lit);
-                if (val == .false) {
-                    self.unsat_at_init = true;
-                } else if (val == .unassigned) {
-                    try self.assignment.assign(lit, Reason.none);
-                }
+                if (try self.assertRootUnit(lits[0]) == .refuted) self.unsat_at_init = true;
                 continue;
             }
             if (lits.len == 2) {
@@ -498,6 +495,16 @@ pub const Solver = struct {
         try clause_mod.reserveSlot(BinaryWatch, w1, self.allocator);
         w0.appendAssumeCapacity(.{ .other = b });
         w1.appendAssumeCapacity(.{ .other = a });
+    }
+
+    // Assigns `lit` at level 0 unless it already holds.
+    pub fn assertRootUnit(self: *Solver, lit: Literal) !RootUnit {
+        switch (self.assignment.valueOfLiteral(lit)) {
+            .false => return .refuted,
+            .unassigned => try self.assignment.assign(lit, Reason.none),
+            .true => {},
+        }
+        return .consistent;
     }
 
     // Removes one copy of the 2-clause (a ∨ b) from both binary watch lists.

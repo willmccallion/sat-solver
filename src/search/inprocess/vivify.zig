@@ -144,14 +144,9 @@ pub fn vivify(self: *Solver) !?Result {
         self.stats.vivified_clauses += 1;
 
         if (new_len == 1) {
-            const unit = new_lits[0];
-            const val = self.assignment.valueOfLiteral(unit);
-            if (val == .false) {
+            if (try self.assertRootUnit(new_lits[0]) == .refuted) {
                 try self.proof.empty();
                 return .unsat;
-            }
-            if (val == .unassigned) {
-                try self.assignment.assign(unit, Reason.none);
             }
         } else if (new_len == 2) {
             try self.addBinary(new_lits[0], new_lits[1]);

@@ -2,7 +2,6 @@ const std = @import("std");
 const core = @import("core");
 const Literal = core.cnf.Literal;
 const ClauseRef = core.cnf.ClauseRef;
-const Reason = core.assignment.Reason;
 const clause_mod = core.clause;
 
 const state = @import("../state.zig");
@@ -636,14 +635,9 @@ fn commitElimination(
         const r_lits = resolvents_flat.items[off + 1 .. off + 1 + r_len];
 
         if (r_len == 1) {
-            const unit = r_lits[0];
-            const val = self.assignment.valueOfLiteral(unit);
-            if (val == .false) {
+            if (try self.assertRootUnit(r_lits[0]) == .refuted) {
                 unsat_derived.* = true;
                 return;
-            }
-            if (val == .unassigned) {
-                try self.assignment.assign(unit, Reason.none);
             }
         } else if (r_len == 2) {
             const a = r_lits[0];
