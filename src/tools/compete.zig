@@ -248,41 +248,49 @@ fn checkGzipInput(gpa: Allocator, io: std.Io, sat_path: []const u8) !Check {
     };
 }
 
+// The SIGTERM goes to sat solving 11 pigeons in 10 holes, which takes over
+// half a minute even in ReleaseFast, so a signal sent after
+// `signal_delay_ms` always arrives mid-search rather than before sat has
+// installed its handler or after it has finished.
+const pigeonhole_holes = 10;
+const signal_delay_ms = 500;
+
+fn writePigeonhole(io: std.Io, path: []const u8, holes: u32) !void {
+    var file = try std.Io.Dir.cwd().createFile(io, path, .{});
+    defer file.close(io);
+    var buffer: [4096]u8 = undefined;
+    var file_writer = file.writer(io, &buffer);
+    const w = &file_writer.interface;
+    const pigeons = holes + 1;
+    const clause_count = pigeons + holes * pigeons * (pigeons - 1) / 2;
+    try w.print("p cnf {d} {d}\n", .{ pigeons * holes, clause_count });
+    for (0..pigeons) |pigeon| {
+        for (0..holes) |hole| try w.print("{d} ", .{pigeon * holes + hole + 1});
+        try w.writeAll("0\n");
+    }
+    for (0..holes) |hole| {
+        for (0..pigeons) |a| {
+            for (a + 1..pigeons) |b| try w.print("-{d} -{d} 0\n", .{ a * holes + hole + 1, b * holes + hole + 1 });
+        }
+    }
+    try w.flush();
+}
+
 // Spawns the solver on a long-ish instance, sends SIGTERM after a
 // short delay, verifies it exits 0 with `s UNKNOWN` on stdout.
 fn checkSignalHandling(gpa: Allocator, io: std.Io, sat_path: []const u8) !Check {
-    // Prefer uf250 (guaranteed to take at least tens of ms in
-    // ReleaseFast) but fall back to uuf100 if the large set isn't
-    // downloaded. Either way the instance must run long enough for
-    // the SIGTERM to arrive before completion.
-    const candidates = [_][]const u8{
-        "bench/instances/uf250-1065/uf250-010.cnf",
-        "bench/instances/uuf100-430/uuf100-010.cnf",
-    };
-    var inst: ?[]const u8 = null;
-    for (candidates) |p| {
-        const f = std.Io.Dir.cwd().openFile(io, p, .{}) catch continue;
-        f.close(io);
-        inst = p;
-        break;
-    }
-    if (inst == null) {
-        return .{
-            .name = "signal handling (SIGTERM)",
-            .status = .skip,
-            .detail = try gpa.dupe(u8, "no bench instance available (run bench/fetch.sh)"),
-        };
-    }
+    const inst = "bench/.cache/sat-compete-pigeonhole.cnf";
+    try std.Io.Dir.cwd().createDirPath(io, "bench/.cache");
+    try writePigeonhole(io, inst, pigeonhole_holes);
 
     var child = try std.process.spawn(io, .{
-        .argv = &.{ sat_path, inst.? },
+        .argv = &.{ sat_path, inst },
         .stdin = .ignore,
         .stdout = .pipe,
         .stderr = .ignore,
     });
 
-    // Give the solver a few ms to actually start BCP, then kill it.
-    io.sleep(.fromMilliseconds(10), .awake) catch {};
+    io.sleep(.fromMilliseconds(signal_delay_ms), .awake) catch {};
     if (child.id) |pid| std.posix.kill(pid, std.posix.SIG.TERM) catch {};
 
     var stdout_buffer: [1024]u8 = undefined;
