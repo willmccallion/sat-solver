@@ -49,7 +49,7 @@ pub fn probe(self: *Solver) !?Result {
     defer candidates.deinit(self.allocator);
     try candidates.ensureTotalCapacity(self.allocator, self.num_vars);
     for (self.assignment.vars, 0..) |vi, idx| {
-        if (vi.value == .unassigned) {
+        if (vi.value == .unassigned and !self.eliminated.isSet(idx)) {
             candidates.appendAssumeCapacity(@intCast(idx));
         }
     }

@@ -994,3 +994,35 @@ test "bve growth bound counts only irredundant clauses" {
     try testing.expect(r == null);
     try testing.expect(!hasEliminated(&solver, 0));
 }
+
+test "probe never assigns an eliminated variable" {
+    // Probing assigns a variable both ways at level 1, and each backtrack
+    // saves its phase, so a probed variable ends with its saved phase flipped.
+    const src =
+        \\p cnf 11 6
+        \\1 2 0
+        \\-1 3 0
+        \\-2 4 5 0
+        \\-2 6 7 0
+        \\-3 8 9 0
+        \\-3 10 11 0
+    ;
+    var formula = try parseSource(src);
+    defer formula.deinit();
+    var solver = try solver_mod.Solver.init(testing.allocator, &formula);
+    defer solver.deinit();
+    _ = try solver.propagate();
+    _ = try solver.preprocessBVE();
+    try testing.expect(hasEliminated(&solver, 0));
+    const phases_before = try testing.allocator.dupe(bool, solver.assignment.saved_phases);
+    defer testing.allocator.free(phases_before);
+
+    const r = try solver.probe();
+
+    try testing.expect(r == null);
+    var v: u32 = 0;
+    while (v < solver.num_vars) : (v += 1) {
+        if (!hasEliminated(&solver, v)) continue;
+        try testing.expectEqual(phases_before[v], solver.assignment.saved_phases[v]);
+    }
+}
