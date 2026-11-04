@@ -190,7 +190,13 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the sat solver");
     run_step.dependOn(&run_cmd.step);
 
+    const test_filters = b.option(
+        []const []const u8,
+        "test-filter",
+        "Run only the unit tests whose names contain this text",
+    ) orelse &.{};
     const unit_tests = b.addTest(.{
+        .filters = test_filters,
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/unit.zig"),
             .target = target,
@@ -201,6 +207,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_unit_tests = b.addRunArtifact(unit_tests);
+    const unit_step = b.step("unit", "Run only tests/unit.zig (narrow with -Dtest-filter=TEXT)");
+    unit_step.dependOn(&run_unit_tests.step);
 
     const e2e_sat = b.addRunArtifact(exe);
     e2e_sat.addFileArg(b.path("tests/fixtures/trivial_sat.cnf"));
