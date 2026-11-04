@@ -4,190 +4,204 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Module dependency DAG, strictly downward:
-    //   core  ←  io
-    //   core, io, heuristics  ←  search
-    //   everything  ←  tools, main, root (the `sat` public module)
-    const core = b.createModule(.{
-        .root_source_file = b.path("src/core/mod.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const io = b.createModule(.{
-        .root_source_file = b.path("src/io/mod.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    io.addImport("core", core);
-
-    const heuristics = b.createModule(.{
-        .root_source_file = b.path("src/heuristics/mod.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const search = b.createModule(.{
-        .root_source_file = b.path("src/search/mod.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    search.addImport("core", core);
-    search.addImport("io", io);
-    search.addImport("heuristics", heuristics);
-
-    const addLayerImports = struct {
-        fn apply(
-            m: *std.Build.Module,
-            c: *std.Build.Module,
-            i: *std.Build.Module,
-            h: *std.Build.Module,
-            s: *std.Build.Module,
-        ) void {
-            m.addImport("core", c);
-            m.addImport("io", i);
-            m.addImport("heuristics", h);
-            m.addImport("search", s);
-        }
-    }.apply;
-
-    const exe_module = b.createModule(.{
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
-        .strip = false,
-    });
-    addLayerImports(exe_module, core, io, heuristics, search);
-    const exe = b.addExecutable(.{ .name = "sat", .root_module = exe_module });
-    b.installArtifact(exe);
-
-    const bench_module = b.createModule(.{
-        .root_source_file = b.path("src/tools/bench.zig"),
-        .target = target,
-        .optimize = optimize,
-        .strip = false,
-    });
-    addLayerImports(bench_module, core, io, heuristics, search);
-    const bench_exe = b.addExecutable(.{ .name = "sat-bench", .root_module = bench_module });
-    b.installArtifact(bench_exe);
-
-    const sudoku_module = b.createModule(.{
-        .root_source_file = b.path("src/tools/sudoku.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    addLayerImports(sudoku_module, core, io, heuristics, search);
-    const sudoku_exe = b.addExecutable(.{ .name = "sat-sudoku", .root_module = sudoku_module });
-    b.installArtifact(sudoku_exe);
-
-    const sudoku_run = b.addRunArtifact(sudoku_exe);
-    sudoku_run.addPassthruArgs();
-    const sudoku_step = b.step("sudoku", "Solve a Sudoku (zig build sudoku -- PUZZLE)");
-    sudoku_step.dependOn(&sudoku_run.step);
-
-    const bench_release_module = b.createModule(.{
-        .root_source_file = b.path("src/tools/bench.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-        .strip = false,
-    });
-    addLayerImports(bench_release_module, core, io, heuristics, search);
-    const bench_release_exe = b.addExecutable(.{ .name = "sat-bench", .root_module = bench_release_module });
-
-    const profile_module = b.createModule(.{
-        .root_source_file = b.path("src/tools/profile.zig"),
-        .target = target,
-        .optimize = .Debug,
-    });
-    addLayerImports(profile_module, core, io, heuristics, search);
-    const profile_exe = b.addExecutable(.{ .name = "sat-profile", .root_module = profile_module });
-
-    const profile_run = b.addRunArtifact(profile_exe);
-    profile_run.addArtifactArg(bench_release_exe);
-    profile_run.addArg("bench/instances/uf200-860");
-    profile_run.addArg("bench/instances/uuf200-860");
-    profile_run.addArg("bench/instances/uf250-1065");
-    profile_run.addArg("bench/instances/uuf250-1065");
-    profile_run.has_side_effects = true;
-    profile_run.stdio = .inherit;
-
-    const bench_step = b.step("bench", "Run deep perf profile on uf200/uuf200 + uf250/uuf250 (~7 min)");
-    bench_step.dependOn(&profile_run.step);
-
-    const compete_module = b.createModule(.{
-        .root_source_file = b.path("src/tools/compete.zig"),
-        .target = target,
-        .optimize = .Debug,
-    });
-    addLayerImports(compete_module, core, io, heuristics, search);
-    const compete_exe = b.addExecutable(.{ .name = "sat-compete", .root_module = compete_module });
-
-    const compete_run = b.addRunArtifact(compete_exe);
-    compete_run.addArtifactArg(exe);
-    compete_run.addArtifactArg(bench_release_exe);
-    compete_run.has_side_effects = true;
-    compete_run.stdio = .inherit;
-
-    const compete_step = b.step(
-        "compete",
-        "Tournament readiness check — submittability + perf vs SAT Competition 2025",
-    );
-    compete_step.dependOn(&compete_run.step);
-
-    const quick_profile_run = b.addRunArtifact(profile_exe);
-    quick_profile_run.addArtifactArg(bench_release_exe);
-    quick_profile_run.addArg("bench/instances/uf100-430");
-    quick_profile_run.addArg("bench/instances/uuf100-430");
-    quick_profile_run.has_side_effects = true;
-    quick_profile_run.stdio = .inherit;
-
-    const bench_quick_step = b.step("bench-quick", "Run fast perf profile on uf100 + uuf100 (~4 s)");
-    bench_quick_step.dependOn(&quick_profile_run.step);
-
-    const industrial_profile_run = b.addRunArtifact(profile_exe);
-    industrial_profile_run.addArtifactArg(bench_release_exe);
-    industrial_profile_run.addArg("--timeout-sec");
-    industrial_profile_run.addArg("30");
-    industrial_profile_run.addArg("bench/instances/dimacs-bf");
-    industrial_profile_run.addArg("bench/instances/dimacs-ssa");
-    industrial_profile_run.addArg("bench/instances/dimacs-hanoi");
-    industrial_profile_run.addArg("bench/instances/dimacs-parity");
-    industrial_profile_run.addArg("bench/instances/dimacs-aim");
-    industrial_profile_run.has_side_effects = true;
-    industrial_profile_run.stdio = .inherit;
-
-    const bench_industrial_step = b.step(
-        "bench-industrial",
-        "Perf profile on SATLIB crafted (bf/ssa/hanoi/parity/aim) with 30 s cap",
-    );
-    bench_industrial_step.dependOn(&industrial_profile_run.step);
-
-    const satcomp_profile_run = b.addRunArtifact(profile_exe);
-    satcomp_profile_run.addArtifactArg(bench_release_exe);
-    satcomp_profile_run.addArg("--timeout-sec");
-    satcomp_profile_run.addArg("60");
-    satcomp_profile_run.addArg("bench/instances/satcomp2025");
-    satcomp_profile_run.has_side_effects = true;
-    satcomp_profile_run.stdio = .inherit;
-
-    const bench_satcomp_step = b.step(
-        "bench-satcomp",
-        "Perf profile on SAT Competition 2025 subset (run bench/fetch_satcomp.sh first)",
-    );
-    bench_satcomp_step.dependOn(&satcomp_profile_run.step);
+    const layers = addLayers(b, target, optimize);
+    const tools = addTools(b, target, optimize, layers);
+    addProfileSteps(b, tools);
 
     const sat_module = b.addModule("sat", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{ layers.core, layers.io, layers.search },
     });
-    addLayerImports(sat_module, core, io, heuristics, search);
 
-    const run_cmd = b.addRunArtifact(exe);
+    const run_cmd = b.addRunArtifact(tools.sat);
     run_cmd.step.dependOn(b.getInstallStep());
     run_cmd.addPassthruArgs();
-    const run_step = b.step("run", "Run the sat solver");
-    run_step.dependOn(&run_cmd.step);
+    b.step("run", "Run the sat solver").dependOn(&run_cmd.step);
 
+    addTests(b, target, optimize, sat_module, tools);
+}
+
+// The layer modules, as imports. Dependency DAG, strictly downward:
+//   core  ←  io
+//   core, io, heuristics  ←  search
+//   everything  ←  tools, main, root (the `sat` public module)
+const Layers = struct {
+    core: std.Build.Module.Import,
+    io: std.Build.Module.Import,
+    heuristics: std.Build.Module.Import,
+    search: std.Build.Module.Import,
+};
+
+fn addLayers(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) Layers {
+    const core = b.createModule(.{ .root_source_file = b.path("src/core/mod.zig"), .target = target, .optimize = optimize });
+    const io = b.createModule(.{
+        .root_source_file = b.path("src/io/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "core", .module = core }},
+    });
+    const heuristics = b.createModule(.{ .root_source_file = b.path("src/heuristics/mod.zig"), .target = target, .optimize = optimize });
+    const search = b.createModule(.{
+        .root_source_file = b.path("src/search/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "core", .module = core },
+            .{ .name = "io", .module = io },
+            .{ .name = "heuristics", .module = heuristics },
+        },
+    });
+    return .{
+        .core = .{ .name = "core", .module = core },
+        .io = .{ .name = "io", .module = io },
+        .heuristics = .{ .name = "heuristics", .module = heuristics },
+        .search = .{ .name = "search", .module = search },
+    };
+}
+
+const Tools = struct {
+    sat: *std.Build.Step.Compile,
+    sudoku: *std.Build.Step.Compile,
+    // Always ReleaseFast, since the profile steps measure it.
+    bench_release: *std.Build.Step.Compile,
+    profile: *std.Build.Step.Compile,
+    compete: *std.Build.Step.Compile,
+};
+
+fn addTools(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    layers: Layers,
+) Tools {
+    // The solver and sat-bench keep their symbols for perf annotate.
+    const sat = addTool(b, target, .{
+        .name = "sat",
+        .root = "src/main.zig",
+        .optimize = optimize,
+        .strip = false,
+        .imports = &.{ layers.core, layers.io, layers.search },
+    });
+    const bench_imports: []const std.Build.Module.Import = &.{ layers.io, layers.search };
+    const bench = addTool(b, target, .{
+        .name = "sat-bench",
+        .root = "src/tools/bench.zig",
+        .optimize = optimize,
+        .strip = false,
+        .imports = bench_imports,
+    });
+    const sudoku = addTool(b, target, .{
+        .name = "sat-sudoku",
+        .root = "src/tools/sudoku.zig",
+        .optimize = optimize,
+        .imports = &.{ layers.core, layers.search },
+    });
+    b.installArtifact(sat);
+    b.installArtifact(bench);
+    b.installArtifact(sudoku);
+
+    const sudoku_run = b.addRunArtifact(sudoku);
+    sudoku_run.addPassthruArgs();
+    b.step("sudoku", "Solve a Sudoku (zig build sudoku -- PUZZLE)").dependOn(&sudoku_run.step);
+
+    return .{
+        .sat = sat,
+        .sudoku = sudoku,
+        .bench_release = addTool(b, target, .{
+            .name = "sat-bench",
+            .root = "src/tools/bench.zig",
+            .optimize = .ReleaseFast,
+            .strip = false,
+            .imports = bench_imports,
+        }),
+        .profile = addTool(b, target, .{
+            .name = "sat-profile",
+            .root = "src/tools/profile.zig",
+            .optimize = .Debug,
+            .imports = &.{layers.search},
+        }),
+        .compete = addTool(b, target, .{ .name = "sat-compete", .root = "src/tools/compete.zig", .optimize = .Debug }),
+    };
+}
+
+const Tool = struct {
+    name: []const u8,
+    root: []const u8,
+    optimize: std.builtin.OptimizeMode,
+    strip: ?bool = null,
+    imports: []const std.Build.Module.Import = &.{},
+};
+
+fn addTool(b: *std.Build, target: std.Build.ResolvedTarget, tool: Tool) *std.Build.Step.Compile {
+    return b.addExecutable(.{
+        .name = tool.name,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(tool.root),
+            .target = target,
+            .optimize = tool.optimize,
+            .strip = tool.strip,
+            .imports = tool.imports,
+        }),
+    });
+}
+
+fn addProfileSteps(b: *std.Build, tools: Tools) void {
+    addProfileStep(b, tools, "bench", "Run deep perf profile on uf200/uuf200 + uf250/uuf250 (~7 min)", &.{
+        "bench/instances/uf200-860",
+        "bench/instances/uuf200-860",
+        "bench/instances/uf250-1065",
+        "bench/instances/uuf250-1065",
+    });
+
+    const compete_run = b.addRunArtifact(tools.compete);
+    compete_run.addArtifactArg(tools.sat);
+    compete_run.addArtifactArg(tools.bench_release);
+    compete_run.has_side_effects = true;
+    compete_run.stdio = .inherit;
+    b.step(
+        "compete",
+        "Tournament readiness check — submittability + perf vs SAT Competition 2025",
+    ).dependOn(&compete_run.step);
+
+    addProfileStep(b, tools, "bench-quick", "Run fast perf profile on uf100 + uuf100 (~4 s)", &.{
+        "bench/instances/uf100-430",
+        "bench/instances/uuf100-430",
+    });
+    addProfileStep(b, tools, "bench-industrial", "Perf profile on SATLIB crafted (bf/ssa/hanoi/parity/aim) with 30 s cap", &.{
+        "--timeout-sec",
+        "30",
+        "bench/instances/dimacs-bf",
+        "bench/instances/dimacs-ssa",
+        "bench/instances/dimacs-hanoi",
+        "bench/instances/dimacs-parity",
+        "bench/instances/dimacs-aim",
+    });
+    addProfileStep(b, tools, "bench-satcomp", "Perf profile on SAT Competition 2025 subset (run bench/fetch_satcomp.sh first)", &.{
+        "--timeout-sec",
+        "60",
+        "bench/instances/satcomp2025",
+    });
+}
+
+// A step that runs sat-profile over the release sat-bench with `args`.
+fn addProfileStep(b: *std.Build, tools: Tools, name: []const u8, description: []const u8, args: []const []const u8) void {
+    const run = b.addRunArtifact(tools.profile);
+    run.addArtifactArg(tools.bench_release);
+    run.addArgs(args);
+    run.has_side_effects = true;
+    run.stdio = .inherit;
+    b.step(name, description).dependOn(&run.step);
+}
+
+fn addTests(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    sat_module: *std.Build.Module,
+    tools: Tools,
+) void {
     const test_filters = b.option(
         []const []const u8,
         "test-filter",
@@ -199,41 +213,29 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/unit.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{
-                .{ .name = "sat", .module = sat_module },
-            },
+            .imports = &.{.{ .name = "sat", .module = sat_module }},
         }),
     });
     const run_unit_tests = b.addRunArtifact(unit_tests);
-    const unit_step = b.step("unit", "Run only tests/unit.zig (narrow with -Dtest-filter=TEXT)");
-    unit_step.dependOn(&run_unit_tests.step);
+    b.step("unit", "Run only tests/unit.zig (narrow with -Dtest-filter=TEXT)").dependOn(&run_unit_tests.step);
 
-    const e2e_sat = b.addRunArtifact(exe);
-    e2e_sat.addFileArg(b.path("tests/fixtures/trivial_sat.cnf"));
-    e2e_sat.expectExitCode(10);
+    const test_step = b.step("test", "Run unit tests and end-to-end round-trip");
+    test_step.dependOn(&run_unit_tests.step);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = tools.sudoku.root_module })).step);
+    // The profile tools only run under perf, so compiling them here is
+    // what keeps them building.
+    test_step.dependOn(&tools.profile.step);
+    test_step.dependOn(&tools.compete.step);
 
-    const e2e_unsat = b.addRunArtifact(exe);
-    e2e_unsat.addFileArg(b.path("tests/fixtures/trivial_unsat.cnf"));
-    e2e_unsat.expectExitCode(20);
-    e2e_unsat.expectStdOutEqual("s UNSATISFIABLE\n");
+    addSudokuTests(b, test_step, tools.sudoku);
+    addSolverCliTests(b, target, test_step, tools.sat);
+}
 
-    const e2e_small = b.addRunArtifact(exe);
-    e2e_small.addFileArg(b.path("tests/fixtures/small_sat.cnf"));
-    e2e_small.expectExitCode(10);
-
-    const e2e_proof = b.addRunArtifact(exe);
-    e2e_proof.addArg("--proof");
-    _ = e2e_proof.addOutputFileArg("trivial_unsat.drat");
-    e2e_proof.addFileArg(b.path("tests/fixtures/trivial_unsat.cnf"));
-    e2e_proof.expectExitCode(20);
-    e2e_proof.expectStdOutEqual("s UNSATISFIABLE\n");
-
-    const run_sudoku_tests = b.addRunArtifact(b.addTest(.{ .root_module = sudoku_module }));
-
-    const e2e_sudoku = b.addRunArtifact(sudoku_exe);
-    e2e_sudoku.addArg("53..7....6..195....98....6.8...6...34..8.3..17...2...6.6....28....419..5....8..79");
-    e2e_sudoku.expectExitCode(0);
-    e2e_sudoku.expectStdOutEqual(
+fn addSudokuTests(b: *std.Build, test_step: *std.Build.Step, sudoku: *std.Build.Step.Compile) void {
+    const solved = b.addRunArtifact(sudoku);
+    solved.addArg("53..7....6..195....98....6.8...6...34..8.3..17...2...6.6....28....419..5....8..79");
+    solved.expectExitCode(0);
+    solved.expectStdOutEqual(
         \\5 3 4 | 6 7 8 | 9 1 2
         \\6 7 2 | 1 9 5 | 3 4 8
         \\1 9 8 | 3 4 2 | 5 6 7
@@ -247,25 +249,30 @@ pub fn build(b: *std.Build) void {
         \\3 4 5 | 2 8 6 | 1 7 9
         \\
     );
+    test_step.dependOn(&solved.step);
 
     const oversized_puzzle = b.allocator.alloc(u8, 64 * 1024 + 1) catch @panic("OOM");
     @memset(oversized_puzzle, '.');
-    const e2e_sudoku_oversized = b.addRunArtifact(sudoku_exe);
-    e2e_sudoku_oversized.setStdIn(.{ .bytes = oversized_puzzle });
-    e2e_sudoku_oversized.expectExitCode(2);
-    e2e_sudoku_oversized.expectStdErrEqual("sat-sudoku: input is over 64 KiB\n");
+    const oversized = b.addRunArtifact(sudoku);
+    oversized.setStdIn(.{ .bytes = oversized_puzzle });
+    oversized.expectExitCode(2);
+    oversized.expectStdErrEqual("sat-sudoku: input is over 64 KiB\n");
+    test_step.dependOn(&oversized.step);
+}
 
-    const test_step = b.step("test", "Run unit tests and end-to-end round-trip");
-    test_step.dependOn(&run_unit_tests.step);
-    test_step.dependOn(&run_sudoku_tests.step);
-    test_step.dependOn(&e2e_sudoku.step);
-    test_step.dependOn(&e2e_sudoku_oversized.step);
-    test_step.dependOn(&e2e_sat.step);
-    test_step.dependOn(&e2e_unsat.step);
-    test_step.dependOn(&e2e_small.step);
-    test_step.dependOn(&e2e_proof.step);
+fn addSolverCliTests(b: *std.Build, target: std.Build.ResolvedTarget, test_step: *std.Build.Step, sat: *std.Build.Step.Compile) void {
+    const proof = b.addRunArtifact(sat);
+    proof.addArg("--proof");
+    _ = proof.addOutputFileArg("trivial_unsat.drat");
+    proof.addFileArg(b.path("tests/fixtures/trivial_unsat.cnf"));
+    proof.expectExitCode(20);
+    proof.expectStdOutEqual("s UNSATISFIABLE\n");
+    test_step.dependOn(&proof.step);
 
     const cli_cases = [_]CliCase{
+        .{ .args = &.{"tests/fixtures/trivial_sat.cnf"}, .exit_code = 10 },
+        .{ .args = &.{"tests/fixtures/trivial_unsat.cnf"}, .exit_code = 20, .stdout = "s UNSATISFIABLE\n" },
+        .{ .args = &.{"tests/fixtures/small_sat.cnf"}, .exit_code = 10 },
         .{ .args = &.{"--bogus"}, .exit_code = 1, .stderr_contains = "sat: unknown option `--bogus`\nusage: sat " },
         .{ .args = &.{"--proof"}, .exit_code = 1, .stderr_contains = "sat: --proof requires a PATH argument\n" },
         .{ .args = &.{"--time-limit"}, .exit_code = 1, .stderr_contains = "sat: --time-limit requires a SECS argument\n" },
@@ -283,49 +290,49 @@ pub fn build(b: *std.Build) void {
         .{ .stdin = "p cnf 1 1\n1 x 0\n", .exit_code = 0, .stdout = "c parse error: InvalidToken\ns UNKNOWN\n" },
         .{ .args = &.{"tests/fixtures/trivial_sat.cnf.gz"}, .exit_code = 10, .stdout = "s SATISFIABLE\nv 1 -2 0\n" },
     };
-    for (cli_cases) |case| addCliTest(b, test_step, exe, case);
+    for (cli_cases) |case| addCliTest(b, test_step, sat, case);
 
-    if (target.result.os.tag == .linux) {
-        // The address-space cap turns a header-sized allocation into a
-        // clean OutOfMemory instead of the OOM killer.
-        const e2e_huge_header = b.addSystemCommand(&.{ "prlimit", "--as=4294967296", "--" });
-        e2e_huge_header.addArtifactArg(exe);
-        e2e_huge_header.setStdIn(.{ .bytes = "p cnf 1073741824 1\n1 0\n" });
-        e2e_huge_header.expectExitCode(10);
-        e2e_huge_header.expectStdOutEqual("s SATISFIABLE\nv 1 0\n");
-        test_step.dependOn(&e2e_huge_header.step);
+    if (target.result.os.tag != .linux) return;
 
-        // /dev/full fails every write, standing in for a full disk.
-        const e2e_proof_write_failure = b.addRunArtifact(exe);
-        e2e_proof_write_failure.addArgs(&.{ "--proof", "/dev/full" });
-        e2e_proof_write_failure.addFileArg(b.path("tests/fixtures/trivial_unsat.cnf"));
-        e2e_proof_write_failure.expectExitCode(0);
-        e2e_proof_write_failure.expectStdOutEqual("c error: cannot write proof: NoSpaceLeft\ns UNKNOWN\n");
-        test_step.dependOn(&e2e_proof_write_failure.step);
-
+    // /dev/full fails every write, standing in for a full disk.
+    const linux_cases = [_]CliCase{
+        .{
+            .args = &.{ "--proof", "/dev/full", "tests/fixtures/trivial_unsat.cnf" },
+            .exit_code = 0,
+            .stdout = "c error: cannot write proof: NoSpaceLeft\ns UNKNOWN\n",
+        },
         // This proof outgrows its buffer, so the write fails during search.
-        const e2e_proof_search_write_failure = b.addRunArtifact(exe);
-        e2e_proof_search_write_failure.addArgs(&.{ "--proof", "/dev/full" });
-        e2e_proof_search_write_failure.addFileArg(b.path("tests/fixtures/pigeonhole_7_6.cnf"));
-        e2e_proof_search_write_failure.expectExitCode(0);
-        e2e_proof_search_write_failure.expectStdOutEqual("c error: cannot write proof: NoSpaceLeft\ns UNKNOWN\n");
-        test_step.dependOn(&e2e_proof_search_write_failure.step);
+        .{
+            .args = &.{ "--proof", "/dev/full", "tests/fixtures/pigeonhole_7_6.cnf" },
+            .exit_code = 0,
+            .stdout = "c error: cannot write proof: NoSpaceLeft\ns UNKNOWN\n",
+        },
+    };
+    for (linux_cases) |case| addCliTest(b, test_step, sat, case);
 
-        const e2e_stdout_write_failure = b.addSystemCommand(&.{ "sh", "-c", "exec \"$0\" \"$1\" > /dev/full" });
-        e2e_stdout_write_failure.addArtifactArg(exe);
-        e2e_stdout_write_failure.addFileArg(b.path("tests/fixtures/trivial_sat.cnf"));
-        e2e_stdout_write_failure.expectExitCode(1);
-        e2e_stdout_write_failure.expectStdErrEqual("sat: cannot write to stdout: NoSpaceLeft\n");
-        test_step.dependOn(&e2e_stdout_write_failure.step);
+    // The address-space cap turns a header-sized allocation into a
+    // clean OutOfMemory instead of the OOM killer.
+    const huge_header = b.addSystemCommand(&.{ "prlimit", "--as=4294967296", "--" });
+    huge_header.addArtifactArg(sat);
+    huge_header.setStdIn(.{ .bytes = "p cnf 1073741824 1\n1 0\n" });
+    huge_header.expectExitCode(10);
+    huge_header.expectStdOutEqual("s SATISFIABLE\nv 1 0\n");
+    test_step.dependOn(&huge_header.step);
 
-        // A model longer than the stdout buffer fails mid-print instead.
-        const e2e_model_write_failure = b.addSystemCommand(&.{ "sh", "-c", "exec \"$0\" > /dev/full" });
-        e2e_model_write_failure.addArtifactArg(exe);
-        e2e_model_write_failure.setStdIn(.{ .bytes = "p cnf 2000 1\n2000 0\n" });
-        e2e_model_write_failure.expectExitCode(1);
-        e2e_model_write_failure.expectStdErrEqual("sat: cannot write to stdout: NoSpaceLeft\n");
-        test_step.dependOn(&e2e_model_write_failure.step);
-    }
+    const stdout_write_failure = b.addSystemCommand(&.{ "sh", "-c", "exec \"$0\" \"$1\" > /dev/full" });
+    stdout_write_failure.addArtifactArg(sat);
+    stdout_write_failure.addFileArg(b.path("tests/fixtures/trivial_sat.cnf"));
+    stdout_write_failure.expectExitCode(1);
+    stdout_write_failure.expectStdErrEqual("sat: cannot write to stdout: NoSpaceLeft\n");
+    test_step.dependOn(&stdout_write_failure.step);
+
+    // A model longer than the stdout buffer fails mid-print instead.
+    const model_write_failure = b.addSystemCommand(&.{ "sh", "-c", "exec \"$0\" > /dev/full" });
+    model_write_failure.addArtifactArg(sat);
+    model_write_failure.setStdIn(.{ .bytes = "p cnf 2000 1\n2000 0\n" });
+    model_write_failure.expectExitCode(1);
+    model_write_failure.expectStdErrEqual("sat: cannot write to stdout: NoSpaceLeft\n");
+    test_step.dependOn(&model_write_failure.step);
 }
 
 // One run of the `sat` CLI from the build root, checked on its exit code
@@ -345,6 +352,6 @@ fn addCliTest(b: *std.Build, test_step: *std.Build.Step, exe: *std.Build.Step.Co
     run.setStdIn(.{ .bytes = case.stdin orelse "" });
     run.expectExitCode(case.exit_code);
     if (case.stdout) |out| run.expectStdOutEqual(out);
-    if (case.stderr_contains) |prefix| run.addCheck(.{ .expect_stderr_match = prefix });
+    if (case.stderr_contains) |line| run.addCheck(.{ .expect_stderr_match = line });
     test_step.dependOn(&run.step);
 }
