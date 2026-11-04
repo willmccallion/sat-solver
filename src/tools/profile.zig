@@ -418,204 +418,175 @@ fn printReport(
     hotspots: []const Hotspot,
     hot_insns: []const HotInsn,
 ) !void {
-    const cycles: f64 = @floatFromInt(stats.perf.cycles);
-    const insns: f64 = @floatFromInt(stats.perf.instructions);
-    const branches: f64 = @floatFromInt(stats.perf.branches);
-    const brmisses: f64 = @floatFromInt(stats.perf.branch_misses);
-    const l1d_loads: f64 = @floatFromInt(stats.perf.l1d_loads);
-    const l1d_miss: f64 = @floatFromInt(stats.perf.l1d_load_misses);
-
-    const ipc: f64 = if (cycles > 0) insns / cycles else 0;
-    const br_pct: f64 = if (branches > 0) brmisses * 100.0 / branches else 0;
-    const l1d_pct: f64 = if (l1d_loads > 0) l1d_miss * 100.0 / l1d_loads else 0;
-    const l1d_mpki: f64 = if (insns > 0) l1d_miss * 1000.0 / insns else 0;
-
-    const elapsed_ns_f: f64 = @floatFromInt(stats.bench.elapsed_ns);
-    const elapsed_ms = elapsed_ns_f / 1e6;
-    const per_inst_ms: f64 = if (stats.bench.instance_count > 0)
-        elapsed_ms / @as(f64, @floatFromInt(stats.bench.instance_count))
-    else
-        0;
-
-    const effective_ghz: f64 = if (elapsed_ns_f > 0) cycles / elapsed_ns_f else 0;
-
+    const elapsed_ns: f64 = @floatFromInt(stats.bench.elapsed_ns);
     try t.rule(box.tl, box.tr);
+    try printWorkload(t, dirs, &stats.bench);
+    try printDistribution(t, &stats.bench);
+    if (hasTopdown(&stats.perf)) try printTopdown(t, &stats.perf);
+    try printHardware(t, &stats.perf, elapsed_ns, stats.bench.peak_rss_kb);
+    try printSolverActivity(t, &stats.bench);
+    try printThroughput(t, elapsed_ns, &stats.bench.solver);
+    try printHotspots(t, hotspots, elapsed_ns);
+    if (hotspots.len > 0 and hot_insns.len > 0) try printHotInstructions(t, hotspots[0].symbol, hot_insns);
+    try t.rule(box.bl, box.br);
+}
+
+// `label` padded to `label_cols`, then `value` in cyan and `note` dimmed.
+fn valueRow(t: Table, label_cols: usize, label: []const u8, value: []const u8, note: []const u8) !void {
+    try t.startRow();
+    try t.writer.writeAll(label);
+    try t.writer.splatByteAll(' ', label_cols -| label.len);
+    try t.writer.print("{s}{s}{s}", .{ Color.cyan, value, Color.reset });
+    if (note.len > 0) try t.writer.print("{s}{s}{s}", .{ Color.dim, note, Color.reset });
+    try t.endRow(@max(label.len, label_cols) + value.len + note.len);
+}
+
+const workload_label_cols = 11;
+
+fn printWorkload(t: Table, dirs: []const []const u8, bench: *const report.BenchSummary) !void {
     try t.startRow();
     try t.writer.print("{s}{s}sat-bench perf baseline{s}", .{ Color.bold, Color.cyan, Color.reset });
     try t.endRow("sat-bench perf baseline".len);
     try t.blankRow();
 
-    for (dirs, 0..) |d, i| {
-        try t.startRow();
-        if (i == 0) try t.writer.writeAll("workload   ") else try t.writer.writeAll("           ");
-        try t.writer.print("{s}{s}{s}", .{ Color.cyan, d, Color.reset });
-        try t.endRow("workload   ".len + d.len);
-    }
+    for (dirs, 0..) |dir, i| try valueRow(t, workload_label_cols, if (i == 0) "workload" else "", dir, "");
+    var count_buf: [32]u8 = undefined;
+    try valueRow(t, workload_label_cols, "instances", try std.fmt.bufPrint(&count_buf, "{d}", .{bench.instance_count}), "");
+    try printSolved(t, bench);
 
-    {
-        try t.startRow();
-        try t.writer.writeAll("instances  ");
-        var nb: [32]u8 = undefined;
-        const nstr = try std.fmt.bufPrint(&nb, "{d}", .{stats.bench.instance_count});
-        try t.writer.print("{s}{s}{s}", .{ Color.cyan, nstr, Color.reset });
-        try t.endRow("instances  ".len + nstr.len);
-    }
-    {
-        // solved N/M with a SAT/UNSAT breakdown — the first thing you
-        // want to see when switching to a timed industrial bench where
-        // not every instance finishes.
-        try t.startRow();
-        try t.writer.writeAll("solved     ");
-        var nb: [64]u8 = undefined;
-        const solved = stats.bench.sat_count + stats.bench.unsat_count;
-        const nstr = try std.fmt.bufPrint(
-            &nb,
-            "{d} / {d}",
-            .{ solved, stats.bench.instance_count },
+    const elapsed_ms = @as(f64, @floatFromInt(bench.elapsed_ns)) / 1e6;
+    const per_inst_ms: f64 = if (bench.instance_count > 0) elapsed_ms / @as(f64, @floatFromInt(bench.instance_count)) else 0;
+    var value_buf: [32]u8 = undefined;
+    var note_buf: [32]u8 = undefined;
+    try valueRow(
+        t,
+        workload_label_cols,
+        "wall time",
+        try std.fmt.bufPrint(&value_buf, "{d:.1} ms", .{elapsed_ms}),
+        try std.fmt.bufPrint(&note_buf, "  ({d:.3} ms / instance)", .{per_inst_ms}),
+    );
+    // PAR-2, the SAT Competition ranking metric, charges each unsolved
+    // instance twice the cap, so it only means something under one.
+    if (bench.timeout_s > 0) {
+        try valueRow(
+            t,
+            workload_label_cols,
+            "PAR-2",
+            try std.fmt.bufPrint(&value_buf, "{d:.2} s", .{bench.par2_s}),
+            try std.fmt.bufPrint(&note_buf, "  (cap {d} s/inst)", .{bench.timeout_s}),
         );
-        const solved_color = if (stats.bench.unknown_count == 0)
-            Color.green
-        else if (solved * 2 >= stats.bench.instance_count)
-            Color.yellow
-        else
-            Color.red;
-        try t.writer.print("{s}{s}{s}", .{ solved_color, nstr, Color.reset });
-        var db: [64]u8 = undefined;
-        const dstr = try std.fmt.bufPrint(
-            &db,
-            "  ({d} SAT, {d} UNSAT, {d} timeout)",
-            .{ stats.bench.sat_count, stats.bench.unsat_count, stats.bench.unknown_count },
-        );
-        try t.writer.print("{s}{s}{s}", .{ Color.dim, dstr, Color.reset });
-        try t.endRow("solved     ".len + nstr.len + dstr.len);
-    }
-    {
-        try t.startRow();
-        try t.writer.writeAll("wall time  ");
-        var vb: [32]u8 = undefined;
-        const vstr = try std.fmt.bufPrint(&vb, "{d:.1} ms", .{elapsed_ms});
-        try t.writer.print("{s}{s}{s}", .{ Color.cyan, vstr, Color.reset });
-        var pb: [32]u8 = undefined;
-        const pstr = try std.fmt.bufPrint(&pb, "  ({d:.3} ms / instance)", .{per_inst_ms});
-        try t.writer.print("{s}{s}{s}", .{ Color.dim, pstr, Color.reset });
-        try t.endRow("wall time  ".len + vstr.len + pstr.len);
-    }
-    if (stats.bench.timeout_s > 0) {
-        // PAR-2 is the actual SAT Competition ranking metric: every
-        // solved instance costs its wall time, every unsolved one costs
-        // 2× the cap. Only meaningful when a per-instance cap was set.
-        try t.startRow();
-        try t.writer.writeAll("PAR-2      ");
-        var vb: [32]u8 = undefined;
-        const vstr = try std.fmt.bufPrint(&vb, "{d:.2} s", .{stats.bench.par2_s});
-        try t.writer.print("{s}{s}{s}", .{ Color.cyan, vstr, Color.reset });
-        var db: [32]u8 = undefined;
-        const dstr = try std.fmt.bufPrint(&db, "  (cap {d} s/inst)", .{stats.bench.timeout_s});
-        try t.writer.print("{s}{s}{s}", .{ Color.dim, dstr, Color.reset });
-        try t.endRow("PAR-2      ".len + vstr.len + dstr.len);
     }
     try t.blankRow();
-
-    // Per-instance distribution
-    try t.sectionHeader("per-instance distribution");
-    try distRow(t, "min", stats.bench.dist_min_ms);
-    try distRow(t, "p50", stats.bench.dist_p50_ms);
-    try distRow(t, "p90", stats.bench.dist_p90_ms);
-    try distRow(t, "p99", stats.bench.dist_p99_ms);
-    try distRow(t, "max", stats.bench.dist_max_ms);
-    try t.blankRow();
-
-    // CPU topdown
-    if (hasTopdown(stats)) {
-        try t.sectionHeader("cpu (intel topdown L1)");
-        try topdownRow(t, "retiring", stats.perf.topdown_retiring, "doing useful work");
-        try topdownRow(t, "bad-speculation", stats.perf.topdown_bad_spec, "branch miss waste");
-        try topdownRow(t, "frontend-bound", stats.perf.topdown_fe_bound, "fetch/decode stall");
-        try topdownRow(t, "backend-bound", stats.perf.topdown_be_bound, "memory / execute stall");
-        try t.blankRow();
-    }
-
-    // Hardware metrics
-    try t.sectionHeader("hardware metrics");
-    try metricRow(t, "IPC", "{d:.2}", .{ipc}, ipcVerdict(ipc), stats.perf.instructions, stats.perf.cycles);
-    {
-        try t.startRow();
-        try t.writer.writeAll("effective clock     ");
-        var vb: [32]u8 = undefined;
-        const vstr = try std.fmt.bufPrint(&vb, "{d:.2} GHz", .{effective_ghz});
-        try t.writer.print("{s}{s}{s}", .{ Color.cyan, vstr, Color.reset });
-        try t.endRow("effective clock     ".len + vstr.len);
-    }
-    try metricRow(t, "branch-miss rate", "{d:.1}%", .{br_pct}, brMissVerdict(br_pct), stats.perf.branch_misses, stats.perf.branches);
-    try metricRow(t, "L1d miss rate", "{d:.2}%", .{l1d_pct}, l1dMissVerdict(l1d_pct), stats.perf.l1d_load_misses, stats.perf.l1d_loads);
-    {
-        try t.startRow();
-        try t.writer.writeAll("L1d MPKI            ");
-        var vb: [32]u8 = undefined;
-        const vstr = try std.fmt.bufPrint(&vb, "{d:.1}", .{l1d_mpki});
-        try t.writer.print("{s}{s}{s}", .{ Color.cyan, vstr, Color.reset });
-        try t.writer.print("{s}   misses per 1k instructions{s}", .{ Color.dim, Color.reset });
-        try t.endRow("L1d MPKI            ".len + vstr.len + "   misses per 1k instructions".len);
-    }
-    {
-        try t.startRow();
-        try t.writer.writeAll("LLC absolute misses ");
-        var vb: [32]u8 = undefined;
-        const vstr = formatCount(&vb, stats.perf.llc_load_misses);
-        try t.writer.print("{s}{s}{s}", .{ Color.cyan, vstr, Color.reset });
-        try t.endRow("LLC absolute misses ".len + vstr.len);
-    }
-    {
-        try t.startRow();
-        try t.writer.writeAll("peak RSS            ");
-        var vb: [32]u8 = undefined;
-        const mb = @as(f64, @floatFromInt(stats.bench.peak_rss_kb)) / 1024.0;
-        const vstr = try std.fmt.bufPrint(&vb, "{d:.1} MB", .{mb});
-        try t.writer.print("{s}{s}{s}", .{ Color.cyan, vstr, Color.reset });
-        try t.endRow("peak RSS            ".len + vstr.len);
-    }
-    try t.blankRow();
-
-    // Solver activity
-    try t.sectionHeader("solver activity");
-    inline for (comptime std.meta.fieldNames(SolverStats)) |name| {
-        try solverRow(t, comptime spacedName(name), @field(stats.bench.solver, name), stats.bench.instance_count);
-    }
-    try t.blankRow();
-
-    // Throughput
-    try t.sectionHeader("throughput (wall time / event)");
-    try throughputRow(t, "per decision", elapsed_ns_f, stats.bench.solver.decisions);
-    try throughputRow(t, "per conflict", elapsed_ns_f, stats.bench.solver.conflicts);
-    try throughputRow(t, "per propagation", elapsed_ns_f, stats.bench.solver.propagations);
-    try t.blankRow();
-
-    // Hotspots (self time)
-    try t.sectionHeader("hotspots (self time)");
-    if (hotspots.len == 0) {
-        try t.startRow();
-        try t.writer.print("{s}(no samples — did perf record succeed?){s}", .{ Color.yellow, Color.reset });
-        try t.endRow("(no samples — did perf record succeed?)".len);
-    } else {
-        for (hotspots) |h| try hotspotRow(t, h, elapsed_ns_f);
-    }
-    try t.blankRow();
-
-    // Hot instructions inside top function
-    if (hotspots.len > 0 and hot_insns.len > 0) {
-        var title_buf: [128]u8 = undefined;
-        const title = try std.fmt.bufPrint(&title_buf, "hot instructions in {s}", .{hotspots[0].symbol});
-        try t.sectionHeader(title);
-        for (hot_insns) |h| try hotInsnRow(t, h);
-        try t.blankRow();
-    }
-
-    try t.rule(box.bl, box.br);
 }
 
-fn hasTopdown(s: *const Stats) bool {
-    const total = s.perf.topdown_retiring + s.perf.topdown_bad_spec +
-        s.perf.topdown_fe_bound + s.perf.topdown_be_bound;
+// Solved out of attempted, which matters most on a timed bench where not
+// every instance finishes.
+fn printSolved(t: Table, bench: *const report.BenchSummary) !void {
+    try t.startRow();
+    try t.writer.writeAll("solved     ");
+    var count_buf: [64]u8 = undefined;
+    const solved = bench.sat_count + bench.unsat_count;
+    const count = try std.fmt.bufPrint(&count_buf, "{d} / {d}", .{ solved, bench.instance_count });
+    const color = if (bench.unknown_count == 0)
+        Color.green
+    else if (solved * 2 >= bench.instance_count)
+        Color.yellow
+    else
+        Color.red;
+    try t.writer.print("{s}{s}{s}", .{ color, count, Color.reset });
+    var detail_buf: [64]u8 = undefined;
+    const detail = try std.fmt.bufPrint(
+        &detail_buf,
+        "  ({d} SAT, {d} UNSAT, {d} timeout)",
+        .{ bench.sat_count, bench.unsat_count, bench.unknown_count },
+    );
+    try t.writer.print("{s}{s}{s}", .{ Color.dim, detail, Color.reset });
+    try t.endRow("solved     ".len + count.len + detail.len);
+}
+
+fn printDistribution(t: Table, bench: *const report.BenchSummary) !void {
+    try t.sectionHeader("per-instance distribution");
+    try distRow(t, "min", bench.dist_min_ms);
+    try distRow(t, "p50", bench.dist_p50_ms);
+    try distRow(t, "p90", bench.dist_p90_ms);
+    try distRow(t, "p99", bench.dist_p99_ms);
+    try distRow(t, "max", bench.dist_max_ms);
+    try t.blankRow();
+}
+
+fn printTopdown(t: Table, perf: *const report.PerfStat) !void {
+    try t.sectionHeader("cpu (intel topdown L1)");
+    try topdownRow(t, "retiring", perf.topdown_retiring, "doing useful work");
+    try topdownRow(t, "bad-speculation", perf.topdown_bad_spec, "branch miss waste");
+    try topdownRow(t, "frontend-bound", perf.topdown_fe_bound, "fetch/decode stall");
+    try topdownRow(t, "backend-bound", perf.topdown_be_bound, "memory / execute stall");
+    try t.blankRow();
+}
+
+const metric_label_cols = 20;
+
+fn printHardware(t: Table, perf: *const report.PerfStat, elapsed_ns: f64, peak_rss_kb: u64) !void {
+    const cycles: f64 = @floatFromInt(perf.cycles);
+    const insns: f64 = @floatFromInt(perf.instructions);
+    const l1d_loads: f64 = @floatFromInt(perf.l1d_loads);
+    const l1d_miss: f64 = @floatFromInt(perf.l1d_load_misses);
+    const ipc = perf.ipc();
+    const br_pct = perf.branchMissPercent();
+    const l1d_pct: f64 = if (l1d_loads > 0) l1d_miss * 100.0 / l1d_loads else 0;
+    const l1d_mpki: f64 = if (insns > 0) l1d_miss * 1000.0 / insns else 0;
+    const effective_ghz: f64 = if (elapsed_ns > 0) cycles / elapsed_ns else 0;
+    var value_buf: [32]u8 = undefined;
+
+    try t.sectionHeader("hardware metrics");
+    try metricRow(t, "IPC", "{d:.2}", .{ipc}, ipcVerdict(ipc), perf.instructions, perf.cycles);
+    try valueRow(t, metric_label_cols, "effective clock", try std.fmt.bufPrint(&value_buf, "{d:.2} GHz", .{effective_ghz}), "");
+    try metricRow(t, "branch-miss rate", "{d:.1}%", .{br_pct}, brMissVerdict(br_pct), perf.branch_misses, perf.branches);
+    try metricRow(t, "L1d miss rate", "{d:.2}%", .{l1d_pct}, l1dMissVerdict(l1d_pct), perf.l1d_load_misses, perf.l1d_loads);
+    try valueRow(t, metric_label_cols, "L1d MPKI", try std.fmt.bufPrint(&value_buf, "{d:.1}", .{l1d_mpki}), "   misses per 1k instructions");
+    try valueRow(t, metric_label_cols, "LLC absolute misses", formatCount(&value_buf, perf.llc_load_misses), "");
+    const rss_mb = @as(f64, @floatFromInt(peak_rss_kb)) / 1024.0;
+    try valueRow(t, metric_label_cols, "peak RSS", try std.fmt.bufPrint(&value_buf, "{d:.1} MB", .{rss_mb}), "");
+    try t.blankRow();
+}
+
+fn printSolverActivity(t: Table, bench: *const report.BenchSummary) !void {
+    try t.sectionHeader("solver activity");
+    inline for (comptime std.meta.fieldNames(SolverStats)) |name| {
+        try solverRow(t, comptime spacedName(name), @field(bench.solver, name), bench.instance_count);
+    }
+    try t.blankRow();
+}
+
+fn printThroughput(t: Table, elapsed_ns: f64, solver: *const SolverStats) !void {
+    try t.sectionHeader("throughput (wall time / event)");
+    try throughputRow(t, "per decision", elapsed_ns, solver.decisions);
+    try throughputRow(t, "per conflict", elapsed_ns, solver.conflicts);
+    try throughputRow(t, "per propagation", elapsed_ns, solver.propagations);
+    try t.blankRow();
+}
+
+fn printHotspots(t: Table, hotspots: []const Hotspot, elapsed_ns: f64) !void {
+    try t.sectionHeader("hotspots (self time)");
+    if (hotspots.len == 0) {
+        const message = "(no samples — did perf record succeed?)";
+        try t.startRow();
+        try t.writer.print("{s}{s}{s}", .{ Color.yellow, message, Color.reset });
+        try t.endRow(message.len);
+    }
+    for (hotspots) |h| try hotspotRow(t, h, elapsed_ns);
+    try t.blankRow();
+}
+
+fn printHotInstructions(t: Table, symbol: []const u8, hot_insns: []const HotInsn) !void {
+    var title_buf: [128]u8 = undefined;
+    try t.sectionHeader(try std.fmt.bufPrint(&title_buf, "hot instructions in {s}", .{symbol}));
+    for (hot_insns) |h| try hotInsnRow(t, h);
+    try t.blankRow();
+}
+
+fn hasTopdown(perf: *const report.PerfStat) bool {
+    const total = perf.topdown_retiring + perf.topdown_bad_spec +
+        perf.topdown_fe_bound + perf.topdown_be_bound;
     return total > min_topdown_total_percent;
 }
 
