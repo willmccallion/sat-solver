@@ -1,6 +1,7 @@
 const std = @import("std");
 const core = @import("core");
 const Literal = core.cnf.Literal;
+const ClauseList = core.cnf.ClauseList;
 const ClauseRef = core.cnf.ClauseRef;
 const clause_mod = core.clause;
 
@@ -42,350 +43,327 @@ pub const grow_den: u64 = 2;
 pub fn equiv(self: *Solver) !?Result {
     std.debug.assert(self.assignment.level == 0);
     if (try self.propagateAtRoot()) |r| return r;
+    if (self.num_vars == 0) return null;
 
-    const num_vars = self.num_vars;
-    const num_lits: usize = @as(usize, num_vars) * 2;
-    if (num_lits == 0) return null;
-
-    const unvisited: u32 = std.math.maxInt(u32);
-
-    const index_arr = try self.allocator.alloc(u32, num_lits);
-    defer self.allocator.free(index_arr);
-    const lowlink = try self.allocator.alloc(u32, num_lits);
-    defer self.allocator.free(lowlink);
-    const on_stack = try self.allocator.alloc(bool, num_lits);
-    defer self.allocator.free(on_stack);
-    const scc_id = try self.allocator.alloc(u32, num_lits);
-    defer self.allocator.free(scc_id);
-
-    @memset(index_arr, unvisited);
-    @memset(lowlink, 0);
-    @memset(on_stack, false);
-    @memset(scc_id, unvisited);
-
-    const DfsFrame = struct { node: u32, cursor: u32 };
-    var tarjan_stack: std.ArrayList(u32) = .empty;
-    defer tarjan_stack.deinit(self.allocator);
-    var dfs_stack: std.ArrayList(DfsFrame) = .empty;
-    defer dfs_stack.deinit(self.allocator);
-
-    var next_index: u32 = 0;
-    var next_scc_id: u32 = 0;
-
-    var start: u32 = 0;
-    while (start < num_lits) : (start += 1) {
-        if (index_arr[start] != unvisited) continue;
-        // An inactive variable's equivalences are moot and its
-        // bin_watchers entries may be stale.
-        if (!self.varIsActive((Literal{ .raw = start }).variable())) continue;
-
-        index_arr[start] = next_index;
-        lowlink[start] = next_index;
-        next_index += 1;
-        try tarjan_stack.append(self.allocator, start);
-        on_stack[start] = true;
-        try dfs_stack.append(self.allocator, .{ .node = start, .cursor = 0 });
-
-        while (dfs_stack.items.len > 0) {
-            const dfs_top = dfs_stack.items.len - 1;
-            const node = dfs_stack.items[dfs_top].node;
-            const successors = self.bin_watchers[node].items;
-
-            var pushed = false;
-            while (dfs_stack.items[dfs_top].cursor < successors.len) {
-                const cursor = dfs_stack.items[dfs_top].cursor;
-                dfs_stack.items[dfs_top].cursor = cursor + 1;
-                const next_raw = successors[cursor].other.raw;
-                if (next_raw == node) continue;
-                if (!self.varIsActive((Literal{ .raw = next_raw }).variable())) continue;
-
-                if (index_arr[next_raw] == unvisited) {
-                    index_arr[next_raw] = next_index;
-                    lowlink[next_raw] = next_index;
-                    next_index += 1;
-                    try tarjan_stack.append(self.allocator, next_raw);
-                    on_stack[next_raw] = true;
-                    try dfs_stack.append(
-                        self.allocator,
-                        .{ .node = next_raw, .cursor = 0 },
-                    );
-                    pushed = true;
-                    break;
-                } else if (on_stack[next_raw]) {
-                    if (index_arr[next_raw] < lowlink[node]) {
-                        lowlink[node] = index_arr[next_raw];
-                    }
-                }
-            }
-            if (pushed) continue;
-
-            if (lowlink[node] == index_arr[node]) {
-                while (true) {
-                    const w = tarjan_stack.pop().?;
-                    on_stack[w] = false;
-                    scc_id[w] = next_scc_id;
-                    if (w == node) break;
-                }
-                next_scc_id += 1;
-            }
-
-            _ = dfs_stack.pop();
-            if (dfs_stack.items.len > 0) {
-                const parent = dfs_stack.items[dfs_stack.items.len - 1].node;
-                if (lowlink[node] < lowlink[parent]) {
-                    lowlink[parent] = lowlink[node];
-                }
-            }
-        }
+    const component = try self.allocator.alloc(?u32, @as(usize, self.num_vars) * 2);
+    defer self.allocator.free(component);
+    const component_count = try findComponents(self, component);
+    if (contradictedVariable(component)) |v| {
+        // x reaches ¬x, so the unit ¬x is RUP; only after it is the empty
+        // clause RUP as well.
+        try self.proof.addClause(&.{Literal.init(v, true)});
+        try self.proof.empty();
+        return .unsat;
     }
 
-    // UNSAT detection and representative selection
-    {
-        var v: u32 = 0;
-        while (v < num_vars) : (v += 1) {
-            const pos = v << 1;
-            const neg = pos | 1;
-            if (scc_id[pos] != unvisited and scc_id[pos] == scc_id[neg]) {
-                // x reaches ¬x, so the unit ¬x is RUP; only after it is
-                // the empty clause RUP as well.
-                try self.proof.addClause(&.{Literal{ .raw = neg }});
-                try self.proof.empty();
-                return .unsat;
-            }
-        }
-    }
-
-    const scc_rep = try self.allocator.alloc(u32, @max(next_scc_id, 1));
-    defer self.allocator.free(scc_rep);
-    @memset(scc_rep, std.math.maxInt(u32));
-    {
-        var lr: u32 = 0;
-        while (lr < num_lits) : (lr += 1) {
-            const id = scc_id[lr];
-            if (id == unvisited) continue;
-            if (lr < scc_rep[id]) scc_rep[id] = lr;
-        }
-    }
-
-    const lit_remap = try self.allocator.alloc(Literal, num_lits);
+    const lit_remap = try representatives(self.allocator, component, component_count);
     defer self.allocator.free(lit_remap);
-    {
-        var lr: u32 = 0;
-        while (lr < num_lits) : (lr += 1) {
-            const id = scc_id[lr];
-            if (id == unvisited) {
-                lit_remap[lr] = .{ .raw = lr };
-            } else {
-                lit_remap[lr] = .{ .raw = scc_rep[id] };
-            }
-        }
-    }
+    if (!substitutesAnyVariable(self, lit_remap)) return null;
 
-    // Early out if nothing to substitute
-    {
-        var any_substitution = false;
-        var v: u32 = 0;
-        while (v < num_vars) : (v += 1) {
-            if (!self.varIsActive(v)) continue;
-            const pos = v << 1;
-            if (lit_remap[pos].raw != pos) {
-                any_substitution = true;
-                break;
-            }
-        }
-        if (!any_substitution) return null;
-    }
+    var rewrite: Rewrite = .{ .solver = self, .lit_remap = lit_remap };
+    defer rewrite.deinit();
+    try rewrite.collect();
+    if (rewrite.isEmpty()) return null;
 
-    // Collect long-clause work
-    // We buffer (old_cref, snapshotted old lits, substituted new lits) and
-    // emit all adds + all deletes BEFORE mutating state, so every DRAT-add
-    // sees the full equivalence-binary set and validates under RUP.
-
-    const LongWork = struct {
-        old_cref: ClauseRef,
-        kind: clause_mod.ClauseKind,
-        new_off: u32,
-        new_len: u32,
-        old_off: u32,
-        old_len: u32,
-    };
-
-    var long_work: std.ArrayList(LongWork) = .empty;
-    defer long_work.deinit(self.allocator);
-    var work_old_lits: std.ArrayList(Literal) = .empty;
-    defer work_old_lits.deinit(self.allocator);
-    var work_new_lits: std.ArrayList(Literal) = .empty;
-    defer work_new_lits.deinit(self.allocator);
-    var scratch: std.ArrayList(Literal) = .empty;
-    defer scratch.deinit(self.allocator);
-
-    {
-        var live = self.liveClauses();
-        while (live.next()) |cref| {
-            const len = self.clauseLen(cref);
-            if (len < 3) continue;
-
-            const lits = self.clauseLits(cref);
-            var any_changed = false;
-            for (lits) |lit| {
-                if (lit_remap[lit.raw].raw != lit.raw) {
-                    any_changed = true;
-                    break;
-                }
-            }
-            if (!any_changed) continue;
-            if (self.clauseIsLocked(cref)) continue;
-
-            scratch.clearRetainingCapacity();
-            try scratch.ensureTotalCapacity(self.allocator, lits.len);
-            for (lits) |lit| {
-                scratch.appendAssumeCapacity(lit_remap[lit.raw]);
-            }
-            const new_lits = common.normalizeAtRoot(&self.assignment, scratch.items) orelse &.{};
-            const new_len: u32 = @intCast(new_lits.len);
-
-            const old_off: u32 = @intCast(work_old_lits.items.len);
-            try work_old_lits.appendSlice(self.allocator, lits);
-            const new_off: u32 = @intCast(work_new_lits.items.len);
-            try work_new_lits.appendSlice(self.allocator, new_lits);
-            try long_work.append(self.allocator, .{
-                .old_cref = cref,
-                .kind = self.clauseKind(cref),
-                .new_off = new_off,
-                .new_len = new_len,
-                .old_off = old_off,
-                .old_len = len,
-            });
-        }
-    }
-
-    // Collect binary work
-    const BinKind = enum { tautology, unit, rebind };
-    const BinWork = struct {
-        old_a: Literal,
-        old_b: Literal,
-        new_a: Literal, // meaningful when kind != tautology
-        new_b: Literal, // meaningful when kind == rebind
-        kind: BinKind,
-    };
-    var bin_work: std.ArrayList(BinWork) = .empty;
-    defer bin_work.deinit(self.allocator);
-
-    {
-        var binaries = self.binaryClauses();
-        while (binaries.next()) |pair| {
-            const a = pair[0];
-            const b = pair[1];
-            const a_new = lit_remap[a.raw];
-            const b_new = lit_remap[b.raw];
-            if (a_new.eql(a) and b_new.eql(b)) continue;
-            const kind: BinKind = if (a_new.eql(b_new.negate()))
-                .tautology
-            else if (a_new.eql(b_new))
-                .unit
-            else
-                .rebind;
-            try bin_work.append(self.allocator, .{
-                .old_a = a,
-                .old_b = b,
-                .new_a = a_new,
-                .new_b = b_new,
-                .kind = kind,
-            });
-        }
-    }
-
-    if (long_work.items.len == 0 and bin_work.items.len == 0) return null;
-
-    // Record witness frames and mark eliminated
-    {
-        var v: u32 = 0;
-        while (v < num_vars) : (v += 1) {
-            if (!self.varIsActive(v)) continue;
-            const pos = v << 1;
-            const rep_raw = lit_remap[pos].raw;
-            if (rep_raw == pos) continue;
-            try self.equiv_witness.append(
-                self.allocator,
-                .{ .eliminated_var = v, .rep_lit = .{ .raw = rep_raw } },
-            );
-            self.eliminated.set(v);
-            self.stats.equiv_substituted_vars += 1;
-        }
-    }
-
-    // Rewrite BVE witness under the new remap
-    // Earlier BVE passes may have recorded clauses that mention literals
-    // we're about to eliminate here. reconstructEliminatedVars walks those
-    // clauses before reconstructEquivVars fills in equiv-eliminated values,
-    // so any un-remapped reference would read `.unassigned` and bias the
-    // pivot choice. Rewriting the buffer in place keeps BVE reconstruction
-    // self-contained: it only needs values of live-or-BVE-eliminated vars.
+    try recordSubstitutions(self, lit_remap);
+    // BVE's witness may name variables substituted here, and BVE
+    // reconstruction runs before equiv's, so it must see their representatives.
     for (self.bve_witness.literals.items) |*lit| lit.* = lit_remap[lit.raw];
 
-    // Phase A: emit all DRAT adds
-    for (long_work.items) |lw| {
-        if (lw.new_len == 0) continue;
-        const new_lits = work_new_lits.items[lw.new_off .. lw.new_off + lw.new_len];
-        try self.proof.addClause(new_lits);
+    try rewrite.logProof();
+    if (try rewrite.apply() == .refuted) {
+        try self.proof.empty();
+        return .unsat;
     }
-    for (bin_work.items) |bw| {
-        switch (bw.kind) {
-            .tautology => {},
-            .unit => try self.proof.addClause(&[_]Literal{bw.new_a}),
-            .rebind => try self.proof.addClause(&[_]Literal{ bw.new_a, bw.new_b }),
-        }
-    }
-
-    // Phase B: emit all DRAT deletes
-    for (long_work.items) |lw| {
-        const old_lits = work_old_lits.items[lw.old_off .. lw.old_off + lw.old_len];
-        try self.proof.deleteClause(old_lits);
-    }
-    for (bin_work.items) |bw| {
-        try self.proof.deleteClause(&[_]Literal{ bw.old_a, bw.old_b });
-    }
-
-    // Phase C: mutate state for long clauses
-    var any_deleted = false;
-
-    for (long_work.items) |lw| {
-        // Mark old clause deleted first. We never read it again after this.
-        self.markDeleted(lw.old_cref);
-        any_deleted = true;
-
-        if (lw.new_len == 0) continue; // tautology
-
-        const new_lits = work_new_lits.items[lw.new_off .. lw.new_off + lw.new_len];
-        const lbd = clause_mod.rewrittenLbd(self.clauseLbd(lw.old_cref), lw.new_len);
-        if (try self.installClause(new_lits, lw.kind, lbd) == .refuted) {
-            try self.proof.empty();
-            return .unsat;
-        }
-    }
-
-    // Phase D: mutate state for binaries
-    for (bin_work.items) |bw| {
-        self.removeBinary(bw.old_a, bw.old_b);
-        switch (bw.kind) {
-            .tautology => {},
-            .unit => if (try self.assertRootUnit(bw.new_a) == .refuted) {
-                try self.proof.empty();
-                return .unsat;
-            },
-            .rebind => {
-                try self.addBinary(bw.new_a, bw.new_b);
-            },
-        }
-    }
-
-    if (any_deleted) self.dropDeletedClauseRefs();
+    if (rewrite.long.items.len > 0) self.dropDeletedClauseRefs();
 
     if (try self.propagateAtRoot()) |r| return r;
-
     self.stats.equiv_passes += 1;
     return null;
 }
+
+// Labels each literal with its strongly connected component in the binary
+// implication graph, where an entry `other` in bin_watchers[l] is the edge
+// l → other, and returns how many components there are. Literals of
+// inactive variables, whose bin_watchers entries may be stale, stay null.
+fn findComponents(solver: *const Solver, component: []?u32) !u32 {
+    @memset(component, null);
+    var tarjan = try Tarjan.init(solver, component);
+    defer tarjan.deinit();
+    for (0..component.len) |start| {
+        const lit_raw: u32 = @intCast(start);
+        if (tarjan.index[lit_raw] == null and tarjan.isActive(lit_raw)) try tarjan.visitFrom(lit_raw);
+    }
+    return tarjan.component_count;
+}
+
+// Iterative Tarjan over literal indices.
+const Tarjan = struct {
+    solver: *const Solver,
+    component: []?u32,
+    index: []?u32,
+    lowlink: []u32,
+    on_stack: []bool,
+    stack: std.ArrayList(u32) = .empty,
+    // The depth-first path, each node with the next of its edges to follow.
+    path: std.ArrayList(PathEntry) = .empty,
+    next_index: u32 = 0,
+    component_count: u32 = 0,
+
+    const PathEntry = struct { node: u32, next_edge: u32 = 0 };
+
+    fn init(solver: *const Solver, component: []?u32) !Tarjan {
+        const allocator = solver.allocator;
+        const index = try allocator.alloc(?u32, component.len);
+        errdefer allocator.free(index);
+        const lowlink = try allocator.alloc(u32, component.len);
+        errdefer allocator.free(lowlink);
+        const on_stack = try allocator.alloc(bool, component.len);
+        @memset(index, null);
+        @memset(on_stack, false);
+        return .{ .solver = solver, .component = component, .index = index, .lowlink = lowlink, .on_stack = on_stack };
+    }
+
+    fn deinit(self: *Tarjan) void {
+        const allocator = self.solver.allocator;
+        allocator.free(self.index);
+        allocator.free(self.lowlink);
+        allocator.free(self.on_stack);
+        self.stack.deinit(allocator);
+        self.path.deinit(allocator);
+    }
+
+    fn isActive(self: *const Tarjan, lit_raw: u32) bool {
+        return self.solver.varIsActive((Literal{ .raw = lit_raw }).variable());
+    }
+
+    fn visitFrom(self: *Tarjan, start: u32) !void {
+        try self.enter(start);
+        while (self.path.items.len > 0) {
+            if (!try self.descend()) self.leave();
+        }
+    }
+
+    fn enter(self: *Tarjan, node: u32) !void {
+        const allocator = self.solver.allocator;
+        self.index[node] = self.next_index;
+        self.lowlink[node] = self.next_index;
+        self.next_index += 1;
+        try self.stack.append(allocator, node);
+        self.on_stack[node] = true;
+        try self.path.append(allocator, .{ .node = node });
+    }
+
+    // Enters the path's last node's next unvisited successor, lowering its
+    // lowlink for successors still on the stack; false once none is left.
+    fn descend(self: *Tarjan) !bool {
+        const top = &self.path.items[self.path.items.len - 1];
+        const node = top.node;
+        const successors = self.solver.bin_watchers[node].items;
+        while (top.next_edge < successors.len) {
+            const next = successors[top.next_edge].other.raw;
+            top.next_edge += 1;
+            if (next == node or !self.isActive(next)) continue;
+            if (self.index[next]) |next_index| {
+                if (self.on_stack[next]) self.lowlink[node] = @min(self.lowlink[node], next_index);
+            } else {
+                try self.enter(next);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Leaves the path's last node, closing its component if it is the
+    // component's root, and passes its lowlink up to its parent.
+    fn leave(self: *Tarjan) void {
+        const node = self.path.pop().?.node;
+        if (self.lowlink[node] == self.index[node].?) {
+            while (self.stack.pop()) |member| {
+                self.on_stack[member] = false;
+                self.component[member] = self.component_count;
+                if (member == node) break;
+            }
+            self.component_count += 1;
+        }
+        if (self.path.items.len > 0) {
+            const parent = self.path.items[self.path.items.len - 1].node;
+            self.lowlink[parent] = @min(self.lowlink[parent], self.lowlink[node]);
+        }
+    }
+};
+
+// The first variable whose two literals share a component, which makes
+// the formula unsatisfiable.
+fn contradictedVariable(component: []const ?u32) ?u32 {
+    for (0..component.len / 2) |idx| {
+        const v: u32 = @intCast(idx);
+        const pos_id = component[Literal.init(v, false).raw] orelse continue;
+        const neg_id = component[Literal.init(v, true).raw] orelse continue;
+        if (pos_id == neg_id) return v;
+    }
+    return null;
+}
+
+// Maps each literal to the smallest literal of its component, and a
+// literal in no component to itself.
+fn representatives(allocator: std.mem.Allocator, component: []const ?u32, component_count: u32) ![]Literal {
+    const smallest = try allocator.alloc(?u32, component_count);
+    defer allocator.free(smallest);
+    @memset(smallest, null);
+    const lit_remap = try allocator.alloc(Literal, component.len);
+    for (component, 0..) |id_or_null, idx| {
+        const lit_raw: u32 = @intCast(idx);
+        const id = id_or_null orelse {
+            lit_remap[idx] = .{ .raw = lit_raw };
+            continue;
+        };
+        // Literals are visited in increasing order, so the first is smallest.
+        if (smallest[id] == null) smallest[id] = lit_raw;
+        lit_remap[idx] = .{ .raw = smallest[id].? };
+    }
+    return lit_remap;
+}
+
+fn substitutesAnyVariable(solver: *const Solver, lit_remap: []const Literal) bool {
+    for (0..solver.num_vars) |idx| {
+        const v: u32 = @intCast(idx);
+        const pos = Literal.init(v, false);
+        if (solver.varIsActive(v) and !lit_remap[pos.raw].eql(pos)) return true;
+    }
+    return false;
+}
+
+// Marks each substituted variable eliminated, with a witness frame naming
+// its representative.
+fn recordSubstitutions(solver: *Solver, lit_remap: []const Literal) !void {
+    for (0..solver.num_vars) |idx| {
+        const v: u32 = @intCast(idx);
+        if (!solver.varIsActive(v)) continue;
+        const pos = Literal.init(v, false);
+        const rep = lit_remap[pos.raw];
+        if (rep.eql(pos)) continue;
+        try solver.equiv_witness.append(solver.allocator, .{ .eliminated_var = v, .rep_lit = rep });
+        solver.eliminated.set(v);
+        solver.stats.equiv_substituted_vars += 1;
+    }
+}
+
+const LongRewrite = struct {
+    old_cref: ClauseRef,
+    kind: clause_mod.ClauseKind,
+    // The rewritten clause in `Rewrite.new_clauses`; null when the rewrite
+    // is a tautology or already satisfied, so the clause is just dropped.
+    new_index: ?u32,
+};
+
+const BinaryRewrite = struct {
+    old: [2]Literal,
+    new: union(enum) {
+        tautology,
+        unit: Literal,
+        binary: [2]Literal,
+    },
+};
+
+// Every clause change one substitution makes, collected before any is
+// applied: the proof logs each addition while the equivalence binaries
+// that justify it under RUP are still in the formula, then every deletion.
+const Rewrite = struct {
+    solver: *Solver,
+    lit_remap: []const Literal,
+    long: std.ArrayList(LongRewrite) = .empty,
+    // The long clauses' old literals, index-aligned with `long`.
+    old_clauses: ClauseList = .{},
+    new_clauses: ClauseList = .{},
+    binaries: std.ArrayList(BinaryRewrite) = .empty,
+    scratch: std.ArrayList(Literal) = .empty,
+
+    fn deinit(self: *Rewrite) void {
+        const allocator = self.solver.allocator;
+        self.long.deinit(allocator);
+        self.old_clauses.deinit(allocator);
+        self.new_clauses.deinit(allocator);
+        self.binaries.deinit(allocator);
+        self.scratch.deinit(allocator);
+    }
+
+    fn isEmpty(self: *const Rewrite) bool {
+        return self.long.items.len == 0 and self.binaries.items.len == 0;
+    }
+
+    fn collect(self: *Rewrite) !void {
+        var live = self.solver.liveClauses();
+        while (live.next()) |cref| try self.collectLong(cref);
+        var binaries = self.solver.binaryClauses();
+        while (binaries.next()) |pair| try self.collectBinary(pair);
+    }
+
+    fn collectLong(self: *Rewrite, cref: ClauseRef) !void {
+        const solver = self.solver;
+        const allocator = solver.allocator;
+        const lits = solver.clauseLits(cref);
+        if (lits.len < 3) return;
+        const changes = for (lits) |lit| {
+            if (!self.lit_remap[lit.raw].eql(lit)) break true;
+        } else false;
+        if (!changes or solver.clauseIsLocked(cref)) return;
+
+        self.scratch.clearRetainingCapacity();
+        for (lits) |lit| try self.scratch.append(allocator, self.lit_remap[lit.raw]);
+        var new_index: ?u32 = null;
+        if (common.normalizeAtRoot(&solver.assignment, self.scratch.items)) |new_lits| {
+            new_index = @intCast(self.new_clauses.count());
+            try self.new_clauses.append(allocator, new_lits);
+        }
+        try self.old_clauses.append(allocator, lits);
+        try self.long.append(allocator, .{ .old_cref = cref, .kind = solver.clauseKind(cref), .new_index = new_index });
+    }
+
+    fn collectBinary(self: *Rewrite, old: [2]Literal) !void {
+        const a = self.lit_remap[old[0].raw];
+        const b = self.lit_remap[old[1].raw];
+        if (a.eql(old[0]) and b.eql(old[1])) return;
+        try self.binaries.append(self.solver.allocator, .{
+            .old = old,
+            .new = if (a.eql(b.negate())) .tautology else if (a.eql(b)) .{ .unit = a } else .{ .binary = .{ a, b } },
+        });
+    }
+
+    fn logProof(self: *const Rewrite) !void {
+        const proof = &self.solver.proof;
+        for (0..self.new_clauses.count()) |i| try proof.addClause(self.new_clauses.get(i));
+        for (self.binaries.items) |rewrite| {
+            switch (rewrite.new) {
+                .tautology => {},
+                .unit => |unit| try proof.addClause(&.{unit}),
+                .binary => |new| try proof.addClause(&new),
+            }
+        }
+        for (0..self.old_clauses.count()) |i| try proof.deleteClause(self.old_clauses.get(i));
+        for (self.binaries.items) |rewrite| try proof.deleteClause(&rewrite.old);
+    }
+
+    fn apply(self: *const Rewrite) !state.RootUnit {
+        const solver = self.solver;
+        for (self.long.items) |rewrite| {
+            solver.markDeleted(rewrite.old_cref);
+            const new_index = rewrite.new_index orelse continue;
+            const new_lits = self.new_clauses.get(new_index);
+            const lbd = clause_mod.rewrittenLbd(solver.clauseLbd(rewrite.old_cref), new_lits.len);
+            if (try solver.installClause(new_lits, rewrite.kind, lbd) == .refuted) return .refuted;
+        }
+        for (self.binaries.items) |rewrite| {
+            solver.removeBinary(rewrite.old[0], rewrite.old[1]);
+            switch (rewrite.new) {
+                .tautology => {},
+                .unit => |unit| if (try solver.assertRootUnit(unit) == .refuted) return .refuted,
+                .binary => |new| try solver.addBinary(new[0], new[1]),
+            }
+        }
+        return .consistent;
+    }
+};
 
 // Walk `equiv_witness` in reverse and synthesize a value for every
 // equiv-substituted variable from the current value of its representative.
