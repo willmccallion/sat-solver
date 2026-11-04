@@ -1117,3 +1117,131 @@ test "trimming unused variables leaves an empty formula with none" {
 
     try testing.expectEqual(@as(u32, 0), formula.num_vars);
 }
+
+test "backtracking keeps a literal assigned below its position's level" {
+    // Chronological backtracking asserts 3 at level 1 after level 2 has
+    // begun, so it sits among level 2's literals on the trail.
+    var t = try TestSolver.init("p cnf 4 0\n");
+    defer t.deinit();
+    const solver = &t.solver;
+    const assignment = &solver.assignment;
+    const level_one = Level.root.next();
+    try assignment.pushDecisionLevel();
+    try assignment.assign(Literal.fromDimacs(1), Reason.none);
+    try assignment.pushDecisionLevel();
+    try assignment.assign(Literal.fromDimacs(2), Reason.none);
+    try assignment.assignAtLevel(Literal.fromDimacs(3), Reason.none, level_one);
+    try assignment.assign(Literal.fromDimacs(-4), Reason.none);
+    assignment.propagation_head = assignment.trail.items.len;
+
+    solver.backtrack(level_one);
+
+    try testing.expectEqualSlices(Literal, &.{ Literal.fromDimacs(1), Literal.fromDimacs(3) }, assignment.trail.items);
+    try testing.expectEqual(assignment_mod.Value.unassigned, assignment.valueOfVar(.fromIndex(1)));
+    try testing.expectEqual(assignment_mod.Value.unassigned, assignment.valueOfVar(.fromIndex(3)));
+    try testing.expectEqual(level_one, assignment.level);
+    try testing.expectEqual(@as(usize, 1), assignment.propagation_head);
+}
+
+test "analysis drops a learned literal its other literals imply and backjumps to the next level" {
+    // Level 1 decides 1, which implies 4 through (-1 4); level 2 decides 5,
+    // falsifying (-5 -1 -4). -4 is implied by -1, so minimization drops it.
+    var t = try TestSolver.init("p cnf 5 2\n-1 4 0\n-5 -1 -4 0\n");
+    defer t.deinit();
+    const solver = &t.solver;
+    const assignment = &solver.assignment;
+    try assignment.pushDecisionLevel();
+    try assignment.assign(Literal.fromDimacs(1), Reason.none);
+    try assignment.assign(Literal.fromDimacs(4), Reason.fromBinary(Literal.fromDimacs(-1)));
+    try assignment.pushDecisionLevel();
+    try assignment.assign(Literal.fromDimacs(5), Reason.none);
+
+    const backjump = try solver.analyze(.{ .clause = .fromSlot(0) }, Level.root.next().next());
+
+    try testing.expectEqual(Level.root.next(), backjump);
+    try testing.expectEqualSlices(Literal, &.{ Literal.fromDimacs(-5), Literal.fromDimacs(-1) }, solver.analysis.learned.items);
+}
+
+test "equiv rewrites clauses onto the representative and drops the equivalence binaries" {
+    // (-1 2) and (1 -2) make 1 and 2 equivalent, with 1 the representative.
+    var t = try TestSolver.init("p cnf 5 4\n-1 2 0\n1 -2 0\n2 3 4 0\n2 5 0\n");
+    defer t.deinit();
+    const solver = &t.solver;
+
+    const r = try solver.equiv();
+
+    try testing.expect(r == null);
+    try testing.expect(hasEliminated(solver, 1));
+    try testing.expectEqual(@as(usize, 1), countLiveClauses(solver, &.{ 1, 3, 4 }, .irredundant));
+    try testing.expectEqual(@as(usize, 0), countLiveClauses(solver, &.{ 2, 3, 4 }, .irredundant));
+    try testing.expect(solver.hasBinary(Literal.fromDimacs(1), Literal.fromDimacs(5)));
+    try testing.expect(!solver.hasBinary(Literal.fromDimacs(2), Literal.fromDimacs(5)));
+    try testing.expect(!solver.hasBinary(Literal.fromDimacs(-1), Literal.fromDimacs(2)));
+}
+
+test "equiv gives a substituted variable its representative's value in the model" {
+    var t = try TestSolver.init("p cnf 5 5\n-1 2 0\n1 -2 0\n2 3 4 0\n-2 5 0\n-3 -5 0\n");
+    defer t.deinit();
+    const solver = &t.solver;
+    _ = try solver.equiv();
+    try testing.expect(solver.elimination.equiv_frames.items.len > 0);
+
+    try testing.expectEqual(solver_mod.Result.sat, try solver.solve());
+    solver.extendModel();
+
+    try testing.expectEqual(solver.assignment.valueOfVar(.fromIndex(0)), solver.assignment.valueOfVar(.fromIndex(1)));
+    try testing.expectEqual(@as(?usize, null), solver.findFalsifiedClause(&t.formula));
+}
+
+test "bve logs a resolvent before deleting the clauses it replaces" {
+    // Shielding 2 and 3 leaves 1 the only variable BVE will eliminate.
+    var formula = cnf.Formula.init(testing.allocator, 3);
+    defer formula.deinit();
+    try addClauseDimacs(&formula, &.{ 1, 2 });
+    try addClauseDimacs(&formula, &.{ -1, 3 });
+    try addBveShield(&formula, &.{ 2, 3 });
+    var solver = try solver_mod.Solver.init(testing.allocator, &formula);
+    defer solver.deinit();
+    var proof_buffer: [64]u8 = undefined;
+    var proof: std.Io.Writer = .fixed(&proof_buffer);
+    solver.setProofWriter(&proof);
+
+    _ = try solver.preprocessBVE();
+
+    try testing.expectEqualStrings("2 3 0\nd 1 2 0\nd -1 3 0\n", proof.buffered());
+}
+
+test "subsume logs a strengthened clause before deleting the original" {
+    // -34 shares -2's abstract bit; see the note above the subsume tests.
+    var t = try TestSolver.init("p cnf 34 3\n1 2 -34 0\n1 -2 0\n-2 5 6 0\n");
+    defer t.deinit();
+    const solver = &t.solver;
+    var proof_buffer: [64]u8 = undefined;
+    var proof: std.Io.Writer = .fixed(&proof_buffer);
+    solver.setProofWriter(&proof);
+
+    _ = try solver.preprocessSubsume();
+
+    try testing.expectEqualStrings("1 -34 0\nd 1 2 -34 0\n", proof.buffered());
+}
+
+test "parser rejects a header with more variables than literals can encode" {
+    try testing.expectError(error.FormulaTooLarge, parseSource("p cnf 1073741825 0\n"));
+}
+
+test "parser rejects a second header" {
+    try testing.expectError(error.DuplicateHeader, parseSource("p cnf 1 1\np cnf 1 1\n1 0\n"));
+}
+
+test "parser rejects a lone minus sign" {
+    try testing.expectError(error.InvalidToken, parseSource("p cnf 1 1\n- 0\n"));
+}
+
+test "a reason round-trips the clause or partner literal it encodes" {
+    const cref: ClauseRef = .fromSlot(12345);
+    const partner = Literal.fromDimacs(-7);
+
+    try testing.expectEqual(Reason.Decoded.decision, Reason.none.decode());
+    try testing.expectEqual(Reason.Decoded{ .clause = cref }, Reason.fromClause(cref).decode());
+    try testing.expectEqual(Reason.Decoded{ .binary = partner }, Reason.fromBinary(partner).decode());
+}
