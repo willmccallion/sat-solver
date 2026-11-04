@@ -20,10 +20,7 @@ const Result = @import("solver.zig").Result;
 // loop. Only after binaries are exhausted do we fall through to the
 // long-clause loop with its full two-watched dance.
 pub fn propagate(self: *Solver) !?Conflict {
-    // Hoist into register-friendly locals. Neither pointer changes
-    // across the body of propagate: assign() writes into lit_values
-    // through the same allocation, and the arena is never grown from
-    // inside propagate. Pinning them here keeps both in a register.
+    // Neither buffer moves during propagate, so both pointers stay in registers.
     const lit_values = self.assignment.lit_values.ptr;
     const arena_ptr = self.arena.items.ptr;
 
@@ -32,12 +29,8 @@ pub fn propagate(self: *Solver) !?Conflict {
         self.assignment.propagation_head += 1;
         self.stats.propagations += 1;
 
-        // Under chronological backtracking the trail is not monotonic in
-        // level, so the level at which a forced literal "naturally"
-        // holds is max over the falsified clause lits rather than the
-        // current decision level. For a binary (¬p ∨ b) the only
-        // falsified lit is ¬p, so the force level is simply p's level.
-        // For long clauses we compute the max when we hit the unit case.
+        // Under chrono a forced literal holds at the highest level of its
+        // clause's false literals; for a binary (¬p ∨ b) that is p's level.
         const p_level = self.assignment.vars[p.variable()].level;
 
         // Binary fast path
@@ -131,10 +124,7 @@ pub fn propagate(self: *Solver) !?Conflict {
                 self.assignment.propagation_head = self.assignment.trail.items.len;
                 return Conflict{ .clause = w.clause };
             } else {
-                // Natural force level = max level of the other lits in
-                // the clause (all currently false). Classical trail ⇒
-                // collapses to self.level, so the expense only shows up
-                // on genuine chrono paths.
+                // The highest level among the clause's false literals.
                 var force_level: u32 = p_level;
                 var m: usize = 2;
                 while (m < lits.len) : (m += 1) {

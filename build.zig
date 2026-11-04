@@ -4,8 +4,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // --- Layer module graph ------------------------------------------------
-    // Dependency DAG, strictly downward:
+    // Module dependency DAG, strictly downward:
     //   core  ←  io
     //   core, io, heuristics  ←  search
     //   everything  ←  tools, main, root (the `sat` public module)

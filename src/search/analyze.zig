@@ -117,11 +117,8 @@ pub fn analyze(self: *Solver, conflict: Conflict, conflict_level: u32) !u32 {
             }
         }
 
-        // Walk the trail backwards. Under chrono the trail is not
-        // monotonic in level, so a seen var at a lower level could be
-        // interleaved with conflict-level entries — those belong in the
-        // learned clause (they went through the .else branch above),
-        // not as resolution candidates, so skip them.
+        // Under chrono, seen variables below the conflict level can sit
+        // among its trail entries; they are already in the learned clause.
         while (trail_idx >= 0) {
             const tl = self.assignment.trail.items[@intCast(trail_idx)];
             const tv = tl.variable();

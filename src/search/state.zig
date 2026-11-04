@@ -566,10 +566,8 @@ pub const Solver = struct {
     pub fn pickBranching(self: *Solver) ?Literal {
         while (!self.order_heap.isEmpty()) {
             const v = self.order_heap.popMax();
-            // Eliminated variables must never become decision literals:
-            // their witness frame owns the only correct assignment, and
-            // any branch would re-trigger analyze against clauses that
-            // no longer exist.
+            // An eliminated variable's value comes from its witness frame;
+            // branching on it would analyze clauses that no longer exist.
             if (self.eliminated.isSet(v)) continue;
             if (self.assignment.vars[v].value == .unassigned) {
                 const neg = !self.assignment.saved_phases[v];
