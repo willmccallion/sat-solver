@@ -400,13 +400,7 @@ pub fn reconstructEquivVars(self: *Solver) void {
     while (idx > 0) {
         idx -= 1;
         const frame = frames[idx];
-        const v = frame.eliminated_var;
-        var val = self.assignment.valueOfLiteral(frame.rep_lit);
-        if (val == .unassigned) val = .true;
-        const pos_slot = v << 1;
-        self.assignment.vars[v].value = val;
-        self.assignment.lit_values[pos_slot] = val;
-        self.assignment.lit_values[pos_slot | 1] =
-            if (val == .true) .false else .true;
+        const rep_value = self.assignment.valueOfLiteral(frame.rep_lit);
+        self.assignment.setValue(frame.eliminated_var, rep_value != .false);
     }
 }

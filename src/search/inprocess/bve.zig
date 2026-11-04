@@ -420,11 +420,6 @@ pub fn reconstructEliminatedVars(self: *Solver) void {
             }
         }
 
-        const pos_slot = pivot << 1;
-        self.assignment.vars[pivot].value = if (pick_true) .true else .false;
-        self.assignment.lit_values[pos_slot] =
-            if (pick_true) .true else .false;
-        self.assignment.lit_values[pos_slot | 1] =
-            if (pick_true) .false else .true;
+        self.assignment.setValue(pivot, pick_true);
     }
 }

@@ -162,16 +162,32 @@ pub const Assignment = struct {
         const var_index = lit.variable();
         std.debug.assert(self.vars[var_index].value == .unassigned);
         std.debug.assert(lvl <= self.level);
-        const negative = lit.isNegative();
+        const is_true = !lit.isNegative();
         self.vars[var_index] = .{
-            .value = if (negative) .false else .true,
+            .value = if (is_true) .true else .false,
             .level = lvl,
             .reason = reason,
         };
-        const pos_slot = var_index << 1;
-        self.lit_values[pos_slot] = if (negative) .false else .true;
-        self.lit_values[pos_slot | 1] = if (negative) .true else .false;
+        self.setLitValues(var_index, is_true);
         try self.trail.append(self.allocator, lit);
+    }
+
+    // Gives variable `v` a value off the trail, as model reconstruction
+    // does for eliminated variables.
+    pub fn setValue(self: *Assignment, v: u32, is_true: bool) void {
+        self.vars[v].value = if (is_true) .true else .false;
+        self.setLitValues(v, is_true);
+    }
+
+    pub inline fn unassign(self: *Assignment, v: u32) void {
+        self.vars[v] = .{};
+        self.lit_values[v << 1] = .unassigned;
+        self.lit_values[(v << 1) | 1] = .unassigned;
+    }
+
+    inline fn setLitValues(self: *Assignment, v: u32, is_true: bool) void {
+        self.lit_values[v << 1] = if (is_true) .true else .false;
+        self.lit_values[(v << 1) | 1] = if (is_true) .false else .true;
     }
 
     pub fn pushDecisionLevel(self: *Assignment) !void {
