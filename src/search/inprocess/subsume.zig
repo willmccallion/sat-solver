@@ -78,358 +78,268 @@ pub fn subsumeWithin(self: *Solver, budget: u64) !?Result {
     std.debug.assert(self.assignment.level == 0);
     self.stats.subsume_passes += 1;
 
-    const num_lits: usize = @as(usize, self.num_vars) * 2;
-
-    // Per-literal occurrence lists for LONG (≥3) clauses only. Binaries
-    // are discovered via self.bin_watchers directly.
-    var occ: []std.ArrayList(ClauseRef) = try self.allocator.alloc(
-        std.ArrayList(ClauseRef),
-        num_lits,
-    );
-    for (occ) |*o| o.* = .empty;
-    defer {
-        for (occ) |*o| o.deinit(self.allocator);
-        self.allocator.free(occ);
-    }
-
-    // Revisit counter. Capped by max_revisits_per_clause.
-    var revisits: std.AutoHashMap(ClauseRef, u8) = .init(self.allocator);
-    defer revisits.deinit();
-
-    // Work queue of long clauses yet to process. Walks the arena once up
-    // front; strengthenings append the new ClauseRef.
-    var queue: std.ArrayList(ClauseRef) = .empty;
-    defer queue.deinit(self.allocator);
-
-    // Scratch buffer for copying clause literals across arena mutations.
-    var scratch: std.ArrayList(Literal) = .empty;
-    defer scratch.deinit(self.allocator);
-
-    // Build initial occurrence lists and queue from arena
-    {
-        const counts = try self.allocator.alloc(u32, num_lits);
-        defer self.allocator.free(counts);
-        @memset(counts, 0);
-        var cref: ClauseRef = 0;
-        while (cref < self.arena.items.len) {
-            const header = self.arena.items[cref].raw;
-            const len = header & clause_mod.len_mask;
-            if ((header & clause_mod.deleted_bit) == 0 and len >= 3) {
-                for (self.clauseLits(cref)) |lit| counts[lit.raw] += 1;
-            }
-            cref += clause_mod.header_slots + len;
-        }
-        for (occ, counts) |*o, n| try o.ensureTotalCapacityPrecise(self.allocator, n);
-
-        cref = 0;
-        while (cref < self.arena.items.len) {
-            const header = self.arena.items[cref].raw;
-            const len = header & clause_mod.len_mask;
-            const span = clause_mod.header_slots + len;
-            if ((header & clause_mod.deleted_bit) == 0 and len >= 3) {
-                for (self.clauseLits(cref)) |lit| occ[lit.raw].appendAssumeCapacity(cref);
-                try queue.append(self.allocator, cref);
-            }
-            cref += span;
-        }
-    }
-
-    // Budget accounting: number of (C, D) candidate pairs examined.
-    var op_count: u64 = 0;
-    var any_deleted = false;
-    var unsat_derived = false;
-
-    // Process the work queue. Each loop iteration pulls a subsumer C and
-    // tries to subsume or strengthen long clauses D in occ[ℓ] for the
-    // shortest-occurrence literal ℓ of C. Binaries that are known
-    // subsumers are handled in a dedicated second pass below.
-    var qi: usize = 0;
-    while (qi < queue.items.len) : (qi += 1) {
-        if (unsat_derived) break;
-        if (op_count > budget or solver_mod.interruptRequested()) {
-            @branchHint(.cold);
-            break;
-        }
-
-        const c_cref = queue.items[qi];
-        if (self.clauseIsDeleted(c_cref)) continue;
-        if (self.clauseIsLocked(c_cref)) continue;
-
-        try processSubsumerLong(
-            self,
-            c_cref,
-            occ,
-            &revisits,
-            &queue,
-            &scratch,
-            &op_count,
-            budget,
-            &any_deleted,
-            &unsat_derived,
-        );
-    }
-
-    // Binary subsumers pass
-    // For each binary (a, b), try to subsume/strengthen long clauses that
-    // contain a and b (subsumption), or long clauses that contain a and
-    // ¬b (SSR — strengthen by removing ¬b), etc. Strengthening removes
-    // and appends bin_watchers entries, so the binaries are snapshotted
-    // first and each is re-checked for presence before use.
-    if (!unsat_derived) {
-        var binaries: std.ArrayList([2]Literal) = .empty;
-        defer binaries.deinit(self.allocator);
-        var l_raw: u32 = 0;
-        while (l_raw < num_lits) : (l_raw += 1) {
-            const a = (Literal{ .raw = l_raw }).negate();
-            for (self.bin_watchers[l_raw].items) |entry| {
-                if (a.raw < entry.other.raw) try binaries.append(self.allocator, .{ a, entry.other });
-            }
-        }
-
-        for (binaries.items) |pair| {
-            if (unsat_derived) break;
-            if (op_count > budget or solver_mod.interruptRequested()) {
-                @branchHint(.cold);
-                break;
-            }
-            if (!self.hasBinary(pair[0], pair[1])) continue;
-            try processSubsumerBinary(
-                self,
-                pair[0],
-                pair[1],
-                occ,
-                &revisits,
-                &queue,
-                &scratch,
-                &op_count,
-                budget,
-                &any_deleted,
-                &unsat_derived,
-            );
-        }
-    }
-
-    if (unsat_derived) {
+    var pass = try Subsumption.init(self, budget);
+    defer pass.deinit();
+    try pass.runLongSubsumers();
+    if (!pass.refuted) try pass.runBinarySubsumers();
+    if (pass.refuted) {
         try self.proof.empty();
         return .unsat;
     }
 
-    if (any_deleted) self.dropDeletedClauseRefs();
-
-    if (try self.propagateAtRoot()) |r| return r;
-
-    return null;
+    if (pass.any_deleted) self.dropDeletedClauseRefs();
+    return self.propagateAtRoot();
 }
 
-// Processes one long clause C as a potential subsumer. Walks occ[ℓ] for
-// the shortest-occurrence literal of C and tries subsumption / SSR on
-// each candidate D.
-fn processSubsumerLong(
-    self: *Solver,
-    c_cref: ClauseRef,
+// One subsumption pass over the clause database.
+const Subsumption = struct {
+    solver: *Solver,
+    // Per-literal occurrence lists of long (≥3) clauses; binaries are
+    // found through bin_watchers.
     occ: []std.ArrayList(ClauseRef),
-    revisits: *std.AutoHashMap(ClauseRef, u8),
-    queue: *std.ArrayList(ClauseRef),
-    scratch: *std.ArrayList(Literal),
-    op_count: *u64,
+    // Long subsumers still to try: the arena's clauses up front, then each
+    // strengthened clause up to `max_revisits_per_clause` times.
+    queue: std.ArrayList(ClauseRef) = .empty,
+    revisits: std.AutoHashMap(ClauseRef, u8),
+    // The current subsumer's literals, copied out of the arena, which
+    // strengthening may reallocate.
+    subsumer: std.ArrayList(Literal) = .empty,
+    // Candidate (C, D) pairs examined.
+    op_count: u64 = 0,
     budget: u64,
-    any_deleted: *bool,
-    unsat_derived: *bool,
-) !void {
-    // Snapshot C's literals and abstract; we hold no arena slices past
-    // the first allocation below.
-    const c_lits_snapshot = self.clauseLits(c_cref);
-    const c_abs = clauseAbstract(c_lits_snapshot);
+    any_deleted: bool = false,
+    // Set once the pass derives an empty clause or a conflicting unit.
+    refuted: bool = false,
 
-    // Pick ℓ ∈ C with the shortest occurrence list.
-    var pivot: Literal = c_lits_snapshot[0];
-    var pivot_len: usize = occ[pivot.raw].items.len;
-    for (c_lits_snapshot[1..]) |lit| {
-        const n = occ[lit.raw].items.len;
-        if (n < pivot_len) {
-            pivot = lit;
-            pivot_len = n;
+    fn init(solver: *Solver, budget: u64) !Subsumption {
+        const occ = try solver.allocator.alloc(std.ArrayList(ClauseRef), @as(usize, solver.num_vars) * 2);
+        for (occ) |*o| o.* = .empty;
+        var self: Subsumption = .{
+            .solver = solver,
+            .occ = occ,
+            .revisits = .init(solver.allocator),
+            .budget = budget,
+        };
+        errdefer self.deinit();
+        try self.collectLongClauses();
+        return self;
+    }
+
+    fn deinit(self: *Subsumption) void {
+        const allocator = self.solver.allocator;
+        for (self.occ) |*o| o.deinit(allocator);
+        allocator.free(self.occ);
+        self.queue.deinit(allocator);
+        self.revisits.deinit();
+        self.subsumer.deinit(allocator);
+    }
+
+    // Fills `occ` and `queue` with every live long clause in the arena.
+    fn collectLongClauses(self: *Subsumption) !void {
+        const solver = self.solver;
+        const counts = try solver.allocator.alloc(u32, self.occ.len);
+        defer solver.allocator.free(counts);
+        @memset(counts, 0);
+        var cref: ClauseRef = 0;
+        while (cref < solver.arena.items.len) {
+            const header = solver.arena.items[cref].raw;
+            const len = header & clause_mod.len_mask;
+            if ((header & clause_mod.deleted_bit) == 0 and len >= 3) {
+                for (solver.clauseLits(cref)) |lit| counts[lit.raw] += 1;
+            }
+            cref += clause_mod.header_slots + len;
+        }
+        for (self.occ, counts) |*o, n| try o.ensureTotalCapacityPrecise(solver.allocator, n);
+
+        cref = 0;
+        while (cref < solver.arena.items.len) {
+            const header = solver.arena.items[cref].raw;
+            const len = header & clause_mod.len_mask;
+            if ((header & clause_mod.deleted_bit) == 0 and len >= 3) {
+                for (solver.clauseLits(cref)) |lit| self.occ[lit.raw].appendAssumeCapacity(cref);
+                try self.queue.append(solver.allocator, cref);
+            }
+            cref += clause_mod.header_slots + len;
         }
     }
 
-    // Copy C's literals so we don't hold an arena slice across mutations.
-    scratch.clearRetainingCapacity();
-    try scratch.ensureTotalCapacity(self.allocator, c_lits_snapshot.len);
-    scratch.appendSliceAssumeCapacity(c_lits_snapshot);
-    const c_len = scratch.items.len;
+    fn isOverBudget(self: *const Subsumption) bool {
+        return self.op_count > self.budget;
+    }
 
-    // Walk occ[pivot]. Entries may be deleted mid-pass; skip those.
-    // New strengthenings append to occ lists — use an index-based loop.
-    var i: usize = 0;
-    while (i < occ[pivot.raw].items.len) : (i += 1) {
-        if (unsat_derived.*) return;
-        if (op_count.* > budget) {
-            @branchHint(.cold);
-            return;
+    fn runLongSubsumers(self: *Subsumption) !void {
+        var qi: usize = 0;
+        while (qi < self.queue.items.len) : (qi += 1) {
+            if (self.refuted) return;
+            if (self.isOverBudget() or solver_mod.interruptRequested()) {
+                @branchHint(.cold);
+                return;
+            }
+            const c_cref = self.queue.items[qi];
+            if (self.solver.clauseIsDeleted(c_cref)) continue;
+            if (self.solver.clauseIsLocked(c_cref)) continue;
+            try self.setSubsumer(self.solver.clauseLits(c_cref));
+            try self.trySubsumer(c_cref);
+        }
+    }
+
+    // The binaries are snapshotted first, since strengthening adds and
+    // removes bin_watchers entries, and each is re-checked before use.
+    fn runBinarySubsumers(self: *Subsumption) !void {
+        const solver = self.solver;
+        var binaries: std.ArrayList([2]Literal) = .empty;
+        defer binaries.deinit(solver.allocator);
+        for (solver.bin_watchers, 0..) |list, watched| {
+            const a = (Literal{ .raw = @intCast(watched) }).negate();
+            for (list.items) |entry| {
+                if (a.raw < entry.other.raw) try binaries.append(solver.allocator, .{ a, entry.other });
+            }
         }
 
-        const d_cref = occ[pivot.raw].items[i];
-        if (d_cref == c_cref) continue;
-        if (self.clauseIsDeleted(d_cref)) continue;
-
-        if ((c_abs & ~clauseAbstract(self.clauseLits(d_cref))) != 0) {
-            op_count.* += 1;
-            continue;
+        for (binaries.items) |pair| {
+            if (self.refuted) return;
+            if (self.isOverBudget() or solver_mod.interruptRequested()) {
+                @branchHint(.cold);
+                return;
+            }
+            if (!solver.hasBinary(pair[0], pair[1])) continue;
+            try self.setSubsumer(&pair);
+            try self.trySubsumer(null);
+            if (self.refuted or self.isOverBudget()) return;
+            try self.strengthenBinary(pair[0], pair[1]);
+            if (self.refuted) return;
+            try self.strengthenBinary(pair[1], pair[0]);
         }
+    }
 
-        // Check subset(C, D) allowing at most one negated-literal
-        // mismatch (for SSR). Result: .subsumed, .strengthen{neg_lit}, or
-        // .none.
-        const d_lits = self.clauseLits(d_cref);
-        if (d_lits.len < c_len) {
-            op_count.* += 1;
-            continue;
+    fn setSubsumer(self: *Subsumption, lits: []const Literal) !void {
+        self.subsumer.clearRetainingCapacity();
+        try self.subsumer.appendSlice(self.solver.allocator, lits);
+    }
+
+    // Subsumes or strengthens each long clause that `subsumer` (clause
+    // `c_cref`, or a binary when null) covers, walking the occurrences of
+    // its rarest literal.
+    fn trySubsumer(self: *Subsumption, c_cref: ?ClauseRef) !void {
+        const c_abs = clauseAbstract(self.subsumer.items);
+        const pivot = self.rarestLiteral();
+        // Strengthening appends to occ lists, so index instead of iterating.
+        var i: usize = 0;
+        while (i < self.occ[pivot.raw].items.len) : (i += 1) {
+            if (self.refuted) return;
+            if (self.isOverBudget()) {
+                @branchHint(.cold);
+                return;
+            }
+            const d_cref = self.occ[pivot.raw].items[i];
+            if (c_cref != null and d_cref == c_cref.?) continue;
+            if (self.solver.clauseIsDeleted(d_cref)) continue;
+            try self.tryAgainst(c_cref, c_abs, d_cref);
         }
+    }
 
-        const outcome = checkSubsumeOrSSR(scratch.items, d_lits);
-        op_count.* += 1;
-        if (outcome != .none and self.clauseIsLocked(d_cref)) continue;
+    fn rarestLiteral(self: *const Subsumption) Literal {
+        const lits = self.subsumer.items;
+        var rarest = lits[0];
+        for (lits[1..]) |lit| {
+            if (self.occ[lit.raw].items.len < self.occ[rarest.raw].items.len) rarest = lit;
+        }
+        return rarest;
+    }
 
+    fn tryAgainst(self: *Subsumption, c_cref: ?ClauseRef, c_abs: u64, d_cref: ClauseRef) !void {
+        const solver = self.solver;
+        self.op_count += 1;
+        const d_lits = solver.clauseLits(d_cref);
+        if ((c_abs & ~clauseAbstract(d_lits)) != 0) return;
+        if (d_lits.len < self.subsumer.items.len) return;
+
+        const outcome = checkSubsumeOrSSR(self.subsumer.items, d_lits);
+        if (outcome != .none and solver.clauseIsLocked(d_cref)) return;
         switch (outcome) {
             .none => {},
             .subsumed => {
-                if (!self.clauseIsLearned(d_cref)) self.promoteToIrredundant(c_cref);
-                try subsumeClause(self, d_cref, any_deleted);
+                // A binary carries no learned flag, so it is already irredundant.
+                if (c_cref) |c| {
+                    if (!solver.clauseIsLearned(d_cref)) solver.promoteToIrredundant(c);
+                }
+                try self.deleteSubsumed(d_cref);
             },
-            .strengthen => |neg_lit| {
-                try strengthenLongClause(
-                    self,
-                    d_cref,
-                    neg_lit,
-                    occ,
-                    revisits,
-                    queue,
-                    any_deleted,
-                    unsat_derived,
-                );
-                if (unsat_derived.*) return;
-            },
-        }
-    }
-}
-
-// Processes a binary clause (a, b) as subsumer.
-fn processSubsumerBinary(
-    self: *Solver,
-    a: Literal,
-    b: Literal,
-    occ: []std.ArrayList(ClauseRef),
-    revisits: *std.AutoHashMap(ClauseRef, u8),
-    queue: *std.ArrayList(ClauseRef),
-    scratch: *std.ArrayList(Literal),
-    op_count: *u64,
-    budget: u64,
-    any_deleted: *bool,
-    unsat_derived: *bool,
-) !void {
-    scratch.clearRetainingCapacity();
-    try scratch.ensureTotalCapacity(self.allocator, 2);
-    scratch.appendAssumeCapacity(a);
-    scratch.appendAssumeCapacity(b);
-
-    const c_abs = clauseAbstract(scratch.items);
-
-    // Pivot = shorter occ list.
-    const pivot: Literal = if (occ[a.raw].items.len <= occ[b.raw].items.len) a else b;
-
-    var i: usize = 0;
-    while (i < occ[pivot.raw].items.len) : (i += 1) {
-        if (unsat_derived.*) return;
-        if (op_count.* > budget) {
-            @branchHint(.cold);
-            return;
-        }
-
-        const d_cref = occ[pivot.raw].items[i];
-        if (self.clauseIsDeleted(d_cref)) continue;
-
-        if ((c_abs & ~clauseAbstract(self.clauseLits(d_cref))) != 0) {
-            op_count.* += 1;
-            continue;
-        }
-
-        const d_lits = self.clauseLits(d_cref);
-        const outcome = checkSubsumeOrSSR(scratch.items, d_lits);
-        op_count.* += 1;
-        if (outcome != .none and self.clauseIsLocked(d_cref)) continue;
-        switch (outcome) {
-            .none => {},
-            .subsumed => {
-                try subsumeClause(self, d_cref, any_deleted);
-            },
-            .strengthen => |neg_lit| {
-                try strengthenLongClause(
-                    self,
-                    d_cref,
-                    neg_lit,
-                    occ,
-                    revisits,
-                    queue,
-                    any_deleted,
-                    unsat_derived,
-                );
-                if (unsat_derived.*) return;
-            },
+            .strengthen => |neg_lit| try self.strengthenLongClause(d_cref, neg_lit),
         }
     }
 
-    // SSR against other binaries: (a, b) strengthens (a, -b) to unit (a).
-    // Scan bin_watchers[b.raw] (entries represent (b.negate(), other)) —
-    // we want the specific pair (a, -b) ≡ bin_watchers[b.raw] containing
-    // {other = a}. The symmetric half (a, b) vs (-a, b) is covered by the
-    // outer iteration over all subsumer binaries.
-    try binarySSRAgainstBinaries(self, a, b, unsat_derived);
-    if (unsat_derived.*) return;
-    try binarySSRAgainstBinaries(self, b, a, unsat_derived);
-}
+    fn deleteSubsumed(self: *Subsumption, d_cref: ClauseRef) !void {
+        const solver = self.solver;
+        try solver.proof.deleteClause(solver.clauseLits(d_cref));
+        solver.markDeleted(d_cref);
+        self.any_deleted = true;
+        solver.stats.subsumed_clauses += 1;
+    }
 
-// Looks for a sibling binary (a, -b) that can be strengthened to unit (a)
-// by resolving with our subsumer (a, b) on b. Found entries are removed
-// from both bin_watchers lists; the unit is DRAT-emitted and assigned at
-// level 0.
-fn binarySSRAgainstBinaries(
-    self: *Solver,
-    a: Literal,
-    b: Literal,
-    unsat_derived: *bool,
-) !void {
-    // Target clause: (a, -b). Found in bin_watchers[b.raw] as entry
-    // {.other = a}.
-    const target_idx = b.raw;
-    var i: usize = 0;
-    while (i < self.bin_watchers[target_idx].items.len) {
-        const entry = self.bin_watchers[target_idx].items[i];
-        if (entry.other.raw != a.raw) {
-            i += 1;
-            continue;
+    // Self-subsuming resolution on a long clause D: removes `neg_lit` and
+    // any literal false at level 0 (deleting D instead if one is true),
+    // logs add-new before delete-old, and installs what is left. A new long
+    // clause joins occ and the queue so later subsumers can reach it.
+    fn strengthenLongClause(self: *Subsumption, d_cref: ClauseRef, neg_lit: Literal) !void {
+        const solver = self.solver;
+        // Copied out, since installing the new clause may reallocate the arena.
+        const old_lits = try solver.allocator.dupe(Literal, solver.clauseLits(d_cref));
+        defer solver.allocator.free(old_lits);
+        var new_lits: std.ArrayList(Literal) = try .initCapacity(solver.allocator, old_lits.len);
+        defer new_lits.deinit(solver.allocator);
+        for (old_lits) |lit| {
+            if (!lit.eql(neg_lit)) new_lits.appendAssumeCapacity(lit);
         }
-        // Found (a, -b). Strengthen to unit (a).
-        const unit = a;
+        const kept = common.unassignedAtRoot(&solver.assignment, new_lits.items) orelse
+            return self.deleteSubsumed(d_cref);
+
+        try solver.proof.addClause(kept);
+        try solver.proof.deleteClause(old_lits);
+        solver.markDeleted(d_cref);
+        self.any_deleted = true;
+        solver.stats.strengthened_clauses += 1;
+
+        const lbd = clause_mod.rewrittenLbd(solver.clauseLbd(d_cref), kept.len);
+        switch (try solver.installClause(kept, solver.clauseKind(d_cref), lbd)) {
+            .refuted => self.refuted = true,
+            .unit, .binary => {},
+            .long => |new_cref| try self.requeue(d_cref, new_cref, kept),
+        }
+    }
+
+    // Adds a strengthened clause to occ, and to the queue unless the
+    // clause it replaced was already revisited `max_revisits_per_clause`
+    // times, so chains of strengthenings terminate.
+    fn requeue(self: *Subsumption, old_cref: ClauseRef, new_cref: ClauseRef, lits: []const Literal) !void {
+        const allocator = self.solver.allocator;
+        for (lits) |lit| {
+            try clause_mod.reserveSlot(ClauseRef, &self.occ[lit.raw], allocator);
+            self.occ[lit.raw].appendAssumeCapacity(new_cref);
+        }
+        const revisit_count = (self.revisits.get(old_cref) orelse 0) + 1;
+        if (revisit_count > max_revisits_per_clause) return;
+        try self.revisits.put(new_cref, revisit_count);
+        try self.queue.append(allocator, new_cref);
+    }
+
+    // Resolving the subsumer (a ∨ b) with a binary (a ∨ ¬b) on b gives
+    // the unit a, which replaces that binary at level 0.
+    fn strengthenBinary(self: *Subsumption, a: Literal, b: Literal) !void {
+        const solver = self.solver;
         const neg_b = b.negate();
-
-        // Emit proof first: add the stronger clause, then delete the old.
-        try self.proof.addClause(&[_]Literal{unit});
-        try self.proof.deleteClause(&[_]Literal{ unit, neg_b });
-
-        // Removes the entry at i: no earlier one in this list is `a`.
-        self.removeBinary(unit, neg_b);
-
-        self.stats.strengthened_clauses += 1;
-
-        if (try self.assertRootUnit(unit) == .refuted) {
-            unsat_derived.* = true;
-            return;
+        while (solver.hasBinary(a, neg_b)) {
+            try solver.proof.addClause(&[_]Literal{a});
+            try solver.proof.deleteClause(&[_]Literal{ a, neg_b });
+            solver.removeBinary(a, neg_b);
+            solver.stats.strengthened_clauses += 1;
+            if (try solver.assertRootUnit(a) == .refuted) {
+                self.refuted = true;
+                return;
+            }
         }
-        // Do NOT increment i — we swap-removed at i.
-        // Continue scanning for further matches (unlikely for a distinct
-        // binary, but safe).
     }
-}
+};
 
 // Bloom-style OR of one bit per literal; C ⊆ D requires abs(C) ⊆ abs(D).
 fn clauseAbstract(lits: []const Literal) u64 {
