@@ -528,7 +528,7 @@ fn checkRow(t: Table, check: *const Check) !void {
     const pad: usize = if (name_cols < label_width) label_width - name_cols else 1;
     try t.writer.splatByteAll(' ', pad);
     var visible = name_cols + pad;
-    visible += try t.writeTruncated(Color.dim, check.detail, t.width - 2 - visible - 1);
+    visible += try t.writeTruncated(Color.dim, check.detail, visible);
 
     try t.endRow(visible);
 }
@@ -540,7 +540,7 @@ fn plainRow(t: Table, label: []const u8, value: []const u8, note: []const u8) !v
     try t.writer.splatByteAll(' ', label_pad);
     var vis = label.len + label_pad;
     try t.writer.print("{s}{s}{s}", .{ Color.cyan, value, Color.reset });
-    vis += value.len;
+    vis += report.displayWidth(value);
     if (note.len > 0) {
         try t.writer.print("   {s}{s}{s}", .{ Color.dim, note, Color.reset });
         vis += 3 + note.len;

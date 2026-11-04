@@ -26,6 +26,13 @@ pub const box = struct {
     const v = "│";
 };
 
+// The columns `text` takes in a terminal: one per code point, since the
+// tables only use characters one column wide such as µ, — and ≈. Bytes
+// that are not UTF-8 count one column each.
+pub fn displayWidth(text: []const u8) usize {
+    return std.unicode.utf8CountCodepoints(text) catch text.len;
+}
+
 // Rows `width` columns wide between two borders. A row is written as
 // startRow, its text, then endRow with the text's visible width.
 pub const Table = struct {
@@ -42,9 +49,12 @@ pub const Table = struct {
         try self.writer.print("{s}{s}{s}  ", .{ Color.gray, box.v, Color.reset });
     }
 
+    // Pads the row, whose text took `visible_cols` columns, out to the
+    // right border, so it spans `width` columns like the rules.
     pub fn endRow(self: Table, visible_cols: usize) !void {
+        const inner_cols = self.width - 2;
         const used = 2 + visible_cols;
-        if (used < self.width - 1) try self.writer.splatByteAll(' ', self.width - 1 - used);
+        if (used < inner_cols) try self.writer.splatByteAll(' ', inner_cols - used);
         try self.writer.print("{s}{s}{s}\n", .{ Color.gray, box.v, Color.reset });
     }
 
@@ -52,7 +62,7 @@ pub const Table = struct {
     pub fn textRow(self: Table, style: []const u8, text: []const u8) !void {
         try self.startRow();
         try self.writer.print("{s}{s}{s}", .{ style, text, Color.reset });
-        try self.endRow(text.len);
+        try self.endRow(displayWidth(text));
     }
 
     pub fn blankRow(self: Table) !void {
@@ -60,9 +70,11 @@ pub const Table = struct {
         try self.endRow(0);
     }
 
-    // Writes `text` in `color`, cut to `max_cols` with an ellipsis, and
-    // returns the columns it took.
-    pub fn writeTruncated(self: Table, color: []const u8, text: []const u8, max_cols: usize) !usize {
+    // Writes `text` in `color` after `used_cols` columns of the row, cut
+    // with an ellipsis to fit before the border, and returns the columns
+    // it took.
+    pub fn writeTruncated(self: Table, color: []const u8, text: []const u8, used_cols: usize) !usize {
+        const max_cols = self.width - 4 - used_cols;
         if (text.len <= max_cols) {
             try self.writer.print("{s}{s}{s}", .{ color, text, Color.reset });
             return text.len;
@@ -76,7 +88,7 @@ pub const Table = struct {
         try self.blankRow();
         try self.startRow();
         try self.writer.print("{s}{s}{s}", .{ Color.bold, text, Color.reset });
-        try self.endRow(text.len);
+        try self.endRow(displayWidth(text));
         try self.blankRow();
     }
 };

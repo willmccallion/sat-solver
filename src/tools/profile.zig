@@ -438,7 +438,7 @@ fn valueRow(t: Table, label_cols: usize, label: []const u8, value: []const u8, n
     try t.writer.splatByteAll(' ', label_cols -| label.len);
     try t.writer.print("{s}{s}{s}", .{ Color.cyan, value, Color.reset });
     if (note.len > 0) try t.writer.print("{s}{s}{s}", .{ Color.dim, note, Color.reset });
-    try t.endRow(@max(label.len, label_cols) + value.len + note.len);
+    try t.endRow(@max(label.len, label_cols) + report.displayWidth(value) + report.displayWidth(note));
 }
 
 const workload_label_cols = 11;
@@ -568,10 +568,7 @@ fn printThroughput(t: Table, elapsed_ns: f64, solver: *const SolverStats) !void 
 fn printHotspots(t: Table, hotspots: []const Hotspot, elapsed_ns: f64) !void {
     try t.sectionHeader("hotspots (self time)");
     if (hotspots.len == 0) {
-        const message = "(no samples — did perf record succeed?)";
-        try t.startRow();
-        try t.writer.print("{s}{s}{s}", .{ Color.yellow, message, Color.reset });
-        try t.endRow(message.len);
+        try t.textRow(Color.yellow, "(no samples — did perf record succeed?)");
     }
     for (hotspots) |h| try hotspotRow(t, h, elapsed_ns);
     try t.blankRow();
@@ -597,7 +594,7 @@ fn distRow(t: Table, label: []const u8, ms: f64) !void {
     var vb: [32]u8 = undefined;
     const vstr = formatTime(&vb, ms * 1e6);
     try t.writer.print("{s}{s}{s}", .{ Color.cyan, vstr, Color.reset });
-    try t.endRow(label.len + 2 + vstr.len);
+    try t.endRow(label.len + 2 + report.displayWidth(vstr));
 }
 
 fn topdownRow(t: Table, label: []const u8, pct: f64, note: []const u8) !void {
@@ -707,7 +704,7 @@ fn throughputRow(t: Table, label: []const u8, wall_ns: f64, events: u64) !void {
     var vb: [32]u8 = undefined;
     const vstr = formatTime(&vb, per);
     try t.writer.print("{s}{s}{s}", .{ Color.cyan, vstr, Color.reset });
-    try t.endRow(20 + vstr.len);
+    try t.endRow(20 + report.displayWidth(vstr));
 }
 
 fn hotspotRow(t: Table, h: Hotspot, wall_ns: f64) !void {
@@ -718,7 +715,8 @@ fn hotspotRow(t: Table, h: Hotspot, wall_ns: f64) !void {
     const ns_in_func = (h.percent / 100.0) * wall_ns;
     const tstr = formatTime(&tb, ns_in_func);
     // Pad tstr to width 9 (right-aligned) for column alignment.
-    const tpad = 9 -| tstr.len;
+    const tstr_cols = report.displayWidth(tstr);
+    const tpad = 9 -| tstr_cols;
     try t.writer.splatByteAll(' ', tpad);
     try t.writer.print("{s}{s}{s}   ", .{ Color.cyan, tstr, Color.reset });
 
@@ -726,9 +724,8 @@ fn hotspotRow(t: Table, h: Hotspot, wall_ns: f64) !void {
     const pstr = try std.fmt.bufPrint(&pb, "{d:>5.1}%", .{h.percent});
     try t.writer.print("{s}{s}{s}   ", .{ Color.yellow, pstr, Color.reset });
 
-    const max_sym_len: usize = t.width - 2 - tpad - tstr.len - 3 - pstr.len - 3 - 1;
-    const sym_cols = try t.writeTruncated(Color.cyan, h.symbol, max_sym_len);
-    const visible = tpad + tstr.len + 3 + pstr.len + 3 + sym_cols;
+    const used = tpad + tstr_cols + 3 + pstr.len + 3;
+    const visible = used + try t.writeTruncated(Color.cyan, h.symbol, used);
     try t.endRow(visible);
 }
 
@@ -738,8 +735,7 @@ fn hotInsnRow(t: Table, h: HotInsn) !void {
     const pstr = try std.fmt.bufPrint(&pb, "{d:>5.1}%", .{h.percent});
     try t.writer.print("{s}{s}{s}   ", .{ Color.yellow, pstr, Color.reset });
 
-    const max_text_len: usize = t.width - 2 - pstr.len - 3 - 1;
-    const text_cols = try t.writeTruncated(Color.cyan, h.text, max_text_len);
-    const visible = pstr.len + 3 + text_cols;
+    const used = pstr.len + 3;
+    const visible = used + try t.writeTruncated(Color.cyan, h.text, used);
     try t.endRow(visible);
 }
