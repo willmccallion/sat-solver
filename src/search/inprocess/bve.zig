@@ -22,11 +22,6 @@ const Result = solver_mod.Result;
 // many occurrences, resolvents that grow past `max_resolvent_len`, or
 // occurrences locked as reasons for level-0 units are skipped.
 //
-// Occurrence lists are built as a tagged union over LONG arena clauses
-// and BINARY clauses in bin_watchers, with a `a.raw < b.raw` dedup to
-// visit each binary once. Long clauses marked deleted (deleted_bit set)
-// are skipped during build — they are holes in the arena.
-//
 // Commit order is fixed by the DRAT checker's RUP semantics: all
 // resolvents are added first, all originals deleted second, then per-v
 // bookkeeping runs. The original clauses are logged to `bve_witness`
@@ -69,408 +64,318 @@ pub fn preprocessBVE(self: *Solver) !?Result {
     return eliminateWithin(self, preprocess_cap);
 }
 
-// Tagged occurrence: either a long-clause arena ref, or a binary
-// (partner literal). The pivot variable is implied by the owning
-// occurrence list index.
+fn eliminateWithin(self: *Solver, budget: u64) !?Result {
+    std.debug.assert(self.assignment.level == 0);
+
+    var pass = try Elimination.init(self, budget);
+    defer pass.deinit();
+    try pass.run();
+    if (pass.refuted) {
+        try self.proof.empty();
+        return .unsat;
+    }
+
+    if (pass.any_deleted) self.dropDeletedClauseRefs();
+    if (try self.propagateAtRoot()) |r| return r;
+    self.stats.bve_passes += 1;
+    return null;
+}
+
+// A clause containing a literal: an arena clause, or a binary named by
+// its other literal.
 const Occurrence = union(enum) {
     long: ClauseRef,
     binary: Literal,
 };
 
-fn eliminateWithin(self: *Solver, budget: u64) !?Result {
-    std.debug.assert(self.assignment.level == 0);
+// A variable to try eliminating, ordered by the product of its occurrence
+// counts, which bounds how many resolvents it can have.
+const Candidate = struct {
+    product: u64,
+    var_idx: u32,
 
-    const num_vars = self.num_vars;
-    const num_lits: usize = @as(usize, num_vars) * 2;
+    fn order(_: void, a: Candidate, b: Candidate) std.math.Order {
+        return std.math.order(a.product, b.product);
+    }
+};
 
-    // Per-literal occurrence lists. Built fresh each call — simpler than
-    // maintaining them incrementally, and BVE is not on the hot path.
-    var occ: []std.ArrayList(Occurrence) = try self.allocator.alloc(
-        std.ArrayList(Occurrence),
-        num_lits,
-    );
-    for (occ) |*o| o.* = .empty;
-    defer {
-        for (occ) |*o| o.deinit(self.allocator);
-        self.allocator.free(occ);
+const Resolution = enum { complete, abandoned, refuted };
+
+// One elimination pass over the clause database.
+const Elimination = struct {
+    solver: *Solver,
+    // Per-literal occurrence lists, built fresh each pass.
+    occ: []std.ArrayList(Occurrence),
+    candidates: std.PriorityQueue(Candidate, void, Candidate.order) = .empty,
+    // The clauses on each side of the current variable, copied out so no
+    // arena slice is held while installing a resolvent reallocates it.
+    pos_clauses: ClauseList = .{},
+    neg_clauses: ClauseList = .{},
+    resolvent_buf: std.ArrayList(Literal) = .empty,
+    // The current variable's non-tautological resolvents.
+    resolvents: ClauseList = .{},
+    // Resolvents built.
+    op_count: u64 = 0,
+    budget: u64,
+    any_deleted: bool = false,
+    // Set once the pass derives an empty clause or a conflicting unit.
+    refuted: bool = false,
+
+    fn init(solver: *Solver, budget: u64) !Elimination {
+        const occ = try solver.allocator.alloc(std.ArrayList(Occurrence), @as(usize, solver.num_vars) * 2);
+        for (occ) |*o| o.* = .empty;
+        var self: Elimination = .{ .solver = solver, .occ = occ, .budget = budget };
+        errdefer self.deinit();
+        try self.collectOccurrences();
+        try self.queueCandidates();
+        return self;
     }
 
-    // Build occurrence lists
+    fn deinit(self: *Elimination) void {
+        const allocator = self.solver.allocator;
+        for (self.occ) |*o| o.deinit(allocator);
+        allocator.free(self.occ);
+        self.candidates.deinit(allocator);
+        self.pos_clauses.deinit(allocator);
+        self.neg_clauses.deinit(allocator);
+        self.resolvent_buf.deinit(allocator);
+        self.resolvents.deinit(allocator);
+    }
+
     // Sized exactly first: a literal x occurs in its long clauses plus one
     // binary per entry of bin_watchers[¬x].
-    {
-        const long_counts = try self.allocator.alloc(u32, num_lits);
-        defer self.allocator.free(long_counts);
+    fn collectOccurrences(self: *Elimination) !void {
+        const solver = self.solver;
+        const long_counts = try solver.allocator.alloc(u32, self.occ.len);
+        defer solver.allocator.free(long_counts);
         @memset(long_counts, 0);
-        var live = self.liveClauses();
+        var live = solver.liveClauses();
         while (live.next()) |cref| {
-            for (self.clauseLits(cref)) |lit| long_counts[lit.raw] += 1;
+            for (solver.clauseLits(cref)) |lit| long_counts[lit.raw] += 1;
         }
-        for (occ, long_counts, 0..) |*o, n, lit_raw| {
-            const binary_count = self.bin_watchers[lit_raw ^ 1].items.len;
-            try o.ensureTotalCapacityPrecise(self.allocator, n + binary_count);
+        for (self.occ, long_counts, 0..) |*o, n, lit_raw| {
+            const binary_count = solver.bin_watchers[lit_raw ^ 1].items.len;
+            try o.ensureTotalCapacityPrecise(solver.allocator, n + binary_count);
         }
-    }
 
-    // Long clauses from the arena.
-    {
-        var live = self.liveClauses();
+        live = solver.liveClauses();
         while (live.next()) |cref| {
-            for (self.clauseLits(cref)) |lit| {
-                occ[lit.raw].appendAssumeCapacity(.{ .long = cref });
-            }
+            for (solver.clauseLits(cref)) |lit| self.occ[lit.raw].appendAssumeCapacity(.{ .long = cref });
         }
-    }
-
-    // Binaries, once each.
-    {
-        var binaries = self.binaryClauses();
+        var binaries = solver.binaryClauses();
         while (binaries.next()) |pair| {
-            occ[pair[0].raw].appendAssumeCapacity(.{ .binary = pair[1] });
-            occ[pair[1].raw].appendAssumeCapacity(.{ .binary = pair[0] });
+            self.occ[pair[0].raw].appendAssumeCapacity(.{ .binary = pair[1] });
+            self.occ[pair[1].raw].appendAssumeCapacity(.{ .binary = pair[0] });
         }
     }
 
-    // Priority heap over variables by |occ(+v)| * |occ(-v)|
-    const Entry = struct {
-        product: u64,
-        var_idx: u32,
-    };
-    const lessThan = struct {
-        fn f(_: void, a: Entry, b: Entry) std.math.Order {
-            return std.math.order(a.product, b.product);
-        }
-    }.f;
-
-    var heap: std.PriorityQueue(Entry, void, lessThan) = .empty;
-    defer heap.deinit(self.allocator);
-
-    {
-        var v: u32 = 0;
-        while (v < num_vars) : (v += 1) {
-            if (!self.varIsActive(v)) continue;
-            const pos_cnt = occ[Literal.init(v, false).raw].items.len;
-            const neg_cnt = occ[Literal.init(v, true).raw].items.len;
-            if (pos_cnt == 0 and neg_cnt == 0) continue;
-            const prod: u64 = @as(u64, pos_cnt) * @as(u64, neg_cnt);
-            if (prod > max_occ_product) {
+    fn queueCandidates(self: *Elimination) !void {
+        for (0..self.solver.num_vars) |idx| {
+            const v: u32 = @intCast(idx);
+            if (!self.solver.varIsActive(v)) continue;
+            const pos_count = self.occ[Literal.init(v, false).raw].items.len;
+            const neg_count = self.occ[Literal.init(v, true).raw].items.len;
+            if (pos_count == 0 and neg_count == 0) continue;
+            const product = self.occurrenceProduct(v);
+            if (product > max_occ_product) {
                 @branchHint(.cold);
                 continue;
             }
-            try heap.push(self.allocator, .{ .product = prod, .var_idx = v });
+            try self.candidates.push(self.solver.allocator, .{ .product = product, .var_idx = v });
         }
     }
 
-    // Scratch buffers — all allocated once, reused across all pops. The
-    // clauses on each side are copied out so no arena slice is held while
-    // installing a resolvent reallocates the arena.
-    var pos_clauses: ClauseList = .{};
-    defer pos_clauses.deinit(self.allocator);
-    var neg_clauses: ClauseList = .{};
-    defer neg_clauses.deinit(self.allocator);
-    var resolvent_buf: std.ArrayList(Literal) = .empty;
-    defer resolvent_buf.deinit(self.allocator);
-    // Non-tautological resolvents kept for the commit phase.
-    var resolvents: ClauseList = .{};
-    defer resolvents.deinit(self.allocator);
+    fn occurrenceProduct(self: *const Elimination, v: u32) u64 {
+        const pos_count: u64 = self.occ[Literal.init(v, false).raw].items.len;
+        const neg_count: u64 = self.occ[Literal.init(v, true).raw].items.len;
+        return pos_count * neg_count;
+    }
 
-    var op_count: u64 = 0;
-    var any_deleted = false;
-    var unsat_derived = false;
+    fn isOverBudget(self: *const Elimination) bool {
+        return self.op_count > self.budget;
+    }
 
-    outer: while (heap.pop()) |entry| {
-        if (op_count > budget or solver_mod.interruptRequested()) {
-            @branchHint(.cold);
-            break;
+    // Units that a commit asserts are propagated only once the pass ends:
+    // until the sweep, watchers still point at the clauses it deleted.
+    fn run(self: *Elimination) !void {
+        while (self.candidates.pop()) |candidate| {
+            if (self.isOverBudget() or solver_mod.interruptRequested()) {
+                @branchHint(.cold);
+                return;
+            }
+            try self.tryEliminate(candidate.var_idx);
+            if (self.refuted) return;
         }
-        const v = entry.var_idx;
+    }
 
-        if (!self.varIsActive(v)) continue;
-
+    fn tryEliminate(self: *Elimination, v: u32) !void {
+        if (!self.solver.varIsActive(v)) return;
+        // Earlier eliminations append to occ, so the product is re-checked.
+        if (self.occurrenceProduct(v) > max_occ_product) {
+            @branchHint(.cold);
+            return;
+        }
         const pos_lit = Literal.init(v, false);
-        const neg_lit = Literal.init(v, true);
+        if (!try self.gatherSide(pos_lit, &self.pos_clauses)) return;
+        if (!try self.gatherSide(pos_lit.negate(), &self.neg_clauses)) return;
+        const original_count = self.pos_clauses.count() + self.neg_clauses.count();
+        if (original_count == 0) return;
 
-        // Re-read occ sizes — may have changed as prior eliminations
-        // appended to occ lists. Skip if now too big.
-        const pos_occ = occ[pos_lit.raw].items;
-        const neg_occ = occ[neg_lit.raw].items;
-        const prod: u64 = @as(u64, pos_occ.len) * @as(u64, neg_occ.len);
-        if (prod > max_occ_product) {
-            @branchHint(.cold);
-            continue;
-        }
-
-        // Gather pos and neg clause literals into scratch
-        pos_clauses.clearRetainingCapacity();
-        neg_clauses.clearRetainingCapacity();
-
-        var locked = false;
-
-        for (pos_occ) |o| {
-            switch (o) {
-                .long => |cref| {
-                    if (self.clauseIsDeleted(cref)) continue;
-                    if (self.clauseIsLocked(cref)) {
-                        locked = true;
-                        break;
-                    }
-                    // A learned clause is implied by the irredundant ones, so
-                    // it takes no part in resolution; commit deletes it.
-                    if (self.clauseIsLearned(cref)) continue;
-                    try pos_clauses.append(self.allocator, self.clauseLits(cref));
-                },
-                .binary => |other| {
-                    // Binary entries in occ go stale when `other.variable()`
-                    // is itself eliminated: the binary was removed from
-                    // bin_watchers during that variable's commit, but the
-                    // mirror entry in this lit's occ was never cleaned. Treat
-                    // such ghosts as no-ops — including them as a source would
-                    // produce resolvents poisoned with an eliminated literal.
-                    if (self.eliminated.isSet(other.variable())) continue;
-                    try pos_clauses.append(self.allocator, &.{ pos_lit, other });
-                },
-            }
-        }
-        if (locked) continue;
-
-        for (neg_occ) |o| {
-            switch (o) {
-                .long => |cref| {
-                    if (self.clauseIsDeleted(cref)) continue;
-                    if (self.clauseIsLocked(cref)) {
-                        locked = true;
-                        break;
-                    }
-                    // A learned clause is implied by the irredundant ones, so
-                    // it takes no part in resolution; commit deletes it.
-                    if (self.clauseIsLearned(cref)) continue;
-                    try neg_clauses.append(self.allocator, self.clauseLits(cref));
-                },
-                .binary => |other| {
-                    if (self.eliminated.isSet(other.variable())) continue;
-                    try neg_clauses.append(self.allocator, &.{ neg_lit, other });
-                },
-            }
-        }
-        if (locked) continue;
-
-        // Skip variables with no live clauses on either side — BVE on
-        // them is a no-op that still costs bookkeeping.
-        if (pos_clauses.count() == 0 and neg_clauses.count() == 0) continue;
-
-        // Enumerate resolvents
-        resolvents.clearRetainingCapacity();
-
-        var abandon = false;
-        var empty_found = false;
-
-        for (0..pos_clauses.count()) |p| {
-            if (abandon or empty_found) break;
-            const p_lits = pos_clauses.get(p);
-
-            for (0..neg_clauses.count()) |n| {
-                if (abandon or empty_found) break;
-                op_count += 1;
-                if (op_count > budget) {
-                    @branchHint(.cold);
-                    abandon = true;
-                    break;
-                }
-                const n_lits = neg_clauses.get(n);
-
-                // Build resolvent: (p_lits ∪ n_lits) \ {pos_lit, neg_lit}.
-                resolvent_buf.clearRetainingCapacity();
-                for (p_lits) |lit| {
-                    if (lit.raw == pos_lit.raw) continue;
-                    try resolvent_buf.append(self.allocator, lit);
-                }
-                for (n_lits) |lit| {
-                    if (lit.raw == neg_lit.raw) continue;
-                    try resolvent_buf.append(self.allocator, lit);
-                }
-
-                const resolvent = common.normalizeAtRoot(&self.assignment, resolvent_buf.items) orelse continue;
-                const r_len = resolvent.len;
-                if (r_len > max_resolvent_len) {
-                    @branchHint(.cold);
-                    abandon = true;
-                    break;
-                }
-                if (r_len == 0) {
-                    empty_found = true;
-                    break;
-                }
-
-                try resolvents.append(self.allocator, resolvent);
-            }
-        }
-
-        if (empty_found) {
-            @branchHint(.cold);
-            try self.proof.empty();
-            return .unsat;
-        }
-
-        if (abandon) {
-            // Budget exceeded mid-enumeration OR one resolvent was
-            // oversized. Either way, this variable is not worth it —
-            // skip it but continue with the next variable in the heap
-            // (the budget check at the top of the loop will break out
-            // if we've truly blown the budget).
-            if (op_count > budget) break :outer;
-            continue;
-        }
-
-        if (resolvents.count() > pos_clauses.count() + neg_clauses.count()) continue;
-
-        try commitElimination(
-            self,
-            v,
-            pos_lit,
-            neg_lit,
-            &pos_clauses,
-            &neg_clauses,
-            &resolvents,
-            pos_occ,
-            neg_occ,
-            occ,
-            &any_deleted,
-            &unsat_derived,
-        );
-
-        if (unsat_derived) break;
-
-        self.stats.eliminated_vars += 1;
-        self.stats.resolvents_added += resolvents.count();
-
-        // A unit installed by commit just landed on the trail via
-        // assignAtLevel. We DO NOT propagate it here: propagate would
-        // walk long-clause watchers that still reference clauses we
-        // just marked deleted in step (d), which is unsafe. Instead we
-        // let the single post-loop sweep + propagate handle it. If the
-        // unit conflicts with an existing level-0 fact, unsat_derived
-        // is already set; otherwise the only cost is that later BVE
-        // passes in this call don't see the unit's consequences — an
-        // acceptable loss vs. the correctness hazard.
-    }
-
-    if (unsat_derived) {
-        try self.proof.empty();
-        return .unsat;
-    }
-
-    if (any_deleted) self.dropDeletedClauseRefs();
-
-    if (try self.propagateAtRoot()) |r| return r;
-
-    self.stats.bve_passes += 1;
-    return null;
-}
-
-// Performs the six-step commit for one variable's elimination:
-//   a. emit proof.addClause for each resolvent (in order)
-//   b. append pos / neg clause literals to the solver's witness stack
-//   c. emit proof.deleteClause for each original clause
-//   d. mark every original clause deleted (arena or bin_watchers), and
-//      every learned clause on v, emitting its proof deletion
-//   e. install each resolvent (unit / binary / long)
-//   f. set eliminated bit for v (caller does the stats)
-fn commitElimination(
-    self: *Solver,
-    v: u32,
-    pos_lit: Literal,
-    neg_lit: Literal,
-    pos_clauses: *const ClauseList,
-    neg_clauses: *const ClauseList,
-    resolvents: *const ClauseList,
-    pos_occ: []const Occurrence,
-    neg_occ: []const Occurrence,
-    occ: []std.ArrayList(Occurrence),
-    any_deleted: *bool,
-    unsat_derived: *bool,
-) !void {
-    // (a) Emit all add-clauses BEFORE any deletes, so a DRAT checker
-    // sees each resolvent under the still-live originals.
-    for (0..resolvents.count()) |i| try self.proof.addClause(resolvents.get(i));
-
-    // (b) Push the witness frame so model.zig can walk it in reverse for
-    // model reconstruction.
-    const pos_start: u32 = @intCast(self.bve_witness.count());
-    for (0..pos_clauses.count()) |i| try self.bve_witness.append(self.allocator, pos_clauses.get(i));
-    const neg_start: u32 = @intCast(self.bve_witness.count());
-    for (0..neg_clauses.count()) |i| try self.bve_witness.append(self.allocator, neg_clauses.get(i));
-    try self.bve_witness_frames.append(self.allocator, .{
-        .pivot = v,
-        .pos_start = pos_start,
-        .neg_start = neg_start,
-        .end = @intCast(self.bve_witness.count()),
-    });
-
-    // (c) Emit all delete-clauses for originals.
-    for (0..pos_clauses.count()) |i| try self.proof.deleteClause(pos_clauses.get(i));
-    for (0..neg_clauses.count()) |i| try self.proof.deleteClause(neg_clauses.get(i));
-
-    // (d) Delete originals.
-    for (pos_occ) |o| {
-        switch (o) {
-            .long => |cref| {
-                if (self.clauseIsDeleted(cref)) continue;
-                if (self.clauseIsLearned(cref)) try self.proof.deleteClause(self.clauseLits(cref));
-                self.markDeleted(cref);
-                any_deleted.* = true;
-            },
-            .binary => |other| {
-                // Binary (pos_lit, other): swap-remove from both sides.
-                self.removeBinary(pos_lit, other);
-            },
-        }
-    }
-    for (neg_occ) |o| {
-        switch (o) {
-            .long => |cref| {
-                if (self.clauseIsDeleted(cref)) continue;
-                if (self.clauseIsLearned(cref)) try self.proof.deleteClause(self.clauseLits(cref));
-                self.markDeleted(cref);
-                any_deleted.* = true;
-            },
-            .binary => |other| {
-                self.removeBinary(neg_lit, other);
-            },
-        }
-    }
-
-    // (e) Install resolvents and add them to occ so later variables'
-    // commits see them.
-    for (0..resolvents.count()) |i| {
-        const r_lits = resolvents.get(i);
-        switch (try self.installClause(r_lits, .irredundant, 0)) {
+        switch (try self.resolveSides(pos_lit)) {
+            .complete => {},
+            .abandoned => return,
             .refuted => {
-                unsat_derived.* = true;
+                self.refuted = true;
                 return;
             },
-            .unit => {},
-            .binary => {
-                const a = r_lits[0];
-                const b = r_lits[1];
-                // Extend occ[a] and occ[b] so subsequent pops see this clause.
-                try clause_mod.reserveSlot(Occurrence, &occ[a.raw], self.allocator);
-                try clause_mod.reserveSlot(Occurrence, &occ[b.raw], self.allocator);
-                occ[a.raw].appendAssumeCapacity(.{ .binary = b });
-                occ[b.raw].appendAssumeCapacity(.{ .binary = a });
-            },
-            .long => |new_cref| {
-                // Re-fetch: installing may have reallocated the arena.
-                for (self.clauseLits(new_cref)) |lit| {
-                    try clause_mod.reserveSlot(Occurrence, &occ[lit.raw], self.allocator);
-                    occ[lit.raw].appendAssumeCapacity(.{ .long = new_cref });
+        }
+        if (self.resolvents.count() > original_count) return;
+
+        try self.commit(v);
+        if (self.refuted) return;
+        self.solver.stats.eliminated_vars += 1;
+        self.solver.stats.resolvents_added += self.resolvents.count();
+    }
+
+    // Copies the irredundant clauses containing `lit` into `clauses`;
+    // false when one of them is locked, which rules out eliminating it.
+    fn gatherSide(self: *Elimination, lit: Literal, clauses: *ClauseList) !bool {
+        const solver = self.solver;
+        clauses.clearRetainingCapacity();
+        for (self.occ[lit.raw].items) |o| {
+            switch (o) {
+                .long => |cref| {
+                    if (solver.clauseIsDeleted(cref)) continue;
+                    if (solver.clauseIsLocked(cref)) return false;
+                    // A learned clause is implied by the irredundant ones, so
+                    // it takes no part in resolution; the commit deletes it.
+                    if (solver.clauseIsLearned(cref)) continue;
+                    try clauses.append(solver.allocator, solver.clauseLits(cref));
+                },
+                .binary => |other| {
+                    // A binary's mirror entry outlives it once `other`'s
+                    // variable is eliminated; resolving on it would bring
+                    // that variable back.
+                    if (solver.eliminated.isSet(other.variable())) continue;
+                    try clauses.append(solver.allocator, &.{ lit, other });
+                },
+            }
+        }
+        return true;
+    }
+
+    // Collects the resolvents on `pos_lit`'s variable of every pos/neg
+    // clause pair, abandoning the variable once the budget is spent or a
+    // resolvent grows past `max_resolvent_len`.
+    fn resolveSides(self: *Elimination, pos_lit: Literal) !Resolution {
+        self.resolvents.clearRetainingCapacity();
+        for (0..self.pos_clauses.count()) |p| {
+            for (0..self.neg_clauses.count()) |n| {
+                self.op_count += 1;
+                if (self.isOverBudget()) {
+                    @branchHint(.cold);
+                    return .abandoned;
                 }
-            },
+                const resolvent = (try self.resolve(self.pos_clauses.get(p), self.neg_clauses.get(n), pos_lit)) orelse continue;
+                if (resolvent.len > max_resolvent_len) {
+                    @branchHint(.cold);
+                    return .abandoned;
+                }
+                if (resolvent.len == 0) return .refuted;
+                try self.resolvents.append(self.solver.allocator, resolvent);
+            }
+        }
+        return .complete;
+    }
+
+    // The resolvent of `p_lits` and `n_lits` on `pos_lit`'s variable,
+    // normalized at level 0; null when it is a tautology or satisfied.
+    fn resolve(self: *Elimination, p_lits: []const Literal, n_lits: []const Literal, pos_lit: Literal) !?[]Literal {
+        const allocator = self.solver.allocator;
+        self.resolvent_buf.clearRetainingCapacity();
+        for (p_lits) |lit| {
+            if (!lit.eql(pos_lit)) try self.resolvent_buf.append(allocator, lit);
+        }
+        for (n_lits) |lit| {
+            if (!lit.eql(pos_lit.negate())) try self.resolvent_buf.append(allocator, lit);
+        }
+        return common.normalizeAtRoot(&self.solver.assignment, self.resolvent_buf.items);
+    }
+
+    // Replaces v's clauses by its resolvents. A DRAT checker must see every
+    // resolvent while the originals are still live, so all adds come first.
+    fn commit(self: *Elimination, v: u32) !void {
+        const solver = self.solver;
+        const pos_lit = Literal.init(v, false);
+        for (0..self.resolvents.count()) |i| try solver.proof.addClause(self.resolvents.get(i));
+        try self.recordWitness(v);
+        for (0..self.pos_clauses.count()) |i| try solver.proof.deleteClause(self.pos_clauses.get(i));
+        for (0..self.neg_clauses.count()) |i| try solver.proof.deleteClause(self.neg_clauses.get(i));
+        try self.deleteOccurrences(pos_lit);
+        try self.deleteOccurrences(pos_lit.negate());
+        try self.installResolvents();
+        if (self.refuted) return;
+        solver.eliminated.set(v);
+    }
+
+    // Logs v's clauses so model reconstruction can give v a value.
+    fn recordWitness(self: *Elimination, v: u32) !void {
+        const solver = self.solver;
+        const witness = &solver.bve_witness;
+        const pos_start: u32 = @intCast(witness.count());
+        for (0..self.pos_clauses.count()) |i| try witness.append(solver.allocator, self.pos_clauses.get(i));
+        const neg_start: u32 = @intCast(witness.count());
+        for (0..self.neg_clauses.count()) |i| try witness.append(solver.allocator, self.neg_clauses.get(i));
+        try solver.bve_witness_frames.append(solver.allocator, .{
+            .pivot = v,
+            .pos_start = pos_start,
+            .neg_start = neg_start,
+            .end = @intCast(witness.count()),
+        });
+    }
+
+    // Deletes every clause containing `lit`, learned ones included, since
+    // its variable is leaving the formula.
+    fn deleteOccurrences(self: *Elimination, lit: Literal) !void {
+        const solver = self.solver;
+        for (self.occ[lit.raw].items) |o| {
+            switch (o) {
+                .long => |cref| {
+                    if (solver.clauseIsDeleted(cref)) continue;
+                    if (solver.clauseIsLearned(cref)) try solver.proof.deleteClause(solver.clauseLits(cref));
+                    solver.markDeleted(cref);
+                    self.any_deleted = true;
+                },
+                .binary => |other| solver.removeBinary(lit, other),
+            }
         }
     }
 
-    // (f) Mark variable eliminated. Stats incremented by caller.
-    self.eliminated.set(v);
-}
+    // Installs the resolvents and adds them to occ so later variables'
+    // commits see them.
+    fn installResolvents(self: *Elimination) !void {
+        for (0..self.resolvents.count()) |i| {
+            const lits = self.resolvents.get(i);
+            switch (try self.solver.installClause(lits, .irredundant, 0)) {
+                .refuted => {
+                    self.refuted = true;
+                    return;
+                },
+                .unit => {},
+                .binary => {
+                    try self.addOccurrence(lits[0], .{ .binary = lits[1] });
+                    try self.addOccurrence(lits[1], .{ .binary = lits[0] });
+                },
+                .long => |cref| for (lits) |lit| try self.addOccurrence(lit, .{ .long = cref }),
+            }
+        }
+    }
+
+    fn addOccurrence(self: *Elimination, lit: Literal, occurrence: Occurrence) !void {
+        try clause_mod.reserveSlot(Occurrence, &self.occ[lit.raw], self.solver.allocator);
+        self.occ[lit.raw].appendAssumeCapacity(occurrence);
+    }
+};
 
 // Reconstruct a satisfying value for every eliminated variable.
 //
