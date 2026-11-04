@@ -29,3 +29,25 @@ pub const Schedule = struct {
         self.next = conflicts + self.interval;
     }
 };
+
+const testing = @import("std").testing;
+
+test "a schedule is due once the conflict count reaches its next run" {
+    const schedule: Schedule = .every(10, .by_half);
+
+    try testing.expect(!schedule.isDue(9));
+    try testing.expect(schedule.isDue(10));
+}
+
+test "advancing a schedule grows its interval from the current conflict count" {
+    var geometric: Schedule = .every(10, .by_half);
+    var additive: Schedule = .every(10, .{ .additive = 4 });
+
+    geometric.advance(12);
+    additive.advance(12);
+
+    try testing.expectEqual(@as(u64, 15), geometric.interval);
+    try testing.expectEqual(@as(u64, 27), geometric.next);
+    try testing.expectEqual(@as(u64, 14), additive.interval);
+    try testing.expectEqual(@as(u64, 26), additive.next);
+}

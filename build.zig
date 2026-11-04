@@ -239,6 +239,7 @@ fn addTests(
         .imports = &.{layers.search},
     }) });
     test_step.dependOn(&b.addRunArtifact(report_tests).step);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = layers.heuristics.module })).step);
 
     addSudokuTests(b, test_step, tools.sudoku);
     addSolverCliTests(b, target, test_step, tools.sat);

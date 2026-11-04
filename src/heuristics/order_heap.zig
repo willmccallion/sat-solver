@@ -104,3 +104,34 @@ pub const OrderHeap = struct {
         return top;
     }
 };
+
+const testing = std.testing;
+
+test "the order heap pops variables by decreasing activity" {
+    var activities = [_]f64{ 0.5, 3.0, 1.0, 2.0 };
+    var heap = try OrderHeap.init(testing.allocator, activities.len, &activities);
+    defer heap.deinit(testing.allocator);
+    for (0..activities.len) |v| heap.insert(@intCast(v));
+
+    var popped: [4]u32 = undefined;
+    for (&popped) |*v| v.* = heap.popMax();
+
+    try testing.expectEqualSlices(u32, &.{ 1, 3, 2, 0 }, &popped);
+    try testing.expect(heap.isEmpty());
+}
+
+test "the order heap reorders a variable whose activity grew and ignores a repeat insert" {
+    var activities = [_]f64{ 1.0, 2.0, 3.0 };
+    var heap = try OrderHeap.init(testing.allocator, activities.len, &activities);
+    defer heap.deinit(testing.allocator);
+    for (0..activities.len) |v| heap.insert(@intCast(v));
+    heap.insert(2);
+
+    activities[0] = 10.0;
+    heap.update(0);
+
+    try testing.expectEqual(@as(u32, 0), heap.popMax());
+    try testing.expectEqual(@as(u32, 2), heap.popMax());
+    try testing.expectEqual(@as(u32, 1), heap.popMax());
+    try testing.expect(heap.isEmpty());
+}
