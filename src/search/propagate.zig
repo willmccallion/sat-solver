@@ -70,7 +70,7 @@ pub fn propagate(self: *Solver) !?Conflict {
             // behind this iteration's work.
             if (i < end) {
                 const next_cref = ws.items[i].clause;
-                @prefetch(arena_ptr + next_cref, .{ .locality = 3 });
+                @prefetch(arena_ptr + next_cref.slot(), .{ .locality = 3 });
             }
 
             const lits = self.arena.literals(w.clause);

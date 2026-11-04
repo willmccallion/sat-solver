@@ -498,7 +498,7 @@ test "subsume strengthens a long clause to a new binary" {
 
     // Locate the cref of (1 2 -34) before subsume — it's the first
     // length-3 clause added to the arena.
-    var cref_long: ClauseRef = std.math.maxInt(u32);
+    var cref_long: ?ClauseRef = null;
     {
         var live = solver.arena.liveClauses();
         while (live.next()) |cref| {
@@ -512,13 +512,13 @@ test "subsume strengthens a long clause to a new binary" {
             }
         }
     }
-    try testing.expect(cref_long != std.math.maxInt(u32));
+    try testing.expect(cref_long != null);
 
     const r = try solver.preprocessSubsume();
     try testing.expect(r == null);
 
     // The long clause must be marked deleted.
-    try testing.expect(solver.arena.isDeleted(cref_long));
+    try testing.expect(solver.arena.isDeleted(cref_long.?));
 
     // bin_watchers must contain the new binary (1, -34).
     try testing.expect(solver.hasBinary(Literal.fromDimacs(1), Literal.fromDimacs(-34)));
@@ -572,7 +572,7 @@ test "subsume never deletes a clause that is a level-0 reason" {
     defer t.deinit();
     const solver = &t.solver;
 
-    const locked_cref: ClauseRef = 0;
+    const locked_cref: ClauseRef = .fromSlot(0);
     try testing.expectEqual(@as(u32, 4), solver.arena.length(locked_cref));
 
     // Propagate the units so BCP locks (1 2 3 4) as the reason for 1.
@@ -800,13 +800,13 @@ test "compaction moves live clauses over a hole and keeps their reasons and watc
     defer t.deinit();
     const solver = &t.solver;
     _ = try solver.propagate();
-    solver.arena.markDeleted(0);
+    solver.arena.markDeleted(.fromSlot(0));
     solver.dropDeletedClauseRefs();
 
     try solver.compact();
 
     const reason = solver.assignment.vars[0].reason;
-    try testing.expectEqual(@as(ClauseRef, 0), reason.clauseRef());
+    try testing.expectEqual(ClauseRef.fromSlot(0), reason.clauseRef());
     try testing.expect(isLiteralSet(solver.arena.literals(reason.clauseRef()), &.{ 1, 2, 3 }));
     try testing.expectEqual(@as(usize, 2), countLiveLongClauses(solver));
     for ([_]i32{ -4, -5 }) |decision| {

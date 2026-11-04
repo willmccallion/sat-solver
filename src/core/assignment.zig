@@ -28,8 +28,8 @@ pub const Reason = struct {
     pub fn fromClause(cref: ClauseRef) Reason {
         // ClauseArena.add keeps every cref below 2^31, leaving the
         // top bit clear so `isBinary` can discriminate.
-        std.debug.assert(cref < binary_bit);
-        return .{ .raw = cref };
+        std.debug.assert(cref.slot() < binary_bit);
+        return .{ .raw = @intCast(cref.slot()) };
     }
 
     pub fn fromBinary(other: Literal) Reason {
@@ -50,7 +50,7 @@ pub const Reason = struct {
 
     pub inline fn clauseRef(self: Reason) ClauseRef {
         std.debug.assert(!self.isNone() and (self.raw & binary_bit) == 0);
-        return self.raw;
+        return .fromSlot(self.raw);
     }
 
     pub inline fn binaryOther(self: Reason) Literal {
@@ -67,7 +67,7 @@ pub const Reason = struct {
     pub inline fn decode(self: Reason) Decoded {
         if (self.raw == none.raw) return .decision;
         if ((self.raw & binary_bit) != 0) return .{ .binary = .{ .raw = self.raw & ~binary_bit } };
-        return .{ .clause = self.raw };
+        return .{ .clause = .fromSlot(self.raw) };
     }
 };
 

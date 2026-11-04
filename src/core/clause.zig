@@ -44,7 +44,7 @@ pub const ClauseArena = struct {
 
     pub fn add(self: *ClauseArena, allocator: Allocator, lits: []const Literal, clause_kind: ClauseKind, clause_lbd: u32) AddError!ClauseRef {
         if (self.slots.items.len + header_slots + lits.len > max_arena_slots) return error.ClauseArenaFull;
-        const cref: ClauseRef = @intCast(self.slots.items.len);
+        const cref: ClauseRef = .fromSlot(self.slots.items.len);
         const header: u32 = @as(u32, @intCast(lits.len)) | (if (clause_kind == .learned) learned_bit else 0);
         try self.slots.ensureUnusedCapacity(allocator, header_slots + lits.len);
         self.slots.appendSliceAssumeCapacity(&.{ .{ .raw = header }, .{ .raw = clause_lbd } });
@@ -53,11 +53,11 @@ pub const ClauseArena = struct {
     }
 
     pub inline fn length(self: *const ClauseArena, cref: ClauseRef) u32 {
-        return self.slots.items[cref].raw & len_mask;
+        return self.slots.items[cref.slot()].raw & len_mask;
     }
 
     pub inline fn isLearned(self: *const ClauseArena, cref: ClauseRef) bool {
-        return (self.slots.items[cref].raw & learned_bit) != 0;
+        return (self.slots.items[cref.slot()].raw & learned_bit) != 0;
     }
 
     pub inline fn kind(self: *const ClauseArena, cref: ClauseRef) ClauseKind {
@@ -65,16 +65,16 @@ pub const ClauseArena = struct {
     }
 
     pub inline fn isDeleted(self: *const ClauseArena, cref: ClauseRef) bool {
-        return (self.slots.items[cref].raw & deleted_bit) != 0;
+        return (self.slots.items[cref.slot()].raw & deleted_bit) != 0;
     }
 
     pub inline fn lbd(self: *const ClauseArena, cref: ClauseRef) u32 {
-        return self.slots.items[cref + 1].raw;
+        return self.slots.items[cref.slot() + 1].raw;
     }
 
     // Mutable, since propagation reorders a clause's watched literals.
     pub inline fn literals(self: *ClauseArena, cref: ClauseRef) []Literal {
-        const start: usize = @as(usize, cref) + header_slots;
+        const start = cref.slot() + header_slots;
         return self.slots.items[start .. start + self.length(cref)];
     }
 
@@ -86,13 +86,13 @@ pub const ClauseArena = struct {
     // A learned clause that subsumes an irredundant one takes over its
     // role in the formula, so it must no longer be eligible for reduceDB.
     pub fn promoteToIrredundant(self: *ClauseArena, cref: ClauseRef) void {
-        self.slots.items[cref].raw &= ~learned_bit;
+        self.slots.items[cref.slot()].raw &= ~learned_bit;
     }
 
     pub fn markDeleted(self: *ClauseArena, cref: ClauseRef) void {
         std.debug.assert(!self.isDeleted(cref));
         self.dead_slots += header_slots + self.length(cref);
-        self.slots.items[cref].raw |= deleted_bit;
+        self.slots.items[cref.slot()].raw |= deleted_bit;
     }
 
     pub fn isMostlyHoles(self: *const ClauseArena) bool {
@@ -111,11 +111,10 @@ pub const ClauseArena = struct {
         var fresh: std.ArrayList(Literal) = try .initCapacity(allocator, self.slots.items.len - self.dead_slots);
         var live = self.liveClauses();
         while (live.next()) |cref| {
-            const new_cref: ClauseRef = @intCast(fresh.items.len);
-            const end = @as(usize, cref) + header_slots + self.length(cref);
-            fresh.appendSliceAssumeCapacity(self.slots.items[cref..end]);
+            const new_slot: u32 = @intCast(fresh.items.len);
+            fresh.appendSliceAssumeCapacity(self.slots.items[cref.slot() .. cref.slot() + header_slots + self.length(cref)]);
             // The old LBD slot now records where the clause went.
-            self.slots.items[cref + 1].raw = new_cref;
+            self.slots.items[cref.slot() + 1].raw = new_slot;
         }
         const old = self.*;
         self.* = .{ .slots = fresh };
@@ -126,12 +125,12 @@ pub const ClauseArena = struct {
 // The arena's clauses that are not marked deleted, in arena order.
 pub const LiveClauses = struct {
     arena: *const ClauseArena,
-    next_cref: ClauseRef = 0,
+    next_slot: usize = 0,
 
     pub fn next(self: *LiveClauses) ?ClauseRef {
-        while (self.next_cref < self.arena.slots.items.len) {
-            const cref = self.next_cref;
-            self.next_cref += header_slots + self.arena.length(cref);
+        while (self.next_slot < self.arena.slots.items.len) {
+            const cref: ClauseRef = .fromSlot(self.next_slot);
+            self.next_slot += header_slots + self.arena.length(cref);
             if (!self.arena.isDeleted(cref)) return cref;
         }
         return null;
@@ -149,7 +148,7 @@ pub const Relocation = struct {
     // Null for a clause that was deleted and so was not moved.
     pub fn newRef(self: *const Relocation, old_cref: ClauseRef) ?ClauseRef {
         if (self.old.isDeleted(old_cref)) return null;
-        return self.old.lbd(old_cref);
+        return .fromSlot(self.old.lbd(old_cref));
     }
 };
 

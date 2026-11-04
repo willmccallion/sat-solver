@@ -1,7 +1,18 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-pub const ClauseRef = u32;
+// A long clause's position in the clause arena.
+pub const ClauseRef = enum(u32) {
+    _,
+
+    pub fn fromSlot(index: usize) ClauseRef {
+        return @fromBackingInt(@intCast(index));
+    }
+
+    pub fn slot(self: ClauseRef) usize {
+        return @backingInt(self);
+    }
+};
 
 // Literal.raw is var*2+sign and binary reasons tag it with bit 31, so
 // every variable index must stay below 2^30.
