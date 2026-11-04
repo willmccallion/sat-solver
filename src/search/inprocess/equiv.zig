@@ -69,7 +69,7 @@ pub fn equiv(self: *Solver) state.Error!?Result {
     try recordSubstitutions(self, lit_remap);
     // BVE's witness may name variables substituted here, and BVE
     // reconstruction runs before equiv's, so it must see their representatives.
-    for (self.bve_witness.literals.items) |*lit| lit.* = lit_remap[lit.raw];
+    for (self.elimination.bve_witness.literals.items) |*lit| lit.* = lit_remap[lit.raw];
 
     try rewrite.logProof();
     if (try rewrite.apply() == .refuted) {
@@ -244,8 +244,8 @@ fn recordSubstitutions(solver: *Solver, lit_remap: []const Literal) !void {
         const pos = Literal.init(v, false);
         const rep = lit_remap[pos.raw];
         if (rep.eql(pos)) continue;
-        try solver.equiv_witness.append(solver.allocator, .{ .eliminated_var = v, .rep_lit = rep });
-        solver.eliminated.set(v.index());
+        try solver.elimination.equiv_frames.append(solver.allocator, .{ .eliminated_var = v, .rep_lit = rep });
+        solver.elimination.eliminated.set(v.index());
         solver.stats.equiv_substituted_vars += 1;
     }
 }
@@ -372,7 +372,7 @@ const Rewrite = struct {
 // defaults to `true`. This runs only on .sat, before the model is checked
 // against the formula, when every non-eliminated variable has a value.
 pub fn reconstructEquivVars(self: *Solver) void {
-    const frames = self.equiv_witness.items;
+    const frames = self.elimination.equiv_frames.items;
     if (frames.len == 0) return;
 
     var idx: usize = frames.len;

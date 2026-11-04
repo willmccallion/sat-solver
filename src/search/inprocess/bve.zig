@@ -257,7 +257,7 @@ const Elimination = struct {
                     // A binary's mirror entry outlives it once `other`'s
                     // variable is eliminated; resolving on it would bring
                     // that variable back.
-                    if (solver.eliminated.isSet(other.variable().index())) continue;
+                    if (solver.elimination.eliminated.isSet(other.variable().index())) continue;
                     try clauses.append(solver.allocator, &.{ lit, other });
                 },
             }
@@ -316,18 +316,18 @@ const Elimination = struct {
         try self.deleteOccurrences(pos_lit.negate());
         try self.installResolvents();
         if (self.refuted) return;
-        solver.eliminated.set(v.index());
+        solver.elimination.eliminated.set(v.index());
     }
 
     // Logs v's clauses so model reconstruction can give v a value.
     fn recordWitness(self: *Elimination, v: Var) !void {
         const solver = self.solver;
-        const witness = &solver.bve_witness;
+        const witness = &solver.elimination.bve_witness;
         const pos_start: u32 = @intCast(witness.count());
         for (0..self.pos_clauses.count()) |i| try witness.append(solver.allocator, self.pos_clauses.get(i));
         const neg_start: u32 = @intCast(witness.count());
         for (0..self.neg_clauses.count()) |i| try witness.append(solver.allocator, self.neg_clauses.get(i));
-        try solver.bve_witness_frames.append(solver.allocator, .{
+        try solver.elimination.bve_frames.append(solver.allocator, .{
             .pivot = v,
             .pos_start = pos_start,
             .neg_start = neg_start,
@@ -392,7 +392,7 @@ const Elimination = struct {
 // Never emits DRAT: this runs strictly after solve() has returned and
 // the proof writer (if any) has already seen the final add-sequence.
 pub fn reconstructEliminatedVars(self: *Solver) void {
-    const frames = self.bve_witness_frames.items;
+    const frames = self.elimination.bve_frames.items;
     var idx: usize = frames.len;
     while (idx > 0) {
         idx -= 1;
@@ -404,7 +404,7 @@ pub fn reconstructEliminatedVars(self: *Solver) void {
 // pivot's, so that pivot = true satisfies both sides.
 fn negativeSideHolds(self: *const Solver, frame: state.WitnessFrame) bool {
     for (frame.neg_start..frame.end) |i| {
-        const holds = for (self.bve_witness.get(i)) |lit| {
+        const holds = for (self.elimination.bve_witness.get(i)) |lit| {
             if (lit.variable() != frame.pivot and self.assignment.valueOfLiteral(lit) == .true) break true;
         } else false;
         if (!holds) return false;

@@ -62,7 +62,7 @@ pub const Stats = struct {
 // BVE witness frame. Records the original clauses touching an eliminated
 // variable so the .sat reconstruction in model.zig can pick a value
 // that satisfies all of them in reverse elimination order. The fields
-// index clauses of `Solver.bve_witness`:
+// index clauses of `Solver.elimination.bve_witness`:
 //   [pos_start .. neg_start)  — clauses containing +pivot
 //   [neg_start .. end)        — clauses containing -pivot
 pub const WitnessFrame = struct {
@@ -107,6 +107,61 @@ pub const Schedules = struct {
     mode_switch: Schedule = mode_mod.schedule,
 };
 
+// Buffers conflict analysis reuses from one conflict to the next.
+pub const AnalysisScratch = struct {
+    seen: []bool,
+    // The clause being learned, its UIP at index 0.
+    learned: std.ArrayList(Literal) = .empty,
+    levels: std.ArrayList(Level) = .empty,
+    to_clear: std.ArrayList(Var) = .empty,
+    stack: std.ArrayList(Var) = .empty,
+
+    // Minimization pushes each variable at most once per conflict, and each
+    // distinct level begins with a distinct decision, so reserving num_vars
+    // lets the hot loops append without failing.
+    fn init(allocator: Allocator, num_vars: u32) Allocator.Error!AnalysisScratch {
+        var self: AnalysisScratch = .{ .seen = try allocator.alloc(bool, num_vars) };
+        errdefer self.deinit(allocator);
+        @memset(self.seen, false);
+        try self.stack.ensureTotalCapacity(allocator, num_vars);
+        try self.to_clear.ensureTotalCapacity(allocator, num_vars);
+        try self.levels.ensureTotalCapacity(allocator, num_vars);
+        return self;
+    }
+
+    fn deinit(self: *AnalysisScratch, allocator: Allocator) void {
+        allocator.free(self.seen);
+        self.learned.deinit(allocator);
+        self.levels.deinit(allocator);
+        self.to_clear.deinit(allocator);
+        self.stack.deinit(allocator);
+    }
+};
+
+// The variables BVE and equivalent-literal substitution removed, and what
+// .sat reconstruction in model.zig needs to give each a value. An
+// eliminated variable is never branched on and never reappears in a
+// learned clause.
+pub const EliminationLog = struct {
+    eliminated: std.DynamicBitSet,
+    // The original clauses touching every BVE-eliminated variable; each
+    // frame names its pivot and a range of these clauses.
+    bve_witness: cnf.ClauseList = .{},
+    bve_frames: std.ArrayList(WitnessFrame) = .empty,
+    equiv_frames: std.ArrayList(EquivFrame) = .empty,
+
+    fn init(allocator: Allocator, num_vars: u32) Allocator.Error!EliminationLog {
+        return .{ .eliminated = try std.DynamicBitSet.initEmpty(allocator, num_vars) };
+    }
+
+    fn deinit(self: *EliminationLog, allocator: Allocator) void {
+        self.eliminated.deinit();
+        self.bve_witness.deinit(allocator);
+        self.bve_frames.deinit(allocator);
+        self.equiv_frames.deinit(allocator);
+    }
+};
+
 pub const Solver = struct {
     allocator: Allocator,
     num_vars: u32,
@@ -128,11 +183,7 @@ pub const Solver = struct {
     var_inc: f64,
     order_heap: OrderHeap,
 
-    analyze_seen: []bool,
-    analyze_learned: std.ArrayList(Literal),
-    analyze_levels: std.ArrayList(Level),
-    analyze_to_clear: std.ArrayList(Var),
-    analyze_stack: std.ArrayList(Var),
+    analysis: AnalysisScratch,
 
     learned_clauses: std.ArrayList(ClauseRef),
     max_learned: usize,
@@ -155,19 +206,8 @@ pub const Solver = struct {
     props_at_last_vivify: u64,
     props_at_last_subsume: u64,
 
-    // BVE — bit-indexed by variable. Eliminated variables must never be
-    // branched on (pickBranching filters them), must never reappear as a
-    // literal in a learned clause, and must have their values filled in
-    // during the .sat reconstruction in model.zig.
-    eliminated: std.DynamicBitSet,
-    // The original clauses touching every eliminated variable. Each frame
-    // in bve_witness_frames names the pivot and a range of these clauses.
-    bve_witness: cnf.ClauseList,
-    bve_witness_frames: std.ArrayList(WitnessFrame),
+    elimination: EliminationLog,
     props_at_last_bve: u64,
-
-    // Equivalent-literal substitution witness.
-    equiv_witness: std.ArrayList(EquivFrame),
 
     // Focused/stable alternation.
     search_mode: mode_mod.SearchMode,
@@ -209,11 +249,7 @@ pub const Solver = struct {
             .activities = &.{},
             .var_inc = 1.0,
             .order_heap = undefined,
-            .analyze_seen = &.{},
-            .analyze_learned = .empty,
-            .analyze_levels = .empty,
-            .analyze_to_clear = .empty,
-            .analyze_stack = .empty,
+            .analysis = undefined,
             .learned_clauses = .empty,
             .max_learned = @max(formula.clauseCount(), reduce_mod.min_max_learned),
             .proof = .{},
@@ -224,19 +260,16 @@ pub const Solver = struct {
             .props_at_last_probe = 0,
             .props_at_last_vivify = 0,
             .props_at_last_subsume = 0,
-            .eliminated = undefined,
-            .bve_witness = .{},
-            .bve_witness_frames = .empty,
+            .elimination = undefined,
             .props_at_last_bve = 0,
-            .equiv_witness = .empty,
             .search_mode = .focused,
             .unsat_at_init = false,
             .stats = .{},
         };
         errdefer self.assignment.deinit();
 
-        self.eliminated = try std.DynamicBitSet.initEmpty(allocator, formula.num_vars);
-        errdefer self.eliminated.deinit();
+        self.elimination = try .init(allocator, formula.num_vars);
+        errdefer self.elimination.deinit(allocator);
 
         self.watchers = try allocator.alloc(std.ArrayList(Watcher), formula.num_vars * 2);
         for (self.watchers) |*w| w.* = .empty;
@@ -256,21 +289,8 @@ pub const Solver = struct {
         @memset(self.activities, 0);
         errdefer allocator.free(self.activities);
 
-        self.analyze_seen = try allocator.alloc(bool, formula.num_vars);
-        @memset(self.analyze_seen, false);
-        errdefer allocator.free(self.analyze_seen);
-
-        // Stacks used by recursive clause minimization in analyze. A var
-        // can be pushed at most once per analyze, so num_vars is a safe
-        // upper bound. Reserving up front lets litRedundant use
-        // appendAssumeCapacity and stay non-throwing in the hot loop.
-        try self.analyze_stack.ensureTotalCapacity(allocator, formula.num_vars);
-        errdefer self.analyze_stack.deinit(allocator);
-        try self.analyze_to_clear.ensureTotalCapacity(allocator, formula.num_vars);
-        errdefer self.analyze_to_clear.deinit(allocator);
-        // computeLbd's distinct levels each begin with a distinct decision var.
-        try self.analyze_levels.ensureTotalCapacity(allocator, formula.num_vars);
-        errdefer self.analyze_levels.deinit(allocator);
+        self.analysis = try .init(allocator, formula.num_vars);
+        errdefer self.analysis.deinit(allocator);
 
         self.order_heap = try OrderHeap.init(allocator, formula.num_vars, self.activities);
         errdefer self.order_heap.deinit(allocator);
@@ -328,17 +348,10 @@ pub const Solver = struct {
         for (self.bin_watchers) |*w| w.deinit(self.allocator);
         self.allocator.free(self.bin_watchers);
         self.allocator.free(self.activities);
-        self.allocator.free(self.analyze_seen);
-        self.analyze_learned.deinit(self.allocator);
-        self.analyze_levels.deinit(self.allocator);
-        self.analyze_to_clear.deinit(self.allocator);
-        self.analyze_stack.deinit(self.allocator);
+        self.analysis.deinit(self.allocator);
         self.learned_clauses.deinit(self.allocator);
         self.order_heap.deinit(self.allocator);
-        self.eliminated.deinit();
-        self.bve_witness.deinit(self.allocator);
-        self.bve_witness_frames.deinit(self.allocator);
-        self.equiv_witness.deinit(self.allocator);
+        self.elimination.deinit(self.allocator);
         self.assignment.deinit();
         self.* = undefined;
     }
@@ -350,7 +363,7 @@ pub const Solver = struct {
     // An active variable is neither assigned nor eliminated, so at level 0
     // it is one the formula still constrains.
     pub fn varIsActive(self: *const Solver, v: Var) bool {
-        return self.assignment.vars[v.index()].value == .unassigned and !self.eliminated.isSet(v.index());
+        return self.assignment.vars[v.index()].value == .unassigned and !self.elimination.eliminated.isSet(v.index());
     }
 
     // A locked clause is the reason for a level-0 assignment, so deleting
@@ -481,7 +494,7 @@ pub const Solver = struct {
             const v: Var = .fromIndex(self.order_heap.popMax());
             // An eliminated variable's value comes from its witness frame;
             // branching on it would analyze clauses that no longer exist.
-            if (self.eliminated.isSet(v.index())) continue;
+            if (self.elimination.eliminated.isSet(v.index())) continue;
             if (self.assignment.vars[v.index()].value == .unassigned) {
                 const neg = !self.assignment.saved_phases[v.index()];
                 return Literal.init(v, neg);

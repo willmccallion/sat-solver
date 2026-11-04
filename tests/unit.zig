@@ -402,7 +402,7 @@ test "equiv refutes a literal equivalent to its negation with a RUP unit first" 
 
 // True iff the `var_idx`-th variable has been marked eliminated by BVE.
 fn hasEliminated(solver: *solver_mod.Solver, var_idx: u32) bool {
-    return solver.eliminated.isSet(var_idx);
+    return solver.elimination.eliminated.isSet(var_idx);
 }
 
 // The subsumption fast-reject hashes literals by `raw & 63`, so an SSR
@@ -960,8 +960,8 @@ test "bve witness records only irredundant clauses" {
     _ = try solver.preprocessBVE();
 
     try testing.expect(hasEliminated(&solver, 0));
-    for (0..solver.bve_witness.count()) |i| {
-        try testing.expect(!isLiteralSet(solver.bve_witness.get(i), &.{ -1, 4, 5 }));
+    for (0..solver.elimination.bve_witness.count()) |i| {
+        try testing.expect(!isLiteralSet(solver.elimination.bve_witness.get(i), &.{ -1, 4, 5 }));
     }
 }
 

@@ -41,11 +41,11 @@ inline fn levelBit(level: Level) u64 {
 // and the conflict can fire at a level below self.level, so the caller
 // computes it from the conflict lits.
 pub fn analyze(self: *Solver, conflict: Conflict, conflict_level: Level) std.mem.Allocator.Error!Level {
-    self.analyze_learned.clearRetainingCapacity();
-    self.analyze_levels.clearRetainingCapacity();
-    try self.analyze_learned.append(self.allocator, undefined);
+    self.analysis.learned.clearRetainingCapacity();
+    self.analysis.levels.clearRetainingCapacity();
+    try self.analysis.learned.append(self.allocator, undefined);
     const uip = try resolveToFirstUip(self, conflict, conflict_level);
-    self.analyze_learned.items[0] = uip.negate();
+    self.analysis.learned.items[0] = uip.negate();
     minimizeLearned(self);
     return placeBackjumpLiteral(self);
 }
@@ -69,16 +69,16 @@ fn resolveToFirstUip(self: *Solver, conflict: Conflict, conflict_level: Level) !
     while (true) {
         for (lits) |q| {
             const v = q.variable();
-            if (self.analyze_seen[v.index()]) continue;
+            if (self.analysis.seen[v.index()]) continue;
             const q_level = self.assignment.vars[v.index()].level;
             if (q_level == .root) continue;
 
-            self.analyze_seen[v.index()] = true;
+            self.analysis.seen[v.index()] = true;
             self.bumpVarActivity(v);
             if (!q_level.isBelow(conflict_level)) {
                 counter += 1;
             } else {
-                try self.analyze_learned.append(self.allocator, q);
+                try self.analysis.learned.append(self.allocator, q);
             }
         }
 
@@ -86,13 +86,13 @@ fn resolveToFirstUip(self: *Solver, conflict: Conflict, conflict_level: Level) !
         // among its trail entries; they are already in the learned clause.
         while (trail_idx >= 0) {
             const tv = self.assignment.trail.items[@intCast(trail_idx)].variable();
-            if (self.analyze_seen[tv.index()] and self.assignment.vars[tv.index()].level == conflict_level) break;
+            if (self.analysis.seen[tv.index()] and self.assignment.vars[tv.index()].level == conflict_level) break;
             trail_idx -= 1;
         }
         std.debug.assert(trail_idx >= 0);
         const resolved = self.assignment.trail.items[@intCast(trail_idx)];
         const rv = resolved.variable();
-        self.analyze_seen[rv.index()] = false;
+        self.analysis.seen[rv.index()] = false;
         counter -= 1;
         trail_idx -= 1;
         if (counter == 0) return resolved;
@@ -106,13 +106,13 @@ fn resolveToFirstUip(self: *Solver, conflict: Conflict, conflict_level: Level) !
 // implied by the others through reason chains. Shorter learned clauses
 // mean shorter watch lists and cheaper propagation.
 fn minimizeLearned(self: *Solver) void {
-    const learned = &self.analyze_learned;
-    self.analyze_seen[learned.items[0].variable().index()] = true;
+    const learned = &self.analysis.learned;
+    self.analysis.seen[learned.items[0].variable().index()] = true;
 
     var abstract_levels: u64 = 0;
     for (learned.items) |lit| abstract_levels |= levelBit(self.assignment.vars[lit.variable().index()].level);
 
-    self.analyze_to_clear.clearRetainingCapacity();
+    self.analysis.to_clear.clearRetainingCapacity();
     var kept: usize = 1;
     for (learned.items[1..]) |lit| {
         const v = lit.variable();
@@ -120,13 +120,13 @@ fn minimizeLearned(self: *Solver) void {
             learned.items[kept] = lit;
             kept += 1;
         } else {
-            self.analyze_to_clear.appendAssumeCapacity(v);
+            self.analysis.to_clear.appendAssumeCapacity(v);
         }
     }
     learned.shrinkRetainingCapacity(kept);
 
-    for (learned.items) |lit| self.analyze_seen[lit.variable().index()] = false;
-    for (self.analyze_to_clear.items) |v| self.analyze_seen[v.index()] = false;
+    for (learned.items) |lit| self.analysis.seen[lit.variable().index()] = false;
+    for (self.analysis.to_clear.items) |v| self.analysis.seen[v.index()] = false;
 }
 
 // Iterative MiniSat-2.2 redundancy check. Returns true if the literal of
@@ -144,25 +144,25 @@ fn minimizeLearned(self: *Solver) void {
 // Precondition: `self.assignment.vars[start_var].reason` is non-none
 // and `analyze_stack` / `analyze_to_clear` have capacity >= num_vars.
 fn litRedundant(self: *Solver, start_var: Var, abstract_levels: u64) bool {
-    self.analyze_stack.clearRetainingCapacity();
-    self.analyze_stack.appendAssumeCapacity(start_var);
-    const top = self.analyze_to_clear.items.len;
+    self.analysis.stack.clearRetainingCapacity();
+    self.analysis.stack.appendAssumeCapacity(start_var);
+    const top = self.analysis.to_clear.items.len;
     var antecedent_scratch: [1]Literal = undefined;
 
-    while (self.analyze_stack.pop()) |v| {
+    while (self.analysis.stack.pop()) |v| {
         const reason = self.assignment.vars[v.index()].reason;
         for (antecedents(self, reason, &antecedent_scratch)) |q| {
             const qv = q.variable();
             const q_level = self.assignment.vars[qv.index()].level;
-            if (self.analyze_seen[qv.index()] or q_level == .root) continue;
+            if (self.analysis.seen[qv.index()] or q_level == .root) continue;
 
             if (!self.assignment.vars[qv.index()].reason.isNone() and (abstract_levels & levelBit(q_level)) != 0) {
-                self.analyze_seen[qv.index()] = true;
-                self.analyze_stack.appendAssumeCapacity(qv);
-                self.analyze_to_clear.appendAssumeCapacity(qv);
+                self.analysis.seen[qv.index()] = true;
+                self.analysis.stack.appendAssumeCapacity(qv);
+                self.analysis.to_clear.appendAssumeCapacity(qv);
             } else {
-                for (self.analyze_to_clear.items[top..]) |cv| self.analyze_seen[cv.index()] = false;
-                self.analyze_to_clear.shrinkRetainingCapacity(top);
+                for (self.analysis.to_clear.items[top..]) |cv| self.analysis.seen[cv.index()] = false;
+                self.analysis.to_clear.shrinkRetainingCapacity(top);
                 return false;
             }
         }
@@ -173,7 +173,7 @@ fn litRedundant(self: *Solver, start_var: Var, abstract_levels: u64) bool {
 // Moves the highest-level literal after the UIP to index 1, where it will
 // be watched, and returns its level: the backjump level.
 fn placeBackjumpLiteral(self: *Solver) Level {
-    const learned = self.analyze_learned.items;
+    const learned = self.analysis.learned.items;
     if (learned.len == 1) return .root;
     var highest_index: usize = 1;
     var highest_level = self.assignment.vars[learned[1].variable().index()].level;
@@ -189,14 +189,14 @@ fn placeBackjumpLiteral(self: *Solver) Level {
 }
 
 pub fn computeLbd(self: *Solver, lits: []const Literal) u32 {
-    self.analyze_levels.clearRetainingCapacity();
+    self.analysis.levels.clearRetainingCapacity();
     outer: for (lits) |lit| {
         const lv = self.assignment.vars[lit.variable().index()].level;
         if (lv == .root) continue;
-        for (self.analyze_levels.items) |existing| {
+        for (self.analysis.levels.items) |existing| {
             if (existing == lv) continue :outer;
         }
-        self.analyze_levels.appendAssumeCapacity(lv);
+        self.analysis.levels.appendAssumeCapacity(lv);
     }
-    return @intCast(self.analyze_levels.items.len);
+    return @intCast(self.analysis.levels.items.len);
 }

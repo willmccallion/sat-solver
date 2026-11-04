@@ -83,7 +83,7 @@ fn conflictLevel(self: *Solver, conflict: Conflict) Level {
 }
 
 fn learnedLbd(self: *Solver) u32 {
-    const learned = self.analyze_learned.items;
+    const learned = self.analysis.learned.items;
     return if (learned.len == 1) 1 else self.computeLbd(learned);
 }
 
@@ -109,7 +109,7 @@ fn backtrackTarget(self: *Solver, conflict_level: Level, backjump_level: Level) 
 // Logs and installs the learned clause and asserts its UIP, which a unit
 // clause asserts at level 0.
 fn learnClause(self: *Solver, lbd: u32, backjump_level: Level) !void {
-    const learned = self.analyze_learned.items;
+    const learned = self.analysis.learned.items;
     try self.proof.addClause(learned);
     switch (learned.len) {
         1 => try self.assignment.assignAtLevel(learned[0], Reason.none, .root),
