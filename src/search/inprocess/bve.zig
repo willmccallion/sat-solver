@@ -4,6 +4,7 @@ const Literal = core.cnf.Literal;
 const ClauseRef = core.cnf.ClauseRef;
 const clause_mod = core.clause;
 
+const common = @import("common.zig");
 const state = @import("../state.zig");
 const Solver = state.Solver;
 const solver_mod = @import("../solver.zig");
@@ -366,65 +367,8 @@ fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
                     try resolvent_buf.append(self.allocator, lit);
                 }
 
-                // Sort by raw so duplicates are adjacent.
-                std.mem.sort(Literal, resolvent_buf.items, {}, struct {
-                    fn f(_: void, a: Literal, b: Literal) bool {
-                        return a.raw < b.raw;
-                    }
-                }.f);
-
-                // Dedupe in place. Detect tautology: x and ¬x adjacent
-                // means the two raws differ by exactly 1 (x.raw ^ 1 ==
-                // ¬x.raw) AND share the same variable bits.
-                var w: usize = 0;
-                var is_taut = false;
-                var prev_raw: u32 = std.math.maxInt(u32);
-                for (resolvent_buf.items) |lit| {
-                    if (lit.raw == prev_raw) continue;
-                    // Tautology if the negation of the previous literal
-                    // equals this one — since we sorted, this happens
-                    // when (prev_raw ^ 1) == lit.raw AND prev_raw is
-                    // even (positive), so lit.raw is odd (negative).
-                    if (prev_raw != std.math.maxInt(u32) and (prev_raw ^ 1) == lit.raw) {
-                        is_taut = true;
-                        break;
-                    }
-                    resolvent_buf.items[w] = lit;
-                    w += 1;
-                    prev_raw = lit.raw;
-                }
-
-                if (is_taut) {
-                    @branchHint(.cold);
-                    continue;
-                }
-                resolvent_buf.shrinkRetainingCapacity(w);
-
-                // Level-0 simplification: drop false-at-level-0 literals and
-                // skip this resolvent entirely if any literal is true-at-
-                // level-0. Without this, attachWatches can land on a false
-                // literal whose negation is already past qhead on the trail,
-                // orphaning the clause (watchers never fire).
-                var sat_at_l0 = false;
-                var sw: usize = 0;
-                for (resolvent_buf.items) |lit| {
-                    const val = self.assignment.valueOfLiteral(lit);
-                    switch (val) {
-                        .true => {
-                            sat_at_l0 = true;
-                            break;
-                        },
-                        .false => {},
-                        .unassigned => {
-                            resolvent_buf.items[sw] = lit;
-                            sw += 1;
-                        },
-                    }
-                }
-                if (sat_at_l0) continue;
-                resolvent_buf.shrinkRetainingCapacity(sw);
-
-                const r_len = resolvent_buf.items.len;
+                const resolvent = common.normalizeAtRoot(&self.assignment, resolvent_buf.items) orelse continue;
+                const r_len = resolvent.len;
                 if (r_len > max_resolvent_len) {
                     @branchHint(.cold);
                     abandon = true;
@@ -442,7 +386,7 @@ fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
                     self.allocator,
                     .{ .raw = @as(u32, @intCast(r_len)) },
                 );
-                try resolvents_flat.appendSlice(self.allocator, resolvent_buf.items);
+                try resolvents_flat.appendSlice(self.allocator, resolvent);
                 non_taut_count += 1;
             }
         }

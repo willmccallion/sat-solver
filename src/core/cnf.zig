@@ -102,20 +102,9 @@ pub const Formula = struct {
         const sorted = &self.sort_scratch;
         try sorted.resize(self.allocator, literals.len);
         @memcpy(sorted.items, literals);
-        std.mem.sort(Literal, sorted.items, {}, Literal.lessThan);
-
-        var has_duplicate = false;
-        if (sorted.items.len > 1) {
-            for (sorted.items[0 .. sorted.items.len - 1], sorted.items[1..]) |a, b| {
-                if (a.eql(b)) {
-                    has_duplicate = true;
-                } else if (a.variable() == b.variable()) {
-                    return;
-                }
-            }
-        }
-
-        const kept = if (has_duplicate) dedupeSorted(sorted.items) else literals;
+        const distinct = sortedDistinct(sorted.items) orelse return;
+        // The caller's literal order is kept unless duplicates were merged.
+        const kept = if (distinct.len < literals.len) distinct else literals;
         const end = std.math.add(usize, self.literals.items.len, kept.len) catch
             return error.FormulaTooLarge;
         if (end > std.math.maxInt(u32)) return error.FormulaTooLarge;
@@ -125,10 +114,17 @@ pub const Formula = struct {
     }
 };
 
-fn dedupeSorted(lits: []Literal) []Literal {
+// Sorts `lits` and merges duplicates in place; null when the clause is a
+// tautology (holds some x and ¬x).
+pub fn sortedDistinct(lits: []Literal) ?[]Literal {
+    std.mem.sort(Literal, lits, {}, Literal.lessThan);
     var kept: usize = 0;
     for (lits) |lit| {
-        if (kept > 0 and lits[kept - 1].eql(lit)) continue;
+        if (kept > 0) {
+            const prev = lits[kept - 1];
+            if (prev.eql(lit)) continue;
+            if (prev.variable() == lit.variable()) return null;
+        }
         lits[kept] = lit;
         kept += 1;
     }

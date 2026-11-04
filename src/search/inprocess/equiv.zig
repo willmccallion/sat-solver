@@ -4,6 +4,7 @@ const Literal = core.cnf.Literal;
 const ClauseRef = core.cnf.ClauseRef;
 const clause_mod = core.clause;
 
+const common = @import("common.zig");
 const state = @import("../state.zig");
 const Solver = state.Solver;
 const solver_mod = @import("../solver.zig");
@@ -250,65 +251,18 @@ pub fn equiv(self: *Solver) !?Result {
             if (!any_changed) continue;
             if (self.clauseIsLocked(cref)) continue;
 
-            // Build substituted literal list: rename, sort, dedupe,
-            // detect tautology.
             scratch.clearRetainingCapacity();
             try scratch.ensureTotalCapacity(self.allocator, lits.len);
             for (lits) |lit| {
                 scratch.appendAssumeCapacity(lit_remap[lit.raw]);
             }
-            std.mem.sort(Literal, scratch.items, {}, struct {
-                fn f(_: void, a: Literal, b: Literal) bool {
-                    return a.raw < b.raw;
-                }
-            }.f);
-            var w: usize = 0;
-            var is_taut = false;
-            var prev_raw: u32 = std.math.maxInt(u32);
-            for (scratch.items) |lit| {
-                if (lit.raw == prev_raw) continue;
-                if (prev_raw != std.math.maxInt(u32) and (prev_raw ^ 1) == lit.raw) {
-                    is_taut = true;
-                    break;
-                }
-                scratch.items[w] = lit;
-                w += 1;
-                prev_raw = lit.raw;
-            }
-
-            // Level-0 simplification: drop false-at-level-0 lits; if any is
-            // true-at-level-0, the rewritten clause is tautologically
-            // satisfied (treat like .taut). Without this, attachWatches can
-            // bind to false literals past qhead — orphaned watcher.
-            var sw: usize = 0;
-            var sat_at_l0 = false;
-            if (!is_taut) {
-                for (scratch.items[0..w]) |lit| {
-                    const val = self.assignment.valueOfLiteral(lit);
-                    switch (val) {
-                        .true => {
-                            sat_at_l0 = true;
-                            break;
-                        },
-                        .false => {},
-                        .unassigned => {
-                            scratch.items[sw] = lit;
-                            sw += 1;
-                        },
-                    }
-                }
-            }
-            const new_len: u32 = if (is_taut or sat_at_l0) 0 else @intCast(sw);
+            const new_lits = common.normalizeAtRoot(&self.assignment, scratch.items) orelse &.{};
+            const new_len: u32 = @intCast(new_lits.len);
 
             const old_off: u32 = @intCast(work_old_lits.items.len);
             try work_old_lits.appendSlice(self.allocator, lits);
             const new_off: u32 = @intCast(work_new_lits.items.len);
-            if (new_len > 0) {
-                try work_new_lits.appendSlice(
-                    self.allocator,
-                    scratch.items[0..new_len],
-                );
-            }
+            try work_new_lits.appendSlice(self.allocator, new_lits);
             try long_work.append(self.allocator, .{
                 .old_cref = cref,
                 .kind = self.clauseKind(cref),

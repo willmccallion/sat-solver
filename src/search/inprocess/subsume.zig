@@ -4,6 +4,7 @@ const Literal = core.cnf.Literal;
 const ClauseRef = core.cnf.ClauseRef;
 const clause_mod = core.clause;
 
+const common = @import("common.zig");
 const state = @import("../state.zig");
 const Solver = state.Solver;
 const solver_mod = @import("../solver.zig");
@@ -534,14 +535,11 @@ fn strengthenLongClause(
 
     try new_lits.ensureTotalCapacity(self.allocator, d_lits_snapshot.len);
     for (d_lits_snapshot) |lit| {
-        if (lit.raw == neg_lit.raw) continue;
-        switch (self.assignment.valueOfLiteral(lit)) {
-            .true => return subsumeClause(self, d_cref, any_deleted),
-            // Already propagated at level 0, so a watch on it would never fire.
-            .false => {},
-            .unassigned => new_lits.appendAssumeCapacity(lit),
-        }
+        if (!lit.eql(neg_lit)) new_lits.appendAssumeCapacity(lit);
     }
+    const kept = common.unassignedAtRoot(&self.assignment, new_lits.items) orelse
+        return subsumeClause(self, d_cref, any_deleted);
+    new_lits.shrinkRetainingCapacity(kept.len);
 
     const new_len = new_lits.items.len;
     const kind = self.clauseKind(d_cref);
