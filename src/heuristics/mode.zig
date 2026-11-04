@@ -5,7 +5,7 @@
 // length so late search runs in long coherent bursts.
 pub const stable_initial_budget: u64 = 1000;
 
-pub const Solve = enum { focused, stable };
+pub const SearchMode = enum { focused, stable };
 
 // Chronological backtracking gate (Möhle/Biere 2018, Kissat default).
 // When a learned clause would jump more than this many levels down from

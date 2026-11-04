@@ -142,7 +142,7 @@ pub const Solver = struct {
     best_trail_len: usize,
     rephase_next: u64,
     rephase_interval: u64,
-    rephase_mode: rephase_mod.Mode,
+    rephase_kind: rephase_mod.RephaseKind,
 
     // Failed literal probing cadence.
     next_probe: u64,
@@ -179,7 +179,7 @@ pub const Solver = struct {
     equiv_interval: u64,
 
     // Focused/stable alternation.
-    mode: mode_mod.Solve,
+    search_mode: mode_mod.SearchMode,
     mode_budget: u64,
     next_mode_switch: u64,
 
@@ -243,7 +243,7 @@ pub const Solver = struct {
             .best_trail_len = 0,
             .rephase_next = rephase_mod.rephase_initial,
             .rephase_interval = rephase_mod.rephase_initial,
-            .rephase_mode = .best,
+            .rephase_kind = .best,
             .next_probe = @import("inprocess/probe.zig").initial_interval,
             .probe_interval = @import("inprocess/probe.zig").initial_interval,
             .props_at_last_probe = 0,
@@ -262,7 +262,7 @@ pub const Solver = struct {
             .equiv_witness = .empty,
             .next_equiv = @import("inprocess/equiv.zig").inprocess_initial_interval,
             .equiv_interval = @import("inprocess/equiv.zig").inprocess_initial_interval,
-            .mode = .focused,
+            .search_mode = .focused,
             .mode_budget = mode_mod.stable_initial_budget,
             .next_mode_switch = mode_mod.stable_initial_budget,
             .arena_dead_slots = 0,
@@ -584,7 +584,7 @@ pub const Solver = struct {
     pub fn rephase(self: *Solver) void {
         std.debug.assert(self.assignment.level == 0);
         const saved = self.assignment.saved_phases;
-        switch (self.rephase_mode) {
+        switch (self.rephase_kind) {
             .best => @memcpy(saved, self.assignment.best_phases),
             .original => @memset(saved, false),
             .inverse => {
@@ -596,7 +596,7 @@ pub const Solver = struct {
                 for (saved) |*b| b.* = r.boolean();
             },
         }
-        self.rephase_mode = rephase_mod.next(self.rephase_mode);
+        self.rephase_kind = rephase_mod.next(self.rephase_kind);
         self.stats.rephases += 1;
     }
 };

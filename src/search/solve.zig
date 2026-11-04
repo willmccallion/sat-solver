@@ -131,7 +131,7 @@ pub fn solve(self: *Solver) !Result {
 
             const ready = self.conflicts_since_restart >= restart.restart_min_conflicts;
             var should_restart = false;
-            if (self.mode == .focused and
+            if (self.search_mode == .focused and
                 ready and self.lbd_fast_bc > 0 and self.lbd_slow_bc > 0)
             {
                 const fast_corrected = self.lbd_fast / self.lbd_fast_bc;
@@ -211,11 +211,11 @@ pub fn solve(self: *Solver) !Result {
                     self.next_equiv = self.stats.conflicts + self.equiv_interval;
                 }
                 if (should_flip_mode) {
-                    self.mode = switch (self.mode) {
+                    self.search_mode = switch (self.search_mode) {
                         .focused => .stable,
                         .stable => .focused,
                     };
-                    if (self.mode == .stable) {
+                    if (self.search_mode == .stable) {
                         @memcpy(
                             self.assignment.saved_phases,
                             self.assignment.best_phases,

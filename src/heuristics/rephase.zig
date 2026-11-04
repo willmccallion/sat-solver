@@ -12,10 +12,10 @@ pub const rephase_grow_den: u64 = 2;
 // resets to the solver's default (all-false), `.inverse` flips every
 // current saved phase, and `.random` seeds a fresh set from a
 // deterministic PRNG so reruns are reproducible.
-pub const Mode = enum { best, original, inverse, random };
+pub const RephaseKind = enum { best, original, inverse, random };
 
-pub fn next(m: Mode) Mode {
-    return switch (m) {
+pub fn next(kind: RephaseKind) RephaseKind {
+    return switch (kind) {
         .best => .original,
         .original => .inverse,
         .inverse => .random,
