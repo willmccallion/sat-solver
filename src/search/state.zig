@@ -404,6 +404,12 @@ pub const Solver = struct {
         return self.arena.items[start .. start + len];
     }
 
+    // An active variable is neither assigned nor eliminated, so at level 0
+    // it is one the formula still constrains.
+    pub fn varIsActive(self: *const Solver, v: u32) bool {
+        return self.assignment.vars[v].value == .unassigned and !self.eliminated.isSet(v);
+    }
+
     // A locked clause is the reason for a level-0 assignment, so deleting
     // or rewriting it would break the reason chain analyze follows.
     pub fn clauseIsLocked(self: *Solver, cref: ClauseRef) bool {

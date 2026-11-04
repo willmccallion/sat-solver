@@ -72,22 +72,12 @@ pub fn equiv(self: *Solver) !?Result {
     var next_index: u32 = 0;
     var next_scc_id: u32 = 0;
 
-    // Filter: skip literals whose variable is assigned at level 0 or
-    // already eliminated. Their equivalence is moot and their
-    // bin_watchers entries may be stale.
-    const isLitSkippable = struct {
-        fn f(s: *const Solver, raw: u32) bool {
-            const v = raw >> 1;
-            if (s.assignment.vars[v].value != .unassigned) return true;
-            if (s.eliminated.isSet(v)) return true;
-            return false;
-        }
-    }.f;
-
     var start: u32 = 0;
     while (start < num_lits) : (start += 1) {
         if (index_arr[start] != unvisited) continue;
-        if (isLitSkippable(self, start)) continue;
+        // An inactive variable's equivalences are moot and its
+        // bin_watchers entries may be stale.
+        if (!self.varIsActive((Literal{ .raw = start }).variable())) continue;
 
         index_arr[start] = next_index;
         lowlink[start] = next_index;
@@ -107,7 +97,7 @@ pub fn equiv(self: *Solver) !?Result {
                 dfs_stack.items[dfs_top].cursor = cursor + 1;
                 const next_raw = successors[cursor].other.raw;
                 if (next_raw == node) continue;
-                if (isLitSkippable(self, next_raw)) continue;
+                if (!self.varIsActive((Literal{ .raw = next_raw }).variable())) continue;
 
                 if (index_arr[next_raw] == unvisited) {
                     index_arr[next_raw] = next_index;
@@ -196,8 +186,7 @@ pub fn equiv(self: *Solver) !?Result {
         var any_substitution = false;
         var v: u32 = 0;
         while (v < num_vars) : (v += 1) {
-            if (self.assignment.vars[v].value != .unassigned) continue;
-            if (self.eliminated.isSet(v)) continue;
+            if (!self.varIsActive(v)) continue;
             const pos = v << 1;
             if (lit_remap[pos].raw != pos) {
                 any_substitution = true;
@@ -334,8 +323,7 @@ pub fn equiv(self: *Solver) !?Result {
     {
         var v: u32 = 0;
         while (v < num_vars) : (v += 1) {
-            if (self.assignment.vars[v].value != .unassigned) continue;
-            if (self.eliminated.isSet(v)) continue;
+            if (!self.varIsActive(v)) continue;
             const pos = v << 1;
             const rep_raw = lit_remap[pos].raw;
             if (rep_raw == pos) continue;

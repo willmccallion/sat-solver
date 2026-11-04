@@ -43,10 +43,9 @@ pub fn probe(self: *Solver) !?Result {
     var candidates: std.ArrayList(u32) = .empty;
     defer candidates.deinit(self.allocator);
     try candidates.ensureTotalCapacity(self.allocator, self.num_vars);
-    for (self.assignment.vars, 0..) |vi, idx| {
-        if (vi.value == .unassigned and !self.eliminated.isSet(idx)) {
-            candidates.appendAssumeCapacity(@intCast(idx));
-        }
+    for (0..self.num_vars) |idx| {
+        const v: u32 = @intCast(idx);
+        if (self.varIsActive(v)) candidates.appendAssumeCapacity(v);
     }
     std.mem.sort(u32, candidates.items, self.activities, struct {
         fn lessThan(acts: []f64, a: u32, b: u32) bool {

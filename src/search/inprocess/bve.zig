@@ -167,8 +167,7 @@ fn eliminateWithin(self: *Solver, budget: u64) !?Result {
     {
         var v: u32 = 0;
         while (v < num_vars) : (v += 1) {
-            if (self.eliminated.isSet(v)) continue;
-            if (self.assignment.vars[v].value != .unassigned) continue;
+            if (!self.varIsActive(v)) continue;
             const pos_cnt = occ[Literal.init(v, false).raw].items.len;
             const neg_cnt = occ[Literal.init(v, true).raw].items.len;
             if (pos_cnt == 0 and neg_cnt == 0) continue;
@@ -213,8 +212,7 @@ fn eliminateWithin(self: *Solver, budget: u64) !?Result {
         }
         const v = entry.var_idx;
 
-        if (self.eliminated.isSet(v)) continue;
-        if (self.assignment.vars[v].value != .unassigned) continue;
+        if (!self.varIsActive(v)) continue;
 
         const pos_lit = Literal.init(v, false);
         const neg_lit = Literal.init(v, true);
