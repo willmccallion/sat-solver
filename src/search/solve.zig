@@ -75,10 +75,10 @@ fn conflictLevel(self: *Solver, conflict: Conflict) Level {
     return switch (conflict) {
         .clause => |cref| blk: {
             var highest: Level = .root;
-            for (self.arena.literals(cref)) |lit| highest = .max(highest, vars[lit.variable()].level);
+            for (self.arena.literals(cref)) |lit| highest = .max(highest, vars[lit.variable().index()].level);
             break :blk highest;
         },
-        .binary => |two| .max(vars[two[0].variable()].level, vars[two[1].variable()].level),
+        .binary => |two| .max(vars[two[0].variable().index()].level, vars[two[1].variable().index()].level),
     };
 }
 
@@ -94,7 +94,7 @@ fn saveBestPhases(self: *Solver) void {
     if (trail.len <= self.best_trail_len) return;
     for (trail) |lit| {
         const v = lit.variable();
-        self.assignment.best_phases[v] = (self.assignment.vars[v].value == .true);
+        self.assignment.best_phases[v.index()] = (self.assignment.vars[v.index()].value == .true);
     }
     self.best_trail_len = trail.len;
 }

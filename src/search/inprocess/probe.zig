@@ -1,6 +1,7 @@
 const std = @import("std");
 const core = @import("core");
 const Literal = core.cnf.Literal;
+const Var = core.cnf.Var;
 const Reason = core.assignment.Reason;
 
 const Schedule = @import("heuristics").schedule.Schedule;
@@ -40,16 +41,16 @@ pub fn probe(self: *Solver) !?Result {
     const props_start = self.stats.propagations;
     const budget = common.propagationBudget(props_start, &self.props_at_last_probe, budget_share);
 
-    var candidates: std.ArrayList(u32) = .empty;
+    var candidates: std.ArrayList(Var) = .empty;
     defer candidates.deinit(self.allocator);
     try candidates.ensureTotalCapacity(self.allocator, self.num_vars);
     for (0..self.num_vars) |idx| {
-        const v: u32 = @intCast(idx);
+        const v: Var = .fromIndex(idx);
         if (self.varIsActive(v)) candidates.appendAssumeCapacity(v);
     }
-    std.mem.sort(u32, candidates.items, self.activities, struct {
-        fn lessThan(acts: []f64, a: u32, b: u32) bool {
-            return acts[a] > acts[b];
+    std.mem.sort(Var, candidates.items, self.activities, struct {
+        fn lessThan(acts: []f64, a: Var, b: Var) bool {
+            return acts[a.index()] > acts[b.index()];
         }
     }.lessThan);
 
@@ -67,9 +68,9 @@ pub fn probe(self: *Solver) !?Result {
         // (a cascade from an earlier probe can have fixed it).
         var iter: u32 = 0;
         while (iter < 2) : (iter += 1) {
-            if (self.assignment.vars[v].value != .unassigned) break;
+            if (self.assignment.vars[v.index()].value != .unassigned) break;
 
-            const first_neg = !self.assignment.saved_phases[v];
+            const first_neg = !self.assignment.saved_phases[v.index()];
             const neg = if (iter == 0) first_neg else !first_neg;
             const probe_lit = Literal.init(v, neg);
 

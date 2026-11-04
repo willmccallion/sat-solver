@@ -100,7 +100,7 @@ fn relocateWatchers(self: *Solver, relocation: *const clause_mod.Relocation) voi
 // A binary reason names its partner literal, not an arena clause.
 fn relocateReasons(self: *Solver, relocation: *const clause_mod.Relocation) void {
     for (self.assignment.trail.items) |lit| {
-        const info = &self.assignment.vars[lit.variable()];
+        const info = &self.assignment.vars[lit.variable().index()];
         const cref = switch (info.reason.decode()) {
             .clause => |cref| cref,
             .decision, .binary => continue,

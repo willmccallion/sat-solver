@@ -293,14 +293,12 @@ fn parseFile(gpa: std.mem.Allocator, io: std.Io, file: std.Io.File, compression:
 }
 
 fn writeModel(out: *std.Io.Writer, solver: *solver_mod.Solver) !void {
-    const num_vars = solver.num_vars;
     try out.writeAll("v");
-    var i: u32 = 0;
-    while (i < num_vars) : (i += 1) {
-        const v = solver.assignment.valueOfVar(i);
-        const lit: i32 = switch (v) {
-            .true, .unassigned => @as(i32, @intCast(i + 1)),
-            .false => -@as(i32, @intCast(i + 1)),
+    for (0..solver.num_vars) |i| {
+        const dimacs: i32 = @intCast(i + 1);
+        const lit: i32 = switch (solver.assignment.valueOfVar(.fromIndex(i))) {
+            .true, .unassigned => dimacs,
+            .false => -dimacs,
         };
         try out.print(" {d}", .{lit});
     }

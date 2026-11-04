@@ -31,7 +31,7 @@ pub fn propagate(self: *Solver) !?Conflict {
 
         // Under chrono a forced literal holds at the highest level of its
         // clause's false literals; for a binary (¬p ∨ b) that is p's level.
-        const p_level = self.assignment.vars[p.variable()].level;
+        const p_level = self.assignment.vars[p.variable().index()].level;
 
         const bws = self.bin_watchers[p.raw].items;
         for (bws) |b| {
@@ -127,7 +127,7 @@ pub fn propagate(self: *Solver) !?Conflict {
                 var force_level = p_level;
                 var lit_idx: usize = 2;
                 while (lit_idx < lits.len) : (lit_idx += 1) {
-                    const level = self.assignment.vars[lits[lit_idx].variable()].level;
+                    const level = self.assignment.vars[lits[lit_idx].variable().index()].level;
                     if (level.isAbove(force_level)) force_level = level;
                 }
                 try self.assignment.assignAtLevel(

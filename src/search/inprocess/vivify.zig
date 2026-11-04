@@ -80,7 +80,7 @@ pub fn vivify(self: *Solver) !?Result {
         var i: usize = 0;
         while (i < scratch.items.len) {
             const lit = scratch.items[i];
-            const vi = self.assignment.vars[lit.variable()];
+            const vi = self.assignment.vars[lit.variable().index()];
 
             if (vi.level == .root and vi.value != .unassigned) {
                 if (self.assignment.valueOfLiteral(lit) == .true) {

@@ -137,7 +137,7 @@ fn takeLiteral(reader: *std.Io.Reader, num_vars: u32) ParseError!?Literal {
     }
     if (digits == 0) return error.InvalidToken;
     if (magnitude == 0) return if (negative) error.InvalidToken else null;
-    return Literal.init(@intCast(magnitude - 1), negative);
+    return Literal.init(.fromIndex(magnitude - 1), negative);
 }
 
 fn peekByteOrNull(reader: *std.Io.Reader) error{ReadFailed}!?u8 {

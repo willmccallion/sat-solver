@@ -8,6 +8,7 @@ const solver_mod = sat.solver;
 const clause_mod = sat.clause;
 const assignment_mod = sat.assignment;
 const Literal = cnf.Literal;
+const Var = cnf.Var;
 const ClauseRef = cnf.ClauseRef;
 const Reason = assignment_mod.Reason;
 const Level = assignment_mod.Level;
@@ -73,13 +74,13 @@ const trivial_unsat_src = @embedFile("fixtures/trivial_unsat.cnf");
 const small_sat_src = @embedFile("fixtures/small_sat.cnf");
 
 test "a literal reports the variable and sign it was built from" {
-    const lit = Literal.init(7, false);
-    try testing.expectEqual(@as(u32, 7), lit.variable());
+    const lit = Literal.init(.fromIndex(7), false);
+    try testing.expectEqual(Var.fromIndex(7), lit.variable());
     try testing.expectEqual(false, lit.isNegative());
     try testing.expectEqual(@as(u32, 14), lit.raw);
 
     const neg = lit.negate();
-    try testing.expectEqual(@as(u32, 7), neg.variable());
+    try testing.expectEqual(Var.fromIndex(7), neg.variable());
     try testing.expectEqual(true, neg.isNegative());
     try testing.expect(neg.negate().eql(lit));
 }
@@ -474,7 +475,7 @@ test "subsume strengthens a binary to a unit against its resolution partner" {
     const r = try solver.preprocessSubsume();
     try testing.expect(r == null);
 
-    try testing.expectEqual(assignment_mod.Value.true, solver.assignment.valueOfVar(0));
+    try testing.expectEqual(assignment_mod.Value.true, solver.assignment.valueOfVar(.fromIndex(0)));
     try testing.expectEqual(@as(u64, 1), solver.stats.strengthened_clauses);
 }
 
@@ -788,7 +789,7 @@ fn randomThreeSat(seed: u64, num_vars: u32, num_clauses: usize) !cnf.Formula {
     const random = prng.random();
     for (0..num_clauses) |_| {
         var lits: [3]Literal = undefined;
-        for (&lits) |*lit| lit.* = Literal.init(random.uintLessThan(u32, num_vars), random.boolean());
+        for (&lits) |*lit| lit.* = Literal.init(.fromIndex(random.uintLessThan(u32, num_vars)), random.boolean());
         try formula.addClause(&lits);
     }
     return formula;
@@ -815,7 +816,7 @@ test "compaction moves live clauses over a hole and keeps their reasons and watc
         try solver.assignment.assign(Literal.fromDimacs(decision), Reason.none);
         try testing.expect(try solver.propagate() == null);
     }
-    try testing.expectEqual(assignment_mod.Value.true, solver.assignment.valueOfVar(5));
+    try testing.expectEqual(assignment_mod.Value.true, solver.assignment.valueOfVar(.fromIndex(5)));
 }
 
 test "every long clause learned during search has an LBD of at least 2" {
@@ -1024,7 +1025,7 @@ test "a long clause strengthened by subsume propagates its last non-false litera
 
     try testing.expect(r == null);
     try testing.expectEqual(@as(u64, 1), solver.stats.strengthened_clauses);
-    try testing.expectEqual(assignment_mod.Value.true, solver.assignment.valueOfVar(0));
+    try testing.expectEqual(assignment_mod.Value.true, solver.assignment.valueOfVar(.fromIndex(0)));
 }
 
 test "a clause subsume strengthens drops its literals false at level 0" {
@@ -1055,7 +1056,7 @@ test "vivify run right after a learned unit keeps the unit's level-0 implication
     const r = try solver.vivify();
 
     try testing.expect(r == null);
-    try testing.expectEqual(assignment_mod.Value.false, solver.assignment.valueOfVar(1));
+    try testing.expectEqual(assignment_mod.Value.false, solver.assignment.valueOfVar(.fromIndex(1)));
     try testing.expectEqual(Level.root, solver.assignment.vars[1].level);
 }
 

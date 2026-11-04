@@ -1,6 +1,7 @@
 const std = @import("std");
 const core = @import("core");
 const Literal = core.cnf.Literal;
+const Var = core.cnf.Var;
 const Conflict = core.clause.Conflict;
 const Reason = core.assignment.Reason;
 const Level = core.assignment.Level;
@@ -68,11 +69,11 @@ fn resolveToFirstUip(self: *Solver, conflict: Conflict, conflict_level: Level) !
     while (true) {
         for (lits) |q| {
             const v = q.variable();
-            if (self.analyze_seen[v]) continue;
-            const q_level = self.assignment.vars[v].level;
+            if (self.analyze_seen[v.index()]) continue;
+            const q_level = self.assignment.vars[v.index()].level;
             if (q_level == .root) continue;
 
-            self.analyze_seen[v] = true;
+            self.analyze_seen[v.index()] = true;
             self.bumpVarActivity(v);
             if (!q_level.isBelow(conflict_level)) {
                 counter += 1;
@@ -85,18 +86,18 @@ fn resolveToFirstUip(self: *Solver, conflict: Conflict, conflict_level: Level) !
         // among its trail entries; they are already in the learned clause.
         while (trail_idx >= 0) {
             const tv = self.assignment.trail.items[@intCast(trail_idx)].variable();
-            if (self.analyze_seen[tv] and self.assignment.vars[tv].level == conflict_level) break;
+            if (self.analyze_seen[tv.index()] and self.assignment.vars[tv.index()].level == conflict_level) break;
             trail_idx -= 1;
         }
         std.debug.assert(trail_idx >= 0);
         const resolved = self.assignment.trail.items[@intCast(trail_idx)];
         const rv = resolved.variable();
-        self.analyze_seen[rv] = false;
+        self.analyze_seen[rv.index()] = false;
         counter -= 1;
         trail_idx -= 1;
         if (counter == 0) return resolved;
 
-        const reason = self.assignment.vars[rv].reason;
+        const reason = self.assignment.vars[rv.index()].reason;
         lits = antecedents(self, reason, &antecedent_scratch);
     }
 }
@@ -106,16 +107,16 @@ fn resolveToFirstUip(self: *Solver, conflict: Conflict, conflict_level: Level) !
 // mean shorter watch lists and cheaper propagation.
 fn minimizeLearned(self: *Solver) void {
     const learned = &self.analyze_learned;
-    self.analyze_seen[learned.items[0].variable()] = true;
+    self.analyze_seen[learned.items[0].variable().index()] = true;
 
     var abstract_levels: u64 = 0;
-    for (learned.items) |lit| abstract_levels |= levelBit(self.assignment.vars[lit.variable()].level);
+    for (learned.items) |lit| abstract_levels |= levelBit(self.assignment.vars[lit.variable().index()].level);
 
     self.analyze_to_clear.clearRetainingCapacity();
     var kept: usize = 1;
     for (learned.items[1..]) |lit| {
         const v = lit.variable();
-        if (self.assignment.vars[v].reason.isNone() or !litRedundant(self, v, abstract_levels)) {
+        if (self.assignment.vars[v.index()].reason.isNone() or !litRedundant(self, v, abstract_levels)) {
             learned.items[kept] = lit;
             kept += 1;
         } else {
@@ -124,8 +125,8 @@ fn minimizeLearned(self: *Solver) void {
     }
     learned.shrinkRetainingCapacity(kept);
 
-    for (learned.items) |lit| self.analyze_seen[lit.variable()] = false;
-    for (self.analyze_to_clear.items) |v| self.analyze_seen[v] = false;
+    for (learned.items) |lit| self.analyze_seen[lit.variable().index()] = false;
+    for (self.analyze_to_clear.items) |v| self.analyze_seen[v.index()] = false;
 }
 
 // Iterative MiniSat-2.2 redundancy check. Returns true if the literal of
@@ -142,25 +143,25 @@ fn minimizeLearned(self: *Solver) void {
 //
 // Precondition: `self.assignment.vars[start_var].reason` is non-none
 // and `analyze_stack` / `analyze_to_clear` have capacity >= num_vars.
-fn litRedundant(self: *Solver, start_var: u32, abstract_levels: u64) bool {
+fn litRedundant(self: *Solver, start_var: Var, abstract_levels: u64) bool {
     self.analyze_stack.clearRetainingCapacity();
     self.analyze_stack.appendAssumeCapacity(start_var);
     const top = self.analyze_to_clear.items.len;
     var antecedent_scratch: [1]Literal = undefined;
 
     while (self.analyze_stack.pop()) |v| {
-        const reason = self.assignment.vars[v].reason;
+        const reason = self.assignment.vars[v.index()].reason;
         for (antecedents(self, reason, &antecedent_scratch)) |q| {
             const qv = q.variable();
-            const q_level = self.assignment.vars[qv].level;
-            if (self.analyze_seen[qv] or q_level == .root) continue;
+            const q_level = self.assignment.vars[qv.index()].level;
+            if (self.analyze_seen[qv.index()] or q_level == .root) continue;
 
-            if (!self.assignment.vars[qv].reason.isNone() and (abstract_levels & levelBit(q_level)) != 0) {
-                self.analyze_seen[qv] = true;
+            if (!self.assignment.vars[qv.index()].reason.isNone() and (abstract_levels & levelBit(q_level)) != 0) {
+                self.analyze_seen[qv.index()] = true;
                 self.analyze_stack.appendAssumeCapacity(qv);
                 self.analyze_to_clear.appendAssumeCapacity(qv);
             } else {
-                for (self.analyze_to_clear.items[top..]) |cv| self.analyze_seen[cv] = false;
+                for (self.analyze_to_clear.items[top..]) |cv| self.analyze_seen[cv.index()] = false;
                 self.analyze_to_clear.shrinkRetainingCapacity(top);
                 return false;
             }
@@ -175,9 +176,9 @@ fn placeBackjumpLiteral(self: *Solver) Level {
     const learned = self.analyze_learned.items;
     if (learned.len == 1) return .root;
     var highest_index: usize = 1;
-    var highest_level = self.assignment.vars[learned[1].variable()].level;
+    var highest_level = self.assignment.vars[learned[1].variable().index()].level;
     for (learned[2..], 2..) |lit, k| {
-        const level = self.assignment.vars[lit.variable()].level;
+        const level = self.assignment.vars[lit.variable().index()].level;
         if (level.isAbove(highest_level)) {
             highest_level = level;
             highest_index = k;
@@ -190,7 +191,7 @@ fn placeBackjumpLiteral(self: *Solver) Level {
 pub fn computeLbd(self: *Solver, lits: []const Literal) u32 {
     self.analyze_levels.clearRetainingCapacity();
     outer: for (lits) |lit| {
-        const lv = self.assignment.vars[lit.variable()].level;
+        const lv = self.assignment.vars[lit.variable().index()].level;
         if (lv == .root) continue;
         for (self.analyze_levels.items) |existing| {
             if (existing == lv) continue :outer;

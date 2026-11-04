@@ -108,8 +108,7 @@ fn parsePuzzle(text: []const u8) PuzzleError!Puzzle {
 }
 
 fn holds(cell: Cell, digit: Digit) Literal {
-    const var_index: u32 = @intCast(cell.index() * side + digit.index);
-    return Literal.init(var_index, false);
+    return Literal.init(.fromIndex(cell.index() * side + digit.index), false);
 }
 
 fn addExactlyOne(formula: *Formula, lits: []const Literal) Formula.AddClauseError!void {

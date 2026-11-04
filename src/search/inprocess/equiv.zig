@@ -1,6 +1,7 @@
 const std = @import("std");
 const core = @import("core");
 const Literal = core.cnf.Literal;
+const Var = core.cnf.Var;
 const ClauseList = core.cnf.ClauseList;
 const ClauseRef = core.cnf.ClauseRef;
 const clause_mod = core.clause;
@@ -195,9 +196,9 @@ const Tarjan = struct {
 
 // The first variable whose two literals share a component, which makes
 // the formula unsatisfiable.
-fn contradictedVariable(component: []const ?u32) ?u32 {
+fn contradictedVariable(component: []const ?u32) ?Var {
     for (0..component.len / 2) |idx| {
-        const v: u32 = @intCast(idx);
+        const v: Var = .fromIndex(idx);
         const pos_id = component[Literal.init(v, false).raw] orelse continue;
         const neg_id = component[Literal.init(v, true).raw] orelse continue;
         if (pos_id == neg_id) return v;
@@ -227,7 +228,7 @@ fn representatives(allocator: std.mem.Allocator, component: []const ?u32, compon
 
 fn substitutesAnyVariable(solver: *const Solver, lit_remap: []const Literal) bool {
     for (0..solver.num_vars) |idx| {
-        const v: u32 = @intCast(idx);
+        const v: Var = .fromIndex(idx);
         const pos = Literal.init(v, false);
         if (solver.varIsActive(v) and !lit_remap[pos.raw].eql(pos)) return true;
     }
@@ -238,13 +239,13 @@ fn substitutesAnyVariable(solver: *const Solver, lit_remap: []const Literal) boo
 // its representative.
 fn recordSubstitutions(solver: *Solver, lit_remap: []const Literal) !void {
     for (0..solver.num_vars) |idx| {
-        const v: u32 = @intCast(idx);
+        const v: Var = .fromIndex(idx);
         if (!solver.varIsActive(v)) continue;
         const pos = Literal.init(v, false);
         const rep = lit_remap[pos.raw];
         if (rep.eql(pos)) continue;
         try solver.equiv_witness.append(solver.allocator, .{ .eliminated_var = v, .rep_lit = rep });
-        solver.eliminated.set(v);
+        solver.eliminated.set(v.index());
         solver.stats.equiv_substituted_vars += 1;
     }
 }

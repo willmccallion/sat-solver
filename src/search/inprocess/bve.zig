@@ -1,6 +1,7 @@
 const std = @import("std");
 const core = @import("core");
 const Literal = core.cnf.Literal;
+const Var = core.cnf.Var;
 const ClauseList = core.cnf.ClauseList;
 const ClauseRef = core.cnf.ClauseRef;
 const clause_mod = core.clause;
@@ -92,7 +93,7 @@ const Occurrence = union(enum) {
 // counts, which bounds how many resolvents it can have.
 const Candidate = struct {
     product: u64,
-    var_idx: u32,
+    v: Var,
 
     fn order(_: void, a: Candidate, b: Candidate) std.math.Order {
         return std.math.order(a.product, b.product);
@@ -171,7 +172,7 @@ const Elimination = struct {
 
     fn queueCandidates(self: *Elimination) !void {
         for (0..self.solver.num_vars) |idx| {
-            const v: u32 = @intCast(idx);
+            const v: Var = .fromIndex(idx);
             if (!self.solver.varIsActive(v)) continue;
             const pos_count = self.occ[Literal.init(v, false).raw].items.len;
             const neg_count = self.occ[Literal.init(v, true).raw].items.len;
@@ -181,11 +182,11 @@ const Elimination = struct {
                 @branchHint(.cold);
                 continue;
             }
-            try self.candidates.push(self.solver.allocator, .{ .product = product, .var_idx = v });
+            try self.candidates.push(self.solver.allocator, .{ .product = product, .v = v });
         }
     }
 
-    fn occurrenceProduct(self: *const Elimination, v: u32) u64 {
+    fn occurrenceProduct(self: *const Elimination, v: Var) u64 {
         const pos_count: u64 = self.occ[Literal.init(v, false).raw].items.len;
         const neg_count: u64 = self.occ[Literal.init(v, true).raw].items.len;
         return pos_count * neg_count;
@@ -203,12 +204,12 @@ const Elimination = struct {
                 @branchHint(.cold);
                 return;
             }
-            try self.tryEliminate(candidate.var_idx);
+            try self.tryEliminate(candidate.v);
             if (self.refuted) return;
         }
     }
 
-    fn tryEliminate(self: *Elimination, v: u32) !void {
+    fn tryEliminate(self: *Elimination, v: Var) !void {
         if (!self.solver.varIsActive(v)) return;
         // Earlier eliminations append to occ, so the product is re-checked.
         if (self.occurrenceProduct(v) > max_occ_product) {
@@ -256,7 +257,7 @@ const Elimination = struct {
                     // A binary's mirror entry outlives it once `other`'s
                     // variable is eliminated; resolving on it would bring
                     // that variable back.
-                    if (solver.eliminated.isSet(other.variable())) continue;
+                    if (solver.eliminated.isSet(other.variable().index())) continue;
                     try clauses.append(solver.allocator, &.{ lit, other });
                 },
             }
@@ -304,7 +305,7 @@ const Elimination = struct {
 
     // Replaces v's clauses by its resolvents. A DRAT checker must see every
     // resolvent while the originals are still live, so all adds come first.
-    fn commit(self: *Elimination, v: u32) !void {
+    fn commit(self: *Elimination, v: Var) !void {
         const solver = self.solver;
         const pos_lit = Literal.init(v, false);
         for (0..self.resolvents.count()) |i| try solver.proof.addClause(self.resolvents.get(i));
@@ -315,11 +316,11 @@ const Elimination = struct {
         try self.deleteOccurrences(pos_lit.negate());
         try self.installResolvents();
         if (self.refuted) return;
-        solver.eliminated.set(v);
+        solver.eliminated.set(v.index());
     }
 
     // Logs v's clauses so model reconstruction can give v a value.
-    fn recordWitness(self: *Elimination, v: u32) !void {
+    fn recordWitness(self: *Elimination, v: Var) !void {
         const solver = self.solver;
         const witness = &solver.bve_witness;
         const pos_start: u32 = @intCast(witness.count());

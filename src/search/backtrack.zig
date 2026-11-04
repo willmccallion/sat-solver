@@ -15,7 +15,7 @@ pub const chrono_level_gap: u32 = 100;
 // Compacting backtrack. Starts at trail_lim[target_level] — a valid lower
 // bound because every entry below that index was assigned before level
 // target+1 was first entered — and walks forward. Each entry at
-// vars[v].level > target is popped (its value cleared, phase saved, heap
+// vars[v.index()].level > target is popped (its value cleared, phase saved, heap
 // re-inserted); each entry ≤ target is kept and shifted left into the
 // compacted region.
 //
@@ -34,10 +34,10 @@ pub fn backtrack(self: *Solver, target_level: Level) void {
     while (i < trail_items.len) : (i += 1) {
         const lit = trail_items[i];
         const v = lit.variable();
-        if (a.vars[v].level.isAbove(target_level)) {
-            a.saved_phases[v] = (a.vars[v].value == .true);
+        if (a.vars[v.index()].level.isAbove(target_level)) {
+            a.saved_phases[v.index()] = (a.vars[v.index()].value == .true);
             a.unassign(v);
-            self.order_heap.insert(v);
+            self.order_heap.insert(@backingInt(v));
         } else {
             trail_items[j] = lit;
             j += 1;

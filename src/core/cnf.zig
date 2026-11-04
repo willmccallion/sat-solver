@@ -18,11 +18,25 @@ pub const ClauseRef = enum(u32) {
 // every variable index must stay below 2^30.
 pub const max_vars: u32 = 1 << 30;
 
+// A variable, numbered from 0 (DIMACS numbers them from 1). Arrays over
+// variables are indexed with `index()`.
+pub const Var = enum(u32) {
+    _,
+
+    pub inline fn fromIndex(i: usize) Var {
+        return @fromBackingInt(@intCast(i));
+    }
+
+    pub inline fn index(self: Var) usize {
+        return @backingInt(self);
+    }
+};
+
 pub const Literal = struct {
     raw: u32,
 
-    pub fn init(var_index: u32, negated: bool) Literal {
-        return .{ .raw = (var_index << 1) | @intFromBool(negated) };
+    pub fn init(v: Var, negated: bool) Literal {
+        return .{ .raw = (@backingInt(v) << 1) | @intFromBool(negated) };
     }
 
     // The literal whose `.raw` is `index`, for walking arrays indexed by
@@ -31,8 +45,8 @@ pub const Literal = struct {
         return .{ .raw = @intCast(index) };
     }
 
-    pub fn variable(self: Literal) u32 {
-        return self.raw >> 1;
+    pub fn variable(self: Literal) Var {
+        return @fromBackingInt(@intCast(self.raw >> 1));
     }
 
     pub fn isNegative(self: Literal) bool {
@@ -46,11 +60,11 @@ pub const Literal = struct {
     pub fn fromDimacs(x: i32) Literal {
         std.debug.assert(x != 0);
         const magnitude: u32 = @intCast(if (x < 0) -x else x);
-        return init(magnitude - 1, x < 0);
+        return init(@fromBackingInt(@intCast(magnitude - 1)), x < 0);
     }
 
     pub fn toDimacs(self: Literal) i32 {
-        const v: i32 = @intCast(self.variable() + 1);
+        const v: i32 = @intCast(self.variable().index() + 1);
         return if (self.isNegative()) -v else v;
     }
 
@@ -132,7 +146,7 @@ pub const Formula = struct {
     // otherwise cost memory for variables that never occur.
     pub fn trimUnusedVars(self: *Formula) void {
         var end: u32 = 0;
-        for (self.clauses.literals.items) |lit| end = @max(end, lit.variable() + 1);
+        for (self.clauses.literals.items) |lit| end = @max(end, @backingInt(lit.variable()) + 1);
         self.num_vars = end;
     }
 

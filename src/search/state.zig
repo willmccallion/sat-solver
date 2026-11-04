@@ -4,6 +4,7 @@ const Allocator = std.mem.Allocator;
 const core = @import("core");
 const cnf = core.cnf;
 const Literal = cnf.Literal;
+const Var = cnf.Var;
 const Formula = cnf.Formula;
 const ClauseRef = cnf.ClauseRef;
 const assignment_mod = core.assignment;
@@ -65,7 +66,7 @@ pub const Stats = struct {
 //   [pos_start .. neg_start)  — clauses containing +pivot
 //   [neg_start .. end)        — clauses containing -pivot
 pub const WitnessFrame = struct {
-    pivot: u32,
+    pivot: Var,
     pos_start: u32,
     neg_start: u32,
     end: u32,
@@ -75,7 +76,7 @@ pub const WitnessFrame = struct {
 // into a representative during equiv(). Reconstruction sets the eliminated
 // variable's value equal to the representative literal's current value.
 pub const EquivFrame = struct {
-    eliminated_var: u32,
+    eliminated_var: Var,
     rep_lit: cnf.Literal,
 };
 
@@ -125,8 +126,8 @@ pub const Solver = struct {
     analyze_seen: []bool,
     analyze_learned: std.ArrayList(Literal),
     analyze_levels: std.ArrayList(Level),
-    analyze_to_clear: std.ArrayList(u32),
-    analyze_stack: std.ArrayList(u32),
+    analyze_to_clear: std.ArrayList(Var),
+    analyze_stack: std.ArrayList(Var),
 
     learned_clauses: std.ArrayList(ClauseRef),
     max_learned: usize,
@@ -343,15 +344,15 @@ pub const Solver = struct {
 
     // An active variable is neither assigned nor eliminated, so at level 0
     // it is one the formula still constrains.
-    pub fn varIsActive(self: *const Solver, v: u32) bool {
-        return self.assignment.vars[v].value == .unassigned and !self.eliminated.isSet(v);
+    pub fn varIsActive(self: *const Solver, v: Var) bool {
+        return self.assignment.vars[v.index()].value == .unassigned and !self.eliminated.isSet(v.index());
     }
 
     // A locked clause is the reason for a level-0 assignment, so deleting
     // or rewriting it would break the reason chain analyze follows.
     pub fn clauseIsLocked(self: *Solver, cref: ClauseRef) bool {
         for (self.arena.literals(cref)) |lit| {
-            const vi = self.assignment.vars[lit.variable()];
+            const vi = self.assignment.vars[lit.variable().index()];
             if (vi.level != .root) continue;
             switch (vi.reason.decode()) {
                 .clause => |reason| if (reason == cref) return true,
@@ -457,13 +458,13 @@ pub const Solver = struct {
         return false;
     }
 
-    pub fn bumpVarActivity(self: *Solver, var_idx: u32) void {
-        self.activities[var_idx] += self.var_inc;
-        if (self.activities[var_idx] > order_heap_mod.rescale_threshold) {
+    pub fn bumpVarActivity(self: *Solver, v: Var) void {
+        self.activities[v.index()] += self.var_inc;
+        if (self.activities[v.index()] > order_heap_mod.rescale_threshold) {
             for (self.activities) |*a| a.* *= 1.0 / order_heap_mod.rescale_threshold;
             self.var_inc *= 1.0 / order_heap_mod.rescale_threshold;
         }
-        self.order_heap.update(var_idx);
+        self.order_heap.update(@backingInt(v));
     }
 
     pub fn decayVarActivity(self: *Solver) void {
@@ -472,12 +473,12 @@ pub const Solver = struct {
 
     pub fn pickBranching(self: *Solver) ?Literal {
         while (!self.order_heap.isEmpty()) {
-            const v = self.order_heap.popMax();
+            const v: Var = .fromIndex(self.order_heap.popMax());
             // An eliminated variable's value comes from its witness frame;
             // branching on it would analyze clauses that no longer exist.
-            if (self.eliminated.isSet(v)) continue;
-            if (self.assignment.vars[v].value == .unassigned) {
-                const neg = !self.assignment.saved_phases[v];
+            if (self.eliminated.isSet(v.index())) continue;
+            if (self.assignment.vars[v.index()].value == .unassigned) {
+                const neg = !self.assignment.saved_phases[v.index()];
                 return Literal.init(v, neg);
             }
         }

@@ -2,6 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const cnf = @import("cnf.zig");
 const Literal = cnf.Literal;
+const Var = cnf.Var;
 const ClauseRef = cnf.ClauseRef;
 
 pub const Value = enum(u8) { unassigned, true, false };
@@ -179,8 +180,8 @@ pub const Assignment = struct {
         self.* = undefined;
     }
 
-    pub fn valueOfVar(self: *const Assignment, var_index: u32) Value {
-        return self.vars[var_index].value;
+    pub fn valueOfVar(self: *const Assignment, v: Var) Value {
+        return self.vars[v.index()].value;
     }
 
     // Hot path: called many times per clause inside propagate. Should
@@ -203,33 +204,33 @@ pub const Assignment = struct {
     // Breaks the "trail is monotonically increasing in level" invariant —
     // callers in analyze / backtrack must not rely on it.
     pub fn assignAtLevel(self: *Assignment, lit: Literal, reason: Reason, lvl: Level) !void {
-        const var_index = lit.variable();
-        std.debug.assert(self.vars[var_index].value == .unassigned);
+        const v = lit.variable();
+        std.debug.assert(self.vars[v.index()].value == .unassigned);
         std.debug.assert(!lvl.isAbove(self.level));
         const is_true = !lit.isNegative();
-        self.vars[var_index] = .{
+        self.vars[v.index()] = .{
             .value = if (is_true) .true else .false,
             .level = lvl,
             .reason = reason,
         };
-        self.setLitValues(var_index, is_true);
+        self.setLitValues(v, is_true);
         try self.trail.append(self.allocator, lit);
     }
 
     // Gives variable `v` a value off the trail, as model reconstruction
     // does for eliminated variables.
-    pub fn setValue(self: *Assignment, v: u32, is_true: bool) void {
-        self.vars[v].value = if (is_true) .true else .false;
+    pub fn setValue(self: *Assignment, v: Var, is_true: bool) void {
+        self.vars[v.index()].value = if (is_true) .true else .false;
         self.setLitValues(v, is_true);
     }
 
-    pub inline fn unassign(self: *Assignment, v: u32) void {
-        self.vars[v] = .{};
+    pub inline fn unassign(self: *Assignment, v: Var) void {
+        self.vars[v.index()] = .{};
         self.lit_values[Literal.init(v, false).raw] = .unassigned;
         self.lit_values[Literal.init(v, true).raw] = .unassigned;
     }
 
-    inline fn setLitValues(self: *Assignment, v: u32, is_true: bool) void {
+    inline fn setLitValues(self: *Assignment, v: Var, is_true: bool) void {
         self.lit_values[Literal.init(v, false).raw] = if (is_true) .true else .false;
         self.lit_values[Literal.init(v, true).raw] = if (is_true) .false else .true;
     }
