@@ -577,14 +577,8 @@ pub const Solver = struct {
         return null;
     }
 
-    // Rotate saved_phases through the rephase family. Called only at
-    // level 0 — the search tree has already been torn down and we're
-    // rebiasing the next descent, not perturbing an active trail.
-    //
-    // best    → copy the deepest-trail snapshot (best_phases) in.
-    // original→ reset to the solver default (all-false).
-    // inverse → flip every saved phase.
-    // random  → deterministic PRNG seeded by conflict count.
+    // Applies the next `RephaseKind` to saved_phases. Only at level 0, so
+    // it biases the next descent rather than an active trail.
     pub fn rephase(self: *Solver) void {
         std.debug.assert(self.assignment.level == 0);
         const saved = self.assignment.saved_phases;
