@@ -774,3 +774,63 @@ test "bve: locked protection — a clause that reasons a level-0 unit stays unto
     try testing.expect(r == null);
     try testing.expect(!hasEliminated(&solver, 0));
 }
+
+fn addLearnedClause(solver: *solver_mod.Solver, dimacs: []const i32, lbd: u32) !ClauseRef {
+    var lits: [16]Literal = undefined;
+    for (dimacs, 0..) |d, i| lits[i] = Literal.fromDimacs(d);
+    const cref = try solver.addClauseToArena(lits[0..dimacs.len], true, lbd);
+    try solver.learned_clauses.append(testing.allocator, cref);
+    try solver.attachWatches(cref);
+    return cref;
+}
+
+fn isLiteralSet(lits: []const Literal, dimacs: []const i32) bool {
+    if (lits.len != dimacs.len) return false;
+    for (dimacs) |d| {
+        const wanted = Literal.fromDimacs(d);
+        for (lits) |lit| {
+            if (lit.eql(wanted)) break;
+        } else return false;
+    }
+    return true;
+}
+
+fn lastLearnedClause(solver: *solver_mod.Solver) ClauseRef {
+    return solver.learned_clauses.items[solver.learned_clauses.items.len - 1];
+}
+
+fn randomThreeSat(seed: u64, num_vars: u32, num_clauses: usize) !cnf.Formula {
+    var formula = cnf.Formula.init(testing.allocator, num_vars);
+    errdefer formula.deinit();
+    var prng = std.Random.DefaultPrng.init(seed);
+    const random = prng.random();
+    for (0..num_clauses) |_| {
+        var lits: [3]Literal = undefined;
+        for (&lits) |*lit| lit.* = Literal.init(random.uintLessThan(u32, num_vars), random.boolean());
+        try formula.addClause(&lits);
+    }
+    return formula;
+}
+
+test "every long clause learned during search has an LBD of at least 2" {
+    // A long learned clause holds the UIP at the conflict level plus
+    // literals from lower, non-zero levels, so its true LBD is >= 2.
+    var formula = try randomThreeSat(1, 100, 430);
+    defer formula.deinit();
+    var solver = try solver_mod.Solver.init(testing.allocator, &formula);
+    defer solver.deinit();
+
+    _ = try solver.solve();
+
+    // Below 10k conflicts no inprocessing pass has rewritten an LBD.
+    try testing.expect(solver.stats.conflicts < 10_000);
+    var long_learned: usize = 0;
+    var below_two: usize = 0;
+    for (solver.learned_clauses.items) |cref| {
+        if (solver.clauseIsDeleted(cref)) continue;
+        long_learned += 1;
+        if (solver.clauseLbd(cref) < 2) below_two += 1;
+    }
+    try testing.expect(long_learned > 0);
+    try testing.expectEqual(@as(usize, 0), below_two);
+}

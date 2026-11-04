@@ -64,6 +64,12 @@ pub fn solve(self: *Solver) !Result {
             }
 
             const backjump_level = try self.analyze(conflict, conflict_level);
+            // Backtracking resets the levels the LBD counts, so take it first.
+            const learned_len = self.analyze_learned.items.len;
+            const lbd: u32 = if (learned_len == 1)
+                1
+            else
+                self.computeLbd(self.analyze_learned.items);
 
             const conflict_trail_len = self.assignment.trail.items.len;
             const conflict_trail_f: f64 = @floatFromInt(conflict_trail_len);
@@ -85,11 +91,6 @@ pub fn solve(self: *Solver) !Result {
             if (chrono) self.stats.chronos += 1;
             self.backtrack(target_level);
 
-            const learned_len = self.analyze_learned.items.len;
-            const lbd: u32 = if (learned_len == 1)
-                1
-            else
-                self.computeLbd(self.analyze_learned.items);
             const lbd_f: f64 = @floatFromInt(lbd);
 
             self.lbd_fast += restart.lbd_fast_alpha * (lbd_f - self.lbd_fast);
