@@ -477,7 +477,7 @@ pub fn equiv(self: *Solver) !?Result {
         // new_len >= 3: install as arena clause. addClauseToArena may
         // reallocate self.arena; new_lits is a slice into work_new_lits
         // which is a separate allocation, so it stays valid.
-        const lbd: u32 = self.computeLbd(new_lits);
+        const lbd = clause_mod.rewrittenLbd(self.clauseLbd(lw.old_cref), lw.new_len);
         const new_cref = try self.addClauseToArena(new_lits, lw.is_learned, lbd);
         try self.attachWatches(new_cref);
         if (lw.is_learned) {

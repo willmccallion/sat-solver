@@ -21,6 +21,13 @@ pub const len_mask: u32 = 0x3fff_ffff;
 pub const max_arena_slots: usize = 1 << 31;
 pub const header_slots: u32 = 2;
 
+// The LBD of a clause rewritten to `new_len` literals by inprocessing at
+// level 0, where the levels that would recompute it are gone: its old LBD,
+// capped at the new length.
+pub fn rewrittenLbd(old_lbd: u32, new_len: usize) u32 {
+    return @min(old_lbd, @as(u32, @intCast(new_len)));
+}
+
 // Long-clause watcher. `blocker` is a literal from the same clause that
 // propagate can check first without loading the clause body: if it's
 // already true, the clause is satisfied and we can skip the arena fetch.

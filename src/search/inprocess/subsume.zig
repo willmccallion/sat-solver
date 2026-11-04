@@ -645,7 +645,7 @@ fn strengthenLongClause(
 
     // ≥3: install in arena. addClauseToArena may realloc arena — any
     // cached ClauseLits pointer from before is invalid after.
-    const new_lbd: u32 = self.computeLbd(new_lits.items);
+    const new_lbd = clause_mod.rewrittenLbd(self.clauseLbd(d_cref), new_len);
     const new_cref = try self.addClauseToArena(new_lits.items, is_learned, new_lbd);
     try self.attachWatches(new_cref);
     if (is_learned) {

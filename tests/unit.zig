@@ -834,3 +834,52 @@ test "every long clause learned during search has an LBD of at least 2" {
     try testing.expect(long_learned > 0);
     try testing.expectEqual(@as(usize, 0), below_two);
 }
+
+test "a learned clause shortened by vivify keeps a non-zero LBD" {
+    var formula = try parseSource("p cnf 5 1\n1 2 3 0\n");
+    defer formula.deinit();
+    var solver = try solver_mod.Solver.init(testing.allocator, &formula);
+    defer solver.deinit();
+    _ = try addLearnedClause(&solver, &.{ 1, 2, 3, 4, 5 }, 3);
+    _ = try solver.propagate();
+
+    const r = try solver.vivify();
+
+    try testing.expect(r == null);
+    const shortened = lastLearnedClause(&solver);
+    try testing.expect(isLiteralSet(solver.clauseLits(shortened), &.{ 1, 2, 3 }));
+    try testing.expectEqual(@as(u32, 3), solver.clauseLbd(shortened));
+}
+
+test "a learned clause strengthened by subsume keeps a non-zero LBD" {
+    // -34 collides with -2 in the literal abstract; see the SSR-to-binary test.
+    var formula = try parseSource("p cnf 34 2\n1 -2 0\n-2 5 6 0\n");
+    defer formula.deinit();
+    var solver = try solver_mod.Solver.init(testing.allocator, &formula);
+    defer solver.deinit();
+    _ = try addLearnedClause(&solver, &.{ 1, 2, -34, 7 }, 3);
+    _ = try solver.propagate();
+
+    const r = try solver.subsume();
+
+    try testing.expect(r == null);
+    const strengthened = lastLearnedClause(&solver);
+    try testing.expect(isLiteralSet(solver.clauseLits(strengthened), &.{ 1, -34, 7 }));
+    try testing.expectEqual(@as(u32, 3), solver.clauseLbd(strengthened));
+}
+
+test "a learned clause rewritten by equiv keeps a non-zero LBD" {
+    var formula = try parseSource("p cnf 4 2\n-1 2 0\n1 -2 0\n");
+    defer formula.deinit();
+    var solver = try solver_mod.Solver.init(testing.allocator, &formula);
+    defer solver.deinit();
+    _ = try addLearnedClause(&solver, &.{ 2, 3, 4 }, 2);
+    _ = try solver.propagate();
+
+    const r = try solver.equiv();
+
+    try testing.expect(r == null);
+    const rewritten = lastLearnedClause(&solver);
+    try testing.expect(isLiteralSet(solver.clauseLits(rewritten), &.{ 1, 3, 4 }));
+    try testing.expectEqual(@as(u32, 2), solver.clauseLbd(rewritten));
+}
