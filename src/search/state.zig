@@ -462,6 +462,10 @@ pub const Solver = struct {
         self.learned_clauses.shrinkRetainingCapacity(j);
     }
 
+    pub fn liveClauses(self: *const Solver) LiveClauses {
+        return .{ .solver = self };
+    }
+
     pub fn arenaIsMostlyHoles(self: *const Solver) bool {
         return self.arena_dead_slots * 2 > self.arena.items.len;
     }
@@ -608,3 +612,18 @@ fn removeBinaryWatch(list: *std.ArrayList(BinaryWatch), other: Literal) void {
         }
     }
 }
+
+// The arena's clauses that are not marked deleted, in arena order.
+pub const LiveClauses = struct {
+    solver: *const Solver,
+    next_cref: ClauseRef = 0,
+
+    pub fn next(self: *LiveClauses) ?ClauseRef {
+        while (self.next_cref < self.solver.arena.items.len) {
+            const cref = self.next_cref;
+            self.next_cref += header_slots + self.solver.clauseLen(cref);
+            if (!self.solver.clauseIsDeleted(cref)) return cref;
+        }
+        return null;
+    }
+};

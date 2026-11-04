@@ -140,26 +140,18 @@ const Subsumption = struct {
         const counts = try solver.allocator.alloc(u32, self.occ.len);
         defer solver.allocator.free(counts);
         @memset(counts, 0);
-        var cref: ClauseRef = 0;
-        while (cref < solver.arena.items.len) {
-            const header = solver.arena.items[cref].raw;
-            const len = header & clause_mod.len_mask;
-            if ((header & clause_mod.deleted_bit) == 0 and len >= 3) {
-                for (solver.clauseLits(cref)) |lit| counts[lit.raw] += 1;
-            }
-            cref += clause_mod.header_slots + len;
+        var live = solver.liveClauses();
+        while (live.next()) |cref| {
+            if (solver.clauseLen(cref) < 3) continue;
+            for (solver.clauseLits(cref)) |lit| counts[lit.raw] += 1;
         }
         for (self.occ, counts) |*o, n| try o.ensureTotalCapacityPrecise(solver.allocator, n);
 
-        cref = 0;
-        while (cref < solver.arena.items.len) {
-            const header = solver.arena.items[cref].raw;
-            const len = header & clause_mod.len_mask;
-            if ((header & clause_mod.deleted_bit) == 0 and len >= 3) {
-                for (solver.clauseLits(cref)) |lit| self.occ[lit.raw].appendAssumeCapacity(cref);
-                try self.queue.append(solver.allocator, cref);
-            }
-            cref += clause_mod.header_slots + len;
+        live = solver.liveClauses();
+        while (live.next()) |cref| {
+            if (solver.clauseLen(cref) < 3) continue;
+            for (solver.clauseLits(cref)) |lit| self.occ[lit.raw].appendAssumeCapacity(cref);
+            try self.queue.append(solver.allocator, cref);
         }
     }
 

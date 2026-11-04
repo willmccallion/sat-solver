@@ -352,16 +352,10 @@ test "solver: chained implications propagate to sat" {
 
 // Count non-deleted clauses in the arena by walking headers.
 fn countLiveLongClauses(solver: *solver_mod.Solver) usize {
-    var live: usize = 0;
-    var cref: ClauseRef = 0;
-    while (cref < solver.arena.items.len) {
-        const header = solver.arena.items[cref].raw;
-        const len = header & clause_mod.len_mask;
-        const span = clause_mod.header_slots + len;
-        if ((header & clause_mod.deleted_bit) == 0) live += 1;
-        cref += span;
-    }
-    return live;
+    var count: usize = 0;
+    var live = solver.liveClauses();
+    while (live.next()) |_| count += 1;
+    return count;
 }
 
 test "equiv: a literal equivalent to its negation is refuted with a RUP unit first" {
@@ -512,22 +506,16 @@ test "subsume: SSR to binary — long clause strengthened to a new binary" {
     // length-3 clause added to the arena.
     var cref_long: ClauseRef = std.math.maxInt(u32);
     {
-        var cref: ClauseRef = 0;
-        while (cref < solver.arena.items.len) {
-            const header = solver.arena.items[cref].raw;
-            const len = header & clause_mod.len_mask;
-            const span = clause_mod.header_slots + len;
-            if ((header & clause_mod.deleted_bit) == 0 and len == 3) {
-                const lits = solver.clauseLits(cref);
-                if (lits[0].toDimacs() == 1 and
-                    lits[1].toDimacs() == 2 and
-                    lits[2].toDimacs() == -34)
-                {
-                    cref_long = cref;
-                    break;
-                }
+        var live = solver.liveClauses();
+        while (live.next()) |cref| {
+            const lits = solver.clauseLits(cref);
+            if (lits.len == 3 and lits[0].toDimacs() == 1 and
+                lits[1].toDimacs() == 2 and
+                lits[2].toDimacs() == -34)
+            {
+                cref_long = cref;
+                break;
             }
-            cref += span;
         }
     }
     try testing.expect(cref_long != std.math.maxInt(u32));
@@ -933,12 +921,9 @@ test "a learned clause rewritten by equiv keeps a non-zero LBD" {
 
 fn countLiveClauses(solver: *solver_mod.Solver, dimacs: []const i32, kind: clause_mod.ClauseKind) usize {
     var count: usize = 0;
-    var cref: ClauseRef = 0;
-    while (cref < solver.arena.items.len) {
-        const len = solver.clauseLen(cref);
-        if (!solver.clauseIsDeleted(cref) and solver.clauseKind(cref) == kind and
-            isLiteralSet(solver.clauseLits(cref), dimacs)) count += 1;
-        cref += clause_mod.header_slots + len;
+    var live = solver.liveClauses();
+    while (live.next()) |cref| {
+        if (solver.clauseKind(cref) == kind and isLiteralSet(solver.clauseLits(cref), dimacs)) count += 1;
     }
     return count;
 }

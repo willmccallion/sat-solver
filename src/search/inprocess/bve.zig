@@ -102,14 +102,9 @@ fn eliminateWithin(self: *Solver, budget: u64) !?Result {
         const long_counts = try self.allocator.alloc(u32, num_lits);
         defer self.allocator.free(long_counts);
         @memset(long_counts, 0);
-        var cref: ClauseRef = 0;
-        while (cref < self.arena.items.len) {
-            const header = self.arena.items[cref].raw;
-            const len = header & clause_mod.len_mask;
-            if ((header & clause_mod.deleted_bit) == 0) {
-                for (self.clauseLits(cref)) |lit| long_counts[lit.raw] += 1;
-            }
-            cref += clause_mod.header_slots + len;
+        var live = self.liveClauses();
+        while (live.next()) |cref| {
+            for (self.clauseLits(cref)) |lit| long_counts[lit.raw] += 1;
         }
         for (occ, long_counts, 0..) |*o, n, lit_raw| {
             const binary_count = self.bin_watchers[lit_raw ^ 1].items.len;
@@ -119,17 +114,11 @@ fn eliminateWithin(self: *Solver, budget: u64) !?Result {
 
     // Long clauses from the arena.
     {
-        var cref: ClauseRef = 0;
-        while (cref < self.arena.items.len) {
-            const header = self.arena.items[cref].raw;
-            const len = header & clause_mod.len_mask;
-            const span = clause_mod.header_slots + len;
-            if ((header & clause_mod.deleted_bit) == 0) {
-                for (self.clauseLits(cref)) |lit| {
-                    occ[lit.raw].appendAssumeCapacity(.{ .long = cref });
-                }
+        var live = self.liveClauses();
+        while (live.next()) |cref| {
+            for (self.clauseLits(cref)) |lit| {
+                occ[lit.raw].appendAssumeCapacity(.{ .long = cref });
             }
-            cref += span;
         }
     }
 

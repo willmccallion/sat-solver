@@ -220,13 +220,9 @@ pub fn equiv(self: *Solver) !?Result {
     defer scratch.deinit(self.allocator);
 
     {
-        var cref: ClauseRef = 0;
-        while (cref < self.arena.items.len) {
-            const header = self.arena.items[cref].raw;
-            const len = header & clause_mod.len_mask;
-            const span = clause_mod.header_slots + len;
-            defer cref += span;
-            if ((header & clause_mod.deleted_bit) != 0) continue;
+        var live = self.liveClauses();
+        while (live.next()) |cref| {
+            const len = self.clauseLen(cref);
             if (len < 3) continue;
 
             const lits = self.clauseLits(cref);
