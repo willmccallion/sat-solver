@@ -11,13 +11,16 @@ pub const rescale_threshold: f64 = 1e100;
 // and compares by dereferencing it. Insert / update / popMax are O(log n).
 pub const OrderHeap = struct {
     heap: std.ArrayList(u32),
-    pos: []i32,
+    // Each variable's index in `heap`, or `absent`.
+    pos: []u32,
     activities: []const f64,
 
+    const absent = std.math.maxInt(u32);
+
     pub fn init(allocator: Allocator, num_vars: u32, activities: []const f64) !OrderHeap {
-        const pos = try allocator.alloc(i32, num_vars);
+        const pos = try allocator.alloc(u32, num_vars);
         errdefer allocator.free(pos);
-        @memset(pos, -1);
+        @memset(pos, absent);
         return .{
             .heap = try std.ArrayList(u32).initCapacity(allocator, num_vars),
             .pos = pos,
@@ -75,20 +78,20 @@ pub const OrderHeap = struct {
     }
 
     pub fn insert(self: *OrderHeap, v: u32) void {
-        if (self.pos[v] != -1) return;
+        if (self.pos[v] != absent) return;
         self.heap.appendAssumeCapacity(v);
         self.pos[v] = @intCast(self.heap.items.len - 1);
         self.siftUp(self.heap.items.len - 1);
     }
 
     pub fn update(self: *OrderHeap, v: u32) void {
-        if (self.pos[v] == -1) return;
-        self.siftUp(@intCast(self.pos[v]));
+        if (self.pos[v] == absent) return;
+        self.siftUp(self.pos[v]);
     }
 
     pub fn popMax(self: *OrderHeap) u32 {
         const top = self.heap.items[0];
-        self.pos[top] = -1;
+        self.pos[top] = absent;
         if (self.heap.items.len == 1) {
             self.heap.shrinkRetainingCapacity(0);
             return top;
