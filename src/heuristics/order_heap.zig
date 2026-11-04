@@ -11,6 +11,7 @@ pub const OrderHeap = struct {
 
     pub fn init(allocator: Allocator, num_vars: u32, activities: []const f64) !OrderHeap {
         const pos = try allocator.alloc(i32, num_vars);
+        errdefer allocator.free(pos);
         @memset(pos, -1);
         return .{
             .heap = try std.ArrayList(u32).initCapacity(allocator, num_vars),

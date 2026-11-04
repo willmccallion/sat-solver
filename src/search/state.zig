@@ -242,7 +242,7 @@ pub const Solver = struct {
             .next_subsume = @import("inprocess/subsume.zig").inprocess_initial_interval,
             .subsume_interval = @import("inprocess/subsume.zig").inprocess_initial_interval,
             .props_at_last_subsume = 0,
-            .eliminated = try std.DynamicBitSet.initEmpty(allocator, formula.num_vars),
+            .eliminated = undefined,
             .bve_witness_lits = .empty,
             .bve_witness_frames = .empty,
             .next_bve = @import("inprocess/bve.zig").inprocess_initial_interval,
@@ -259,6 +259,9 @@ pub const Solver = struct {
             .stats = .{},
         };
         errdefer self.assignment.deinit();
+
+        self.eliminated = try std.DynamicBitSet.initEmpty(allocator, formula.num_vars);
+        errdefer self.eliminated.deinit();
 
         self.watchers = try allocator.alloc(std.ArrayList(Watcher), formula.num_vars * 2);
         for (self.watchers) |*w| w.* = .empty;

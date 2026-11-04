@@ -255,6 +255,47 @@ test "solver: small_sat returns sat with verified model" {
     try testing.expect(out.verified);
 }
 
+fn initAndSolve(allocator: std.mem.Allocator, formula: *const cnf.Formula) !void {
+    var solver = try solver_mod.Solver.init(allocator, formula);
+    defer solver.deinit();
+    _ = try solver.solve();
+}
+
+test "solver: frees what it allocated when any allocation fails" {
+    // Four pigeons in three holes, plus a unit: init loads every clause
+    // kind and solve learns clauses before refuting it.
+    var formula = try parseSource(
+        \\p cnf 13 23
+        \\13 0
+        \\1 2 3 0
+        \\4 5 6 0
+        \\7 8 9 0
+        \\10 11 12 0
+        \\-1 -4 0
+        \\-1 -7 0
+        \\-1 -10 0
+        \\-4 -7 0
+        \\-4 -10 0
+        \\-7 -10 0
+        \\-2 -5 0
+        \\-2 -8 0
+        \\-2 -11 0
+        \\-5 -8 0
+        \\-5 -11 0
+        \\-8 -11 0
+        \\-3 -6 0
+        \\-3 -9 0
+        \\-3 -12 0
+        \\-6 -9 0
+        \\-6 -12 0
+        \\-9 -12 0
+        \\
+    );
+    defer formula.deinit();
+
+    try testing.checkAllAllocationFailures(testing.allocator, initAndSolve, .{&formula});
+}
+
 test "solver: empty formula is trivially sat" {
     const out = try solveSource("p cnf 0 0\n");
     try testing.expectEqual(solver_mod.Result.sat, out.result);
