@@ -194,15 +194,16 @@ test "parser: rejects clause count mismatch > 5% (malformed DIMACS)" {
     try testing.expectError(error.ClauseCountMismatch, parseSource(src));
 }
 
-test "parser: accepts small clause count discrepancy (within slack)" {
-    // Declares 1 clause, provides 1 — exact match, always OK.
-    const src =
-        \\p cnf 2 1
-        \\1 2 0
-    ;
-    var formula = try parseSource(src);
+test "parser accepts a clause count within 5% of the header" {
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(testing.allocator);
+    try src.appendSlice(testing.allocator, "p cnf 19 20\n");
+    for (1..20) |v| try src.print(testing.allocator, "{d} 0\n", .{v});
+
+    var formula = try parseSource(src.items);
     defer formula.deinit();
-    try testing.expectEqual(@as(usize, 1), formula.clauseCount());
+
+    try testing.expectEqual(@as(usize, 19), formula.clauseCount());
 }
 
 test "parser: drops tautological clauses but counts them against the header" {
@@ -729,30 +730,24 @@ test "bve: length cap — resolvent would exceed max_resolvent_len, skip" {
     try testing.expect(!hasEliminated(&solver, 0));
 }
 
-test "bve: unsat — (1), (-1) derives the empty clause" {
-    // Two singleton clauses contradict directly. Either BVE sees both
-    // and returns .unsat, or upstream propagate catches the conflict
-    // before preprocessBVE runs. Both are acceptable outcomes.
-    const src =
-        \\p cnf 1 2
-        \\1 0
-        \\-1 0
-    ;
-    const gpa = testing.allocator;
-    var formula = try parseSource(src);
+test "bve refutes the formula when a resolvent is false under a unit it derived earlier in the pass" {
+    // Eliminating 1 asserts the unit 2; units are only propagated after
+    // the pass, so resolving on 3 then yields (-2), empty under 2. The
+    // other elimination order refutes the same way. Variable 4 would be
+    // eliminated next, so the pass must stop at the refutation.
+    var formula = cnf.Formula.init(testing.allocator, 8);
     defer formula.deinit();
-    var solver = try solver_mod.Solver.init(gpa, &formula);
+    for ([_][]const i32{ &.{ 1, 2 }, &.{ -1, 2 }, &.{ 3, -2 }, &.{ -3, -2 }, &.{ 4, 7 }, &.{ -4, 7 }, &.{ -4, 8 } }) |clause| {
+        try addClauseDimacs(&formula, clause);
+    }
+    try addBveShield(&formula, &.{ 7, 8 });
+    var solver = try solver_mod.Solver.init(testing.allocator, &formula);
     defer solver.deinit();
 
-    // Units are unit-propagated during Solver.init; the second unit
-    // either conflicts in init (unsat_at_init), conflicts in the first
-    // propagate, or shows up to BVE as a length-1 resolvent situation.
-    // Any path that terminates in .unsat is correct.
-    if (solver.unsat_at_init) return;
-    const first = try solver.propagate();
-    if (first != null) return;
     const r = try solver.preprocessBVE();
+
     try testing.expectEqual(solver_mod.Result.unsat, r.?);
+    try testing.expectEqual(@as(u64, 1), solver.stats.eliminated_vars);
 }
 
 test "bve: sat reconstruction end-to-end on a formula with an eliminated var" {
@@ -774,6 +769,7 @@ test "bve: sat reconstruction end-to-end on a formula with an eliminated var" {
 
     const result = try solver.solve();
     try testing.expectEqual(solver_mod.Result.sat, result);
+    try testing.expect(hasEliminated(&solver, 0));
     solver.extendModel();
     try testing.expectEqual(@as(?usize, null), solver.findFalsifiedClause(&formula));
 }
