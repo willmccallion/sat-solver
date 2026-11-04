@@ -54,13 +54,10 @@ pub const Stats = struct {
 
 // BVE witness frame. Records the original clauses touching an eliminated
 // variable so the .sat reconstruction in model.zig can pick a value
-// that satisfies all of them in reverse elimination order.
-//
-// Layout inside bve_witness_lits (length-prefixed runs):
+// that satisfies all of them in reverse elimination order. The fields
+// index clauses of `Solver.bve_witness`:
 //   [pos_start .. neg_start)  — clauses containing +pivot
 //   [neg_start .. end)        — clauses containing -pivot
-// Each run starts with a `Literal` whose `.raw` is the clause length,
-// followed by that many literal slots.
 pub const WitnessFrame = struct {
     pivot: u32,
     pos_start: u32,
@@ -164,10 +161,9 @@ pub const Solver = struct {
     // literal in a learned clause, and must have their values filled in
     // during the .sat reconstruction in model.zig.
     eliminated: std.DynamicBitSet,
-    // Flat buffer of length-prefixed literal runs recording the original
-    // clauses touching every eliminated variable. Each frame in
-    // bve_witness_frames names the pivot and slices into this buffer.
-    bve_witness_lits: std.ArrayList(Literal),
+    // The original clauses touching every eliminated variable. Each frame
+    // in bve_witness_frames names the pivot and a range of these clauses.
+    bve_witness: cnf.ClauseList,
     bve_witness_frames: std.ArrayList(WitnessFrame),
     next_bve: u64,
     bve_interval: u64,
@@ -255,7 +251,7 @@ pub const Solver = struct {
             .subsume_interval = @import("inprocess/subsume.zig").inprocess_initial_interval,
             .props_at_last_subsume = 0,
             .eliminated = undefined,
-            .bve_witness_lits = .empty,
+            .bve_witness = .{},
             .bve_witness_frames = .empty,
             .next_bve = @import("inprocess/bve.zig").inprocess_initial_interval,
             .bve_interval = @import("inprocess/bve.zig").inprocess_initial_interval,
@@ -368,7 +364,7 @@ pub const Solver = struct {
         self.learned_clauses.deinit(self.allocator);
         self.order_heap.deinit(self.allocator);
         self.eliminated.deinit();
-        self.bve_witness_lits.deinit(self.allocator);
+        self.bve_witness.deinit(self.allocator);
         self.bve_witness_frames.deinit(self.allocator);
         self.equiv_witness.deinit(self.allocator);
         self.assignment.deinit();

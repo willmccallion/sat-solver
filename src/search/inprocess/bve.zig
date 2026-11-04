@@ -1,6 +1,7 @@
 const std = @import("std");
 const core = @import("core");
 const Literal = core.cnf.Literal;
+const ClauseList = core.cnf.ClauseList;
 const ClauseRef = core.cnf.ClauseRef;
 const clause_mod = core.clause;
 
@@ -28,10 +29,9 @@ const Result = solver_mod.Result;
 //
 // Commit order is fixed by the DRAT checker's RUP semantics: all
 // resolvents are added first, all originals deleted second, then per-v
-// bookkeeping runs. The original literals are buffered into
-// `bve_witness_lits` (as length-prefixed runs, two sides: +v side then
-// -v side) so the .sat reconstruction in model.zig can give a value to
-// every eliminated variable by walking the witness frames in reverse.
+// bookkeeping runs. The original clauses are logged to `bve_witness`
+// (+v side, then -v side) so the .sat reconstruction in model.zig can give
+// a value to every eliminated variable by walking the frames in reverse.
 //
 // Precondition: level == 0; the pass propagates to a fixpoint first. Any
 // 1-literal resolvent is asserted as a root-level unit; any empty
@@ -161,26 +161,18 @@ fn eliminateWithin(self: *Solver, budget: u64) !?Result {
         }
     }
 
-    // Scratch buffers — all allocated once, reused across all pops.
-    var pos_lits_buf: std.ArrayList(Literal) = .empty;
-    defer pos_lits_buf.deinit(self.allocator);
-    var neg_lits_buf: std.ArrayList(Literal) = .empty;
-    defer neg_lits_buf.deinit(self.allocator);
-    // Offsets into pos_lits_buf / neg_lits_buf where each original clause's
-    // length-prefixed run begins (first slot is the length). Used so we
-    // don't hold arena slices across a resolvent addClauseToArena call.
-    var pos_runs: std.ArrayList(u32) = .empty;
-    defer pos_runs.deinit(self.allocator);
-    var neg_runs: std.ArrayList(u32) = .empty;
-    defer neg_runs.deinit(self.allocator);
+    // Scratch buffers — all allocated once, reused across all pops. The
+    // clauses on each side are copied out so no arena slice is held while
+    // installing a resolvent reallocates the arena.
+    var pos_clauses: ClauseList = .{};
+    defer pos_clauses.deinit(self.allocator);
+    var neg_clauses: ClauseList = .{};
+    defer neg_clauses.deinit(self.allocator);
     var resolvent_buf: std.ArrayList(Literal) = .empty;
     defer resolvent_buf.deinit(self.allocator);
-    // Non-tautological resolvents kept for the commit phase — a flat
-    // buffer of length-prefixed runs, exactly like the witness format.
-    var resolvents_flat: std.ArrayList(Literal) = .empty;
-    defer resolvents_flat.deinit(self.allocator);
-    var resolvents_offsets: std.ArrayList(u32) = .empty;
-    defer resolvents_offsets.deinit(self.allocator);
+    // Non-tautological resolvents kept for the commit phase.
+    var resolvents: ClauseList = .{};
+    defer resolvents.deinit(self.allocator);
 
     var op_count: u64 = 0;
     var any_deleted = false;
@@ -209,13 +201,9 @@ fn eliminateWithin(self: *Solver, budget: u64) !?Result {
         }
 
         // Gather pos and neg clause literals into scratch
-        pos_lits_buf.clearRetainingCapacity();
-        neg_lits_buf.clearRetainingCapacity();
-        pos_runs.clearRetainingCapacity();
-        neg_runs.clearRetainingCapacity();
+        pos_clauses.clearRetainingCapacity();
+        neg_clauses.clearRetainingCapacity();
 
-        var pos_live_count: u32 = 0;
-        var neg_live_count: u32 = 0;
         var locked = false;
 
         for (pos_occ) |o| {
@@ -229,16 +217,7 @@ fn eliminateWithin(self: *Solver, budget: u64) !?Result {
                     // A learned clause is implied by the irredundant ones, so
                     // it takes no part in resolution; commit deletes it.
                     if (self.clauseIsLearned(cref)) continue;
-                    const lits = self.clauseLits(cref);
-                    const off: u32 = @intCast(pos_lits_buf.items.len);
-                    try pos_runs.append(self.allocator, off);
-                    // Length-prefix slot (raw holds the length).
-                    try pos_lits_buf.append(
-                        self.allocator,
-                        .{ .raw = @as(u32, @intCast(lits.len)) },
-                    );
-                    try pos_lits_buf.appendSlice(self.allocator, lits);
-                    pos_live_count += 1;
+                    try pos_clauses.append(self.allocator, self.clauseLits(cref));
                 },
                 .binary => |other| {
                     // Binary entries in occ go stale when `other.variable()`
@@ -248,13 +227,7 @@ fn eliminateWithin(self: *Solver, budget: u64) !?Result {
                     // such ghosts as no-ops — including them as a source would
                     // produce resolvents poisoned with an eliminated literal.
                     if (self.eliminated.isSet(other.variable())) continue;
-                    // Binary clause {pos_lit, other}.
-                    const off: u32 = @intCast(pos_lits_buf.items.len);
-                    try pos_runs.append(self.allocator, off);
-                    try pos_lits_buf.append(self.allocator, .{ .raw = 2 });
-                    try pos_lits_buf.append(self.allocator, pos_lit);
-                    try pos_lits_buf.append(self.allocator, other);
-                    pos_live_count += 1;
+                    try pos_clauses.append(self.allocator, &.{ pos_lit, other });
                 },
             }
         }
@@ -271,24 +244,11 @@ fn eliminateWithin(self: *Solver, budget: u64) !?Result {
                     // A learned clause is implied by the irredundant ones, so
                     // it takes no part in resolution; commit deletes it.
                     if (self.clauseIsLearned(cref)) continue;
-                    const lits = self.clauseLits(cref);
-                    const off: u32 = @intCast(neg_lits_buf.items.len);
-                    try neg_runs.append(self.allocator, off);
-                    try neg_lits_buf.append(
-                        self.allocator,
-                        .{ .raw = @as(u32, @intCast(lits.len)) },
-                    );
-                    try neg_lits_buf.appendSlice(self.allocator, lits);
-                    neg_live_count += 1;
+                    try neg_clauses.append(self.allocator, self.clauseLits(cref));
                 },
                 .binary => |other| {
                     if (self.eliminated.isSet(other.variable())) continue;
-                    const off: u32 = @intCast(neg_lits_buf.items.len);
-                    try neg_runs.append(self.allocator, off);
-                    try neg_lits_buf.append(self.allocator, .{ .raw = 2 });
-                    try neg_lits_buf.append(self.allocator, neg_lit);
-                    try neg_lits_buf.append(self.allocator, other);
-                    neg_live_count += 1;
+                    try neg_clauses.append(self.allocator, &.{ neg_lit, other });
                 },
             }
         }
@@ -296,22 +256,19 @@ fn eliminateWithin(self: *Solver, budget: u64) !?Result {
 
         // Skip variables with no live clauses on either side — BVE on
         // them is a no-op that still costs bookkeeping.
-        if (pos_live_count == 0 and neg_live_count == 0) continue;
+        if (pos_clauses.count() == 0 and neg_clauses.count() == 0) continue;
 
         // Enumerate resolvents
-        resolvents_flat.clearRetainingCapacity();
-        resolvents_offsets.clearRetainingCapacity();
+        resolvents.clearRetainingCapacity();
 
-        var non_taut_count: u32 = 0;
         var abandon = false;
         var empty_found = false;
 
-        for (pos_runs.items) |p_off| {
+        for (0..pos_clauses.count()) |p| {
             if (abandon or empty_found) break;
-            const p_len = pos_lits_buf.items[p_off].raw;
-            const p_lits = pos_lits_buf.items[p_off + 1 .. p_off + 1 + p_len];
+            const p_lits = pos_clauses.get(p);
 
-            for (neg_runs.items) |n_off| {
+            for (0..neg_clauses.count()) |n| {
                 if (abandon or empty_found) break;
                 op_count += 1;
                 if (op_count > budget) {
@@ -319,8 +276,7 @@ fn eliminateWithin(self: *Solver, budget: u64) !?Result {
                     abandon = true;
                     break;
                 }
-                const n_len = neg_lits_buf.items[n_off].raw;
-                const n_lits = neg_lits_buf.items[n_off + 1 .. n_off + 1 + n_len];
+                const n_lits = neg_clauses.get(n);
 
                 // Build resolvent: (p_lits ∪ n_lits) \ {pos_lit, neg_lit}.
                 resolvent_buf.clearRetainingCapacity();
@@ -345,15 +301,7 @@ fn eliminateWithin(self: *Solver, budget: u64) !?Result {
                     break;
                 }
 
-                // Record this resolvent into the flat buffer.
-                const off: u32 = @intCast(resolvents_flat.items.len);
-                try resolvents_offsets.append(self.allocator, off);
-                try resolvents_flat.append(
-                    self.allocator,
-                    .{ .raw = @as(u32, @intCast(r_len)) },
-                );
-                try resolvents_flat.appendSlice(self.allocator, resolvent);
-                non_taut_count += 1;
+                try resolvents.append(self.allocator, resolvent);
             }
         }
 
@@ -373,19 +321,16 @@ fn eliminateWithin(self: *Solver, budget: u64) !?Result {
             continue;
         }
 
-        if (non_taut_count > pos_live_count + neg_live_count) continue;
+        if (resolvents.count() > pos_clauses.count() + neg_clauses.count()) continue;
 
         try commitElimination(
             self,
             v,
             pos_lit,
             neg_lit,
-            &pos_lits_buf,
-            &pos_runs,
-            &neg_lits_buf,
-            &neg_runs,
-            &resolvents_flat,
-            &resolvents_offsets,
+            &pos_clauses,
+            &neg_clauses,
+            &resolvents,
             pos_occ,
             neg_occ,
             occ,
@@ -396,7 +341,7 @@ fn eliminateWithin(self: *Solver, budget: u64) !?Result {
         if (unsat_derived) break;
 
         self.stats.eliminated_vars += 1;
-        self.stats.resolvents_added += non_taut_count;
+        self.stats.resolvents_added += resolvents.count();
 
         // A unit installed by commit just landed on the trail via
         // assignAtLevel. We DO NOT propagate it here: propagate would
@@ -435,12 +380,9 @@ fn commitElimination(
     v: u32,
     pos_lit: Literal,
     neg_lit: Literal,
-    pos_lits_buf: *std.ArrayList(Literal),
-    pos_runs: *std.ArrayList(u32),
-    neg_lits_buf: *std.ArrayList(Literal),
-    neg_runs: *std.ArrayList(u32),
-    resolvents_flat: *std.ArrayList(Literal),
-    resolvents_offsets: *std.ArrayList(u32),
+    pos_clauses: *const ClauseList,
+    neg_clauses: *const ClauseList,
+    resolvents: *const ClauseList,
     pos_occ: []const Occurrence,
     neg_occ: []const Occurrence,
     occ: []std.ArrayList(Occurrence),
@@ -449,59 +391,24 @@ fn commitElimination(
 ) !void {
     // (a) Emit all add-clauses BEFORE any deletes, so a DRAT checker
     // sees each resolvent under the still-live originals.
-    for (resolvents_offsets.items) |off| {
-        const r_len = resolvents_flat.items[off].raw;
-        const r_lits = resolvents_flat.items[off + 1 .. off + 1 + r_len];
-        try self.proof.addClause(r_lits);
-    }
+    for (0..resolvents.count()) |i| try self.proof.addClause(resolvents.get(i));
 
-    // (b) Push the witness frame. Record pos_start, neg_start, end into
-    // bve_witness_lits so model.zig can walk the frame in reverse for
-    // model reconstruction. Length-prefixed runs carry the original
-    // clause literals verbatim.
-    const pos_start: u32 = @intCast(self.bve_witness_lits.items.len);
-    for (pos_runs.items) |off| {
-        const p_len = pos_lits_buf.items[off].raw;
-        try self.bve_witness_lits.append(
-            self.allocator,
-            .{ .raw = p_len },
-        );
-        try self.bve_witness_lits.appendSlice(
-            self.allocator,
-            pos_lits_buf.items[off + 1 .. off + 1 + p_len],
-        );
-    }
-    const neg_start: u32 = @intCast(self.bve_witness_lits.items.len);
-    for (neg_runs.items) |off| {
-        const n_len = neg_lits_buf.items[off].raw;
-        try self.bve_witness_lits.append(
-            self.allocator,
-            .{ .raw = n_len },
-        );
-        try self.bve_witness_lits.appendSlice(
-            self.allocator,
-            neg_lits_buf.items[off + 1 .. off + 1 + n_len],
-        );
-    }
-    const witness_end: u32 = @intCast(self.bve_witness_lits.items.len);
+    // (b) Push the witness frame so model.zig can walk it in reverse for
+    // model reconstruction.
+    const pos_start: u32 = @intCast(self.bve_witness.count());
+    for (0..pos_clauses.count()) |i| try self.bve_witness.append(self.allocator, pos_clauses.get(i));
+    const neg_start: u32 = @intCast(self.bve_witness.count());
+    for (0..neg_clauses.count()) |i| try self.bve_witness.append(self.allocator, neg_clauses.get(i));
     try self.bve_witness_frames.append(self.allocator, .{
         .pivot = v,
         .pos_start = pos_start,
         .neg_start = neg_start,
-        .end = witness_end,
+        .end = @intCast(self.bve_witness.count()),
     });
 
     // (c) Emit all delete-clauses for originals.
-    for (pos_runs.items) |off| {
-        const p_len = pos_lits_buf.items[off].raw;
-        const p_lits = pos_lits_buf.items[off + 1 .. off + 1 + p_len];
-        try self.proof.deleteClause(p_lits);
-    }
-    for (neg_runs.items) |off| {
-        const n_len = neg_lits_buf.items[off].raw;
-        const n_lits = neg_lits_buf.items[off + 1 .. off + 1 + n_len];
-        try self.proof.deleteClause(n_lits);
-    }
+    for (0..pos_clauses.count()) |i| try self.proof.deleteClause(pos_clauses.get(i));
+    for (0..neg_clauses.count()) |i| try self.proof.deleteClause(neg_clauses.get(i));
 
     // (d) Delete originals.
     for (pos_occ) |o| {
@@ -534,11 +441,8 @@ fn commitElimination(
 
     // (e) Install resolvents and add them to occ so later variables'
     // commits see them.
-    for (resolvents_offsets.items) |off| {
-        const r_len_u: u32 = resolvents_flat.items[off].raw;
-        const r_len: usize = @intCast(r_len_u);
-        const r_lits = resolvents_flat.items[off + 1 .. off + 1 + r_len];
-
+    for (0..resolvents.count()) |i| {
+        const r_lits = resolvents.get(i);
         switch (try self.installClause(r_lits, .irredundant, 0)) {
             .refuted => {
                 unsat_derived.* = true;
@@ -585,8 +489,6 @@ pub fn reconstructEliminatedVars(self: *Solver) void {
     const frames = self.bve_witness_frames.items;
     if (frames.len == 0) return;
 
-    const lits_buf = self.bve_witness_lits.items;
-
     var idx: usize = frames.len;
     while (idx > 0) {
         idx -= 1;
@@ -597,12 +499,8 @@ pub fn reconstructEliminatedVars(self: *Solver) void {
         // non-pivot literal. If any clause lacks one, pivot=true would
         // leave that clause unsatisfied, so we must flip to pivot=false.
         var pick_true = true;
-        var cursor: u32 = frame.neg_start;
-        while (cursor < frame.end) {
-            const clen: u32 = lits_buf[cursor].raw;
-            const clause_lits = lits_buf[cursor + 1 .. cursor + 1 + clen];
-            cursor += 1 + clen;
-
+        for (frame.neg_start..frame.end) |i| {
+            const clause_lits = self.bve_witness.get(i);
             var clause_satisfied = false;
             for (clause_lits) |lit| {
                 if (lit.variable() == pivot) continue;

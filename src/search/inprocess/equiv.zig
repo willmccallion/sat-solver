@@ -321,20 +321,7 @@ pub fn equiv(self: *Solver) !?Result {
     // so any un-remapped reference would read `.unassigned` and bias the
     // pivot choice. Rewriting the buffer in place keeps BVE reconstruction
     // self-contained: it only needs values of live-or-BVE-eliminated vars.
-    for (self.bve_witness_frames.items) |frame| {
-        var cursor: u32 = frame.pos_start;
-        while (cursor < frame.end) {
-            const clen: u32 = self.bve_witness_lits.items[cursor].raw;
-            const lit_start = cursor + 1;
-            const lit_end = lit_start + clen;
-            var k: u32 = lit_start;
-            while (k < lit_end) : (k += 1) {
-                const lit = self.bve_witness_lits.items[k];
-                self.bve_witness_lits.items[k] = lit_remap[lit.raw];
-            }
-            cursor = lit_end;
-        }
-    }
+    for (self.bve_witness.literals.items) |*lit| lit.* = lit_remap[lit.raw];
 
     // Phase A: emit all DRAT adds
     for (long_work.items) |lw| {

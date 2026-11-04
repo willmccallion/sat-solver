@@ -995,15 +995,8 @@ test "bve witness records only irredundant clauses" {
     _ = try solver.preprocessBVE();
 
     try testing.expect(hasEliminated(&solver, 0));
-    const lits = solver.bve_witness_lits.items;
-    for (solver.bve_witness_frames.items) |frame| {
-        var cursor = frame.pos_start;
-        while (cursor < frame.end) {
-            const len = lits[cursor].raw;
-            const run = lits[cursor + 1 .. cursor + 1 + len];
-            try testing.expect(!isLiteralSet(run, &.{ -1, 4, 5 }));
-            cursor += 1 + len;
-        }
+    for (0..solver.bve_witness.count()) |i| {
+        try testing.expect(!isLiteralSet(solver.bve_witness.get(i), &.{ -1, 4, 5 }));
     }
 }
 
