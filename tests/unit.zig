@@ -16,6 +16,23 @@ fn parseSource(source: []const u8) !cnf.Formula {
     return parser.parse(testing.allocator, &reader);
 }
 
+// A solver over a formula parsed from DIMACS source.
+const TestSolver = struct {
+    formula: cnf.Formula,
+    solver: solver_mod.Solver,
+
+    fn init(source: []const u8) !TestSolver {
+        var formula = try parseSource(source);
+        errdefer formula.deinit();
+        return .{ .formula = formula, .solver = try solver_mod.Solver.init(testing.allocator, &formula) };
+    }
+
+    fn deinit(self: *TestSolver) void {
+        self.solver.deinit();
+        self.formula.deinit();
+    }
+};
+
 // `verified` checks the model against every clause of `source` as
 // written, independently of the parser and the solver's clause database.
 fn solveSource(source: []const u8) !struct { result: solver_mod.Result, verified: bool } {
@@ -368,15 +385,12 @@ test "equiv: a literal equivalent to its negation is refuted with a RUP unit fir
         \\-1 -2 0
         \\1 2 0
     ;
-    const gpa = testing.allocator;
-    var formula = try parseSource(src);
-    defer formula.deinit();
-    var solver = try solver_mod.Solver.init(gpa, &formula);
-    defer solver.deinit();
+    var t = try TestSolver.init(src);
+    defer t.deinit();
+    const solver = &t.solver;
     var proof_buffer: [64]u8 = undefined;
     var proof: std.Io.Writer = .fixed(&proof_buffer);
     solver.setProofWriter(&proof);
-    _ = try solver.propagate();
 
     const r = try solver.equiv();
 
@@ -403,18 +417,14 @@ test "subsume: trivial — (1 2 3) subsumed by (1 2)" {
         \\1 2 3 0
         \\1 2 0
     ;
-    const gpa = testing.allocator;
-    var formula = try parseSource(src);
-    defer formula.deinit();
-    var solver = try solver_mod.Solver.init(gpa, &formula);
-    defer solver.deinit();
-
-    _ = try solver.propagate();
+    var t = try TestSolver.init(src);
+    defer t.deinit();
+    const solver = &t.solver;
 
     const r = try solver.preprocessSubsume();
     try testing.expect(r == null);
 
-    try testing.expectEqual(@as(usize, 0), countLiveLongClauses(&solver));
+    try testing.expectEqual(@as(usize, 0), countLiveLongClauses(solver));
     try testing.expect(solver.hasBinary(Literal.fromDimacs(1), Literal.fromDimacs(2)));
     try testing.expectEqual(@as(u64, 1), solver.stats.subsumed_clauses);
 }
@@ -425,10 +435,9 @@ test "subsume: learned clause that subsumes an irredundant clause survives reduc
         \\1 2 3 4 0
     ;
     const gpa = testing.allocator;
-    var formula = try parseSource(src);
-    defer formula.deinit();
-    var solver = try solver_mod.Solver.init(gpa, &formula);
-    defer solver.deinit();
+    var t = try TestSolver.init(src);
+    defer t.deinit();
+    const solver = &t.solver;
     // reduceDB drops the worse half by LBD, so with the subsumer at LBD 9
     // and a bystander at LBD 3 the subsumer is the one it would pick.
     const subsumer_lits = [_]Literal{ Literal.fromDimacs(1), Literal.fromDimacs(2), Literal.fromDimacs(3) };
@@ -438,7 +447,6 @@ test "subsume: learned clause that subsumes an irredundant clause survives reduc
     try solver.learned_clauses.appendSlice(gpa, &.{ subsumer, bystander });
     try solver.attachWatches(subsumer);
     try solver.attachWatches(bystander);
-    _ = try solver.propagate();
 
     const r = try solver.preprocessSubsume();
     try solver.reduceDB();
@@ -446,7 +454,7 @@ test "subsume: learned clause that subsumes an irredundant clause survives reduc
     try testing.expect(r == null);
     try testing.expect(!solver.clauseIsDeleted(subsumer));
     try testing.expect(!solver.clauseIsLearned(subsumer));
-    try testing.expectEqual(@as(usize, 2), countLiveLongClauses(&solver));
+    try testing.expectEqual(@as(usize, 2), countLiveLongClauses(solver));
 }
 
 test "subsume: SSR to unit — (1 2) and (1 -2) derive unit 1" {
@@ -458,13 +466,9 @@ test "subsume: SSR to unit — (1 2) and (1 -2) derive unit 1" {
         \\1 2 0
         \\1 -2 0
     ;
-    const gpa = testing.allocator;
-    var formula = try parseSource(src);
-    defer formula.deinit();
-    var solver = try solver_mod.Solver.init(gpa, &formula);
-    defer solver.deinit();
-
-    _ = try solver.propagate();
+    var t = try TestSolver.init(src);
+    defer t.deinit();
+    const solver = &t.solver;
 
     const r = try solver.preprocessSubsume();
     try testing.expect(r == null);
@@ -488,11 +492,9 @@ test "subsume: SSR to binary — long clause strengthened to a new binary" {
         \\1 -2 0
         \\-2 5 6 0
     ;
-    const gpa = testing.allocator;
-    var formula = try parseSource(src);
-    defer formula.deinit();
-    var solver = try solver_mod.Solver.init(gpa, &formula);
-    defer solver.deinit();
+    var t = try TestSolver.init(src);
+    defer t.deinit();
+    const solver = &t.solver;
 
     // Locate the cref of (1 2 -34) before subsume — it's the first
     // length-3 clause added to the arena.
@@ -512,8 +514,6 @@ test "subsume: SSR to binary — long clause strengthened to a new binary" {
     }
     try testing.expect(cref_long != std.math.maxInt(u32));
 
-    _ = try solver.propagate();
-
     const r = try solver.preprocessSubsume();
     try testing.expect(r == null);
 
@@ -527,10 +527,9 @@ test "subsume: SSR to binary — long clause strengthened to a new binary" {
 }
 
 test "subsume run a second time finds nothing left to subsume" {
-    var formula = try parseSource("p cnf 3 2\n1 2 3 0\n1 2 0\n");
-    defer formula.deinit();
-    var solver = try solver_mod.Solver.init(testing.allocator, &formula);
-    defer solver.deinit();
+    var t = try TestSolver.init("p cnf 3 2\n1 2 3 0\n1 2 0\n");
+    defer t.deinit();
+    const solver = &t.solver;
     _ = try solver.preprocessSubsume();
 
     const r = try solver.preprocessSubsume();
@@ -569,11 +568,9 @@ test "subsume: a level-0 reason clause is never a subsumption target" {
         \\-3 0
         \\-4 0
     ;
-    const gpa = testing.allocator;
-    var formula = try parseSource(src);
-    defer formula.deinit();
-    var solver = try solver_mod.Solver.init(gpa, &formula);
-    defer solver.deinit();
+    var t = try TestSolver.init(src);
+    defer t.deinit();
+    const solver = &t.solver;
 
     const locked_cref: ClauseRef = 0;
     try testing.expectEqual(@as(u32, 4), solver.clauseLen(locked_cref));
@@ -608,15 +605,12 @@ test "subsume: unsat — (1 2), (1 -2), (-1) derives contradiction" {
         \\1 -2 0
         \\-1 0
     ;
-    const gpa = testing.allocator;
-    var formula = try parseSource(src);
-    defer formula.deinit();
-    var solver = try solver_mod.Solver.init(gpa, &formula);
-    defer solver.deinit();
+    var t = try TestSolver.init(src);
+    defer t.deinit();
+    const solver = &t.solver;
 
     // Propagate the (-1) unit first so BCP is at fixpoint before
     // preprocessSubsume is invoked (invariant required by subsume).
-    _ = try solver.propagate();
 
     const r = try solver.preprocessSubsume();
     try testing.expectEqual(solver_mod.Result.unsat, r.?);
@@ -636,18 +630,14 @@ test "bve: resolves (1 2) and (-1 3) into (2 3)" {
         \\-3 8 9 0
         \\-3 10 11 0
     ;
-    const gpa = testing.allocator;
-    var formula = try parseSource(src);
-    defer formula.deinit();
-    var solver = try solver_mod.Solver.init(gpa, &formula);
-    defer solver.deinit();
-
-    _ = try solver.propagate();
+    var t = try TestSolver.init(src);
+    defer t.deinit();
+    const solver = &t.solver;
 
     const r = try solver.preprocessBVE();
     try testing.expect(r == null);
 
-    try testing.expect(hasEliminated(&solver, 0));
+    try testing.expect(hasEliminated(solver, 0));
     try testing.expectEqual(@as(u64, 1), solver.stats.resolvents_added);
 }
 
@@ -667,18 +657,14 @@ test "bve: growth skip — eliminating a var would create more resolvents than o
         \\-1 6 7 0
         \\-1 8 9 0
     ;
-    const gpa = testing.allocator;
-    var formula = try parseSource(src);
-    defer formula.deinit();
-    var solver = try solver_mod.Solver.init(gpa, &formula);
-    defer solver.deinit();
-
-    _ = try solver.propagate();
+    var t = try TestSolver.init(src);
+    defer t.deinit();
+    const solver = &t.solver;
 
     const r = try solver.preprocessBVE();
     try testing.expect(r == null);
 
-    try testing.expect(!hasEliminated(&solver, 0));
+    try testing.expect(!hasEliminated(solver, 0));
 }
 
 test "bve: length cap — resolvent would exceed max_resolvent_len, skip" {
@@ -691,18 +677,14 @@ test "bve: length cap — resolvent would exceed max_resolvent_len, skip" {
         \\1 2 3 4 5 6 7 8 9 10 0
         \\-1 11 12 13 14 15 16 17 18 19 0
     ;
-    const gpa = testing.allocator;
-    var formula = try parseSource(src);
-    defer formula.deinit();
-    var solver = try solver_mod.Solver.init(gpa, &formula);
-    defer solver.deinit();
-
-    _ = try solver.propagate();
+    var t = try TestSolver.init(src);
+    defer t.deinit();
+    const solver = &t.solver;
 
     const r = try solver.preprocessBVE();
     try testing.expect(r == null);
 
-    try testing.expect(!hasEliminated(&solver, 0));
+    try testing.expect(!hasEliminated(solver, 0));
 }
 
 test "bve refutes the formula when a resolvent is false under a unit it derived earlier in the pass" {
@@ -736,17 +718,15 @@ test "bve: sat reconstruction end-to-end on a formula with an eliminated var" {
         \\2 0
         \\3 0
     ;
-    const gpa = testing.allocator;
-    var formula = try parseSource(src);
-    defer formula.deinit();
-    var solver = try solver_mod.Solver.init(gpa, &formula);
-    defer solver.deinit();
+    var t = try TestSolver.init(src);
+    defer t.deinit();
+    const solver = &t.solver;
 
     const result = try solver.solve();
     try testing.expectEqual(solver_mod.Result.sat, result);
-    try testing.expect(hasEliminated(&solver, 0));
+    try testing.expect(hasEliminated(solver, 0));
     solver.extendModel();
-    try testing.expectEqual(@as(?usize, null), solver.findFalsifiedClause(&formula));
+    try testing.expectEqual(@as(?usize, null), solver.findFalsifiedClause(&t.formula));
 }
 
 test "bve: locked protection — a clause that reasons a level-0 unit stays untouched" {
@@ -761,11 +741,9 @@ test "bve: locked protection — a clause that reasons a level-0 unit stays unto
         \\-2 0
         \\-3 0
     ;
-    const gpa = testing.allocator;
-    var formula = try parseSource(src);
-    defer formula.deinit();
-    var solver = try solver_mod.Solver.init(gpa, &formula);
-    defer solver.deinit();
+    var t = try TestSolver.init(src);
+    defer t.deinit();
+    const solver = &t.solver;
 
     const conflict = try solver.propagate();
     try testing.expect(conflict == null);
@@ -778,7 +756,7 @@ test "bve: locked protection — a clause that reasons a level-0 unit stays unto
 
     const r = try solver.bve();
     try testing.expect(r == null);
-    try testing.expect(!hasEliminated(&solver, 0));
+    try testing.expect(!hasEliminated(solver, 0));
 }
 
 fn addLearnedClause(solver: *solver_mod.Solver, dimacs: []const i32, lbd: u32) !ClauseRef {
@@ -842,50 +820,44 @@ test "every long clause learned during search has an LBD of at least 2" {
 }
 
 test "a learned clause shortened by vivify keeps a non-zero LBD" {
-    var formula = try parseSource("p cnf 5 1\n1 2 3 0\n");
-    defer formula.deinit();
-    var solver = try solver_mod.Solver.init(testing.allocator, &formula);
-    defer solver.deinit();
-    _ = try addLearnedClause(&solver, &.{ 1, 2, 3, 4, 5 }, 3);
-    _ = try solver.propagate();
+    var t = try TestSolver.init("p cnf 5 1\n1 2 3 0\n");
+    defer t.deinit();
+    const solver = &t.solver;
+    _ = try addLearnedClause(solver, &.{ 1, 2, 3, 4, 5 }, 3);
 
     const r = try solver.vivify();
 
     try testing.expect(r == null);
-    const shortened = lastLearnedClause(&solver);
+    const shortened = lastLearnedClause(solver);
     try testing.expect(isLiteralSet(solver.clauseLits(shortened), &.{ 1, 2, 3 }));
     try testing.expectEqual(@as(u32, 3), solver.clauseLbd(shortened));
 }
 
 test "a learned clause strengthened by subsume keeps a non-zero LBD" {
     // -34 shares -2's abstract bit; see the note above the subsume tests.
-    var formula = try parseSource("p cnf 34 2\n1 -2 0\n-2 5 6 0\n");
-    defer formula.deinit();
-    var solver = try solver_mod.Solver.init(testing.allocator, &formula);
-    defer solver.deinit();
-    _ = try addLearnedClause(&solver, &.{ 1, 2, -34, 7 }, 3);
-    _ = try solver.propagate();
+    var t = try TestSolver.init("p cnf 34 2\n1 -2 0\n-2 5 6 0\n");
+    defer t.deinit();
+    const solver = &t.solver;
+    _ = try addLearnedClause(solver, &.{ 1, 2, -34, 7 }, 3);
 
     const r = try solver.subsume();
 
     try testing.expect(r == null);
-    const strengthened = lastLearnedClause(&solver);
+    const strengthened = lastLearnedClause(solver);
     try testing.expect(isLiteralSet(solver.clauseLits(strengthened), &.{ 1, -34, 7 }));
     try testing.expectEqual(@as(u32, 3), solver.clauseLbd(strengthened));
 }
 
 test "a learned clause rewritten by equiv keeps a non-zero LBD" {
-    var formula = try parseSource("p cnf 4 2\n-1 2 0\n1 -2 0\n");
-    defer formula.deinit();
-    var solver = try solver_mod.Solver.init(testing.allocator, &formula);
-    defer solver.deinit();
-    _ = try addLearnedClause(&solver, &.{ 2, 3, 4 }, 2);
-    _ = try solver.propagate();
+    var t = try TestSolver.init("p cnf 4 2\n-1 2 0\n1 -2 0\n");
+    defer t.deinit();
+    const solver = &t.solver;
+    _ = try addLearnedClause(solver, &.{ 2, 3, 4 }, 2);
 
     const r = try solver.equiv();
 
     try testing.expect(r == null);
-    const rewritten = lastLearnedClause(&solver);
+    const rewritten = lastLearnedClause(solver);
     try testing.expect(isLiteralSet(solver.clauseLits(rewritten), &.{ 1, 3, 4 }));
     try testing.expectEqual(@as(u32, 2), solver.clauseLbd(rewritten));
 }
@@ -927,7 +899,6 @@ fn initLearnedPivotSolver(formula: *cnf.Formula) !solver_mod.Solver {
     var solver = try solver_mod.Solver.init(testing.allocator, formula);
     errdefer solver.deinit();
     _ = try addLearnedClause(&solver, &.{ -1, 4, 5 }, 2);
-    _ = try solver.propagate();
     return solver;
 }
 
@@ -983,7 +954,6 @@ test "bve growth bound counts only irredundant clauses" {
     var solver = try solver_mod.Solver.init(testing.allocator, &formula);
     defer solver.deinit();
     _ = try addLearnedClause(&solver, &.{ 1, -5, -6 }, 2);
-    _ = try solver.propagate();
 
     const r = try solver.preprocessBVE();
 
@@ -1003,13 +973,11 @@ test "probe never assigns an eliminated variable" {
         \\-3 8 9 0
         \\-3 10 11 0
     ;
-    var formula = try parseSource(src);
-    defer formula.deinit();
-    var solver = try solver_mod.Solver.init(testing.allocator, &formula);
-    defer solver.deinit();
-    _ = try solver.propagate();
+    var t = try TestSolver.init(src);
+    defer t.deinit();
+    const solver = &t.solver;
     _ = try solver.preprocessBVE();
-    try testing.expect(hasEliminated(&solver, 0));
+    try testing.expect(hasEliminated(solver, 0));
     const phases_before = try testing.allocator.dupe(bool, solver.assignment.saved_phases);
     defer testing.allocator.free(phases_before);
 
@@ -1018,7 +986,7 @@ test "probe never assigns an eliminated variable" {
     try testing.expect(r == null);
     var v: u32 = 0;
     while (v < solver.num_vars) : (v += 1) {
-        if (!hasEliminated(&solver, v)) continue;
+        if (!hasEliminated(solver, v)) continue;
         try testing.expectEqual(phases_before[v], solver.assignment.saved_phases[v]);
     }
 }
@@ -1026,11 +994,9 @@ test "probe never assigns an eliminated variable" {
 test "a long clause strengthened by subsume propagates its last non-false literal" {
     // With 34 and 35 true at level 0, SSR turns (1 2 -34 -35) into
     // (1 -34 -35), which forces 1.
-    var formula = try parseSource("p cnf 35 5\n1 2 -34 -35 0\n1 -2 0\n-2 5 6 0\n34 0\n35 0\n");
-    defer formula.deinit();
-    var solver = try solver_mod.Solver.init(testing.allocator, &formula);
-    defer solver.deinit();
-    _ = try solver.propagate();
+    var t = try TestSolver.init("p cnf 35 5\n1 2 -34 -35 0\n1 -2 0\n-2 5 6 0\n34 0\n35 0\n");
+    defer t.deinit();
+    const solver = &t.solver;
 
     const r = try solver.preprocessSubsume();
 
@@ -1042,27 +1008,25 @@ test "a long clause strengthened by subsume propagates its last non-false litera
 test "a clause subsume strengthens drops its literals false at level 0" {
     // SSR turns (1 2 -34 -35) into (1 -34 -35), and 35 is true at level 0,
     // which leaves the binary (1 -34).
-    var formula = try parseSource("p cnf 35 4\n1 2 -34 -35 0\n1 -2 0\n-2 5 6 0\n35 0\n");
-    defer formula.deinit();
-    var solver = try solver_mod.Solver.init(testing.allocator, &formula);
-    defer solver.deinit();
+    var t = try TestSolver.init("p cnf 35 4\n1 2 -34 -35 0\n1 -2 0\n-2 5 6 0\n35 0\n");
+    defer t.deinit();
+    const solver = &t.solver;
 
     const r = try solver.preprocessSubsume();
 
     try testing.expect(r == null);
     try testing.expectEqual(@as(u64, 1), solver.stats.strengthened_clauses);
     try testing.expect(solver.hasBinary(Literal.fromDimacs(1), Literal.fromDimacs(-34)));
-    try testing.expectEqual(@as(usize, 0), countLiveClauses(&solver, &.{ 1, 2, -34, -35 }, .irredundant));
+    try testing.expectEqual(@as(usize, 0), countLiveClauses(solver, &.{ 1, 2, -34, -35 }, .irredundant));
 }
 
 test "vivify run right after a learned unit keeps the unit's level-0 implications" {
     // Mirrors solve.zig: the learned unit 1 is asserted at level 0 and
     // vivify runs before anything propagates it. (-1 -2) then forces -2.
-    var formula = try parseSource("p cnf 4 1\n-1 -2 0\n");
-    defer formula.deinit();
-    var solver = try solver_mod.Solver.init(testing.allocator, &formula);
-    defer solver.deinit();
-    _ = try addLearnedClause(&solver, &.{ 2, 3, 4 }, 2);
+    var t = try TestSolver.init("p cnf 4 1\n-1 -2 0\n");
+    defer t.deinit();
+    const solver = &t.solver;
+    _ = try addLearnedClause(solver, &.{ 2, 3, 4 }, 2);
     _ = try solver.propagate();
     try solver.assignment.assignAtLevel(Literal.fromDimacs(1), Reason.none, 0);
 
