@@ -42,6 +42,7 @@ pub const grow_den: u64 = 2;
 
 pub fn equiv(self: *Solver) !?Result {
     std.debug.assert(self.assignment.level == 0);
+    if (try self.propagateAtRoot()) |r| return r;
 
     const num_vars = self.num_vars;
     const num_lits: usize = @as(usize, num_vars) * 2;
@@ -540,10 +541,7 @@ pub fn equiv(self: *Solver) !?Result {
         self.learned_clauses.shrinkRetainingCapacity(j);
     }
 
-    if ((try self.propagate()) != null) {
-        try self.proof.empty();
-        return .unsat;
-    }
+    if (try self.propagateAtRoot()) |r| return r;
 
     self.stats.equivs += 1;
     return null;

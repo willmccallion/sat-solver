@@ -37,9 +37,9 @@ const Result = solver_mod.Result;
 // swap-removing from two bin_watchers lists and re-scanning cursors used
 // by concurrent subsumption; we defer that to a separate session.
 //
-// Preconditions: level == 0 and BCP at fixpoint. The locked-clause check
-// mirrors vivify.zig's: a clause that is currently a reason for a level-0
-// literal is skipped. Strengthened long clauses are re-queued onto a
+// Precondition: level == 0; the pass propagates to a fixpoint first. The
+// locked-clause check mirrors vivify.zig's: a clause that is currently a
+// reason for a level-0 literal is skipped. Strengthened long clauses are re-queued onto a
 // work-list so cascading subsumptions can fire in the same pass, bounded
 // per-clause by `max_revisits_per_clause` to prevent pathological loops.
 //
@@ -77,6 +77,7 @@ pub fn preprocessSubsume(self: *Solver) !?Result {
 
 fn subsumeImpl(self: *Solver, is_preprocess: bool) !?Result {
     std.debug.assert(self.assignment.level == 0);
+    if (try self.propagateAtRoot()) |r| return r;
     self.stats.subsumes += 1;
 
     const props_start = self.stats.propagations;
@@ -253,10 +254,7 @@ fn subsumeImpl(self: *Solver, is_preprocess: bool) !?Result {
         self.learned_clauses.shrinkRetainingCapacity(j);
     }
 
-    if ((try self.propagate()) != null) {
-        try self.proof.empty();
-        return .unsat;
-    }
+    if (try self.propagateAtRoot()) |r| return r;
 
     return null;
 }

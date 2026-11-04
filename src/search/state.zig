@@ -183,6 +183,7 @@ pub const Solver = struct {
     // taking *Solver. Aliasing them here lets callers use the natural
     // `solver.propagate()` method syntax.
     pub const propagate = @import("propagate.zig").propagate;
+    pub const propagateAtRoot = @import("propagate.zig").propagateAtRoot;
     pub const analyze = @import("analyze.zig").analyze;
     pub const computeLbd = @import("analyze.zig").computeLbd;
     pub const backtrack = @import("backtrack.zig").backtrack;

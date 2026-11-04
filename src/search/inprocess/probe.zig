@@ -30,11 +30,11 @@ pub const max_vars: usize = 1024;
 
 // Failed literal probing pass. Returns .unsat if the probe (or its
 // follow-up propagation) derives an empty clause at level 0, otherwise
-// null. Expects self.level == 0 and propagation to have reached fixed
-// point; both are guaranteed by the caller gating on the post-restart
-// path.
+// null. Expects self.level == 0, and propagates to a fixed point first,
+// since a probe at level 1 would claim any implication still pending.
 pub fn probe(self: *Solver) !?Result {
     std.debug.assert(self.assignment.level == 0);
+    if (try self.propagateAtRoot()) |r| return r;
     self.stats.probings += 1;
 
     const props_start = self.stats.propagations;
@@ -89,10 +89,7 @@ pub fn probe(self: *Solver) !?Result {
                 try self.proof.addClause(&.{unit});
                 try self.assignment.assign(unit, Reason.none);
                 self.stats.flp_units += 1;
-                if ((try self.propagate()) != null) {
-                    try self.proof.empty();
-                    return .unsat;
-                }
+                if (try self.propagateAtRoot()) |r| return r;
             }
         }
     }

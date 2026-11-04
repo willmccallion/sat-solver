@@ -26,8 +26,9 @@ pub const budget_den: u64 = 10;
 pub const lbd_cap: u32 = 6;
 
 // Returns .unsat if any shrink lands on an empty clause or derives a
-// conflicting level-0 unit; otherwise null. Preconditions: level 0, BCP
-// is at fixed point.
+// conflicting level-0 unit; otherwise null. Precondition: level 0. It
+// propagates to a fixed point first, since a decision at level 1 would
+// claim any implication still pending at level 0.
 //
 // Memory safety: addClauseToArena may reallocate the arena and
 // invalidate outstanding `clauseLits` slices. We copy each candidate
@@ -40,6 +41,7 @@ pub const lbd_cap: u32 = 6;
 // watcher lists before returning.
 pub fn vivify(self: *Solver) !?Result {
     std.debug.assert(self.assignment.level == 0);
+    if (try self.propagateAtRoot()) |r| return r;
     self.stats.vivifies += 1;
 
     const props_start = self.stats.propagations;
@@ -200,12 +202,8 @@ pub fn vivify(self: *Solver) !?Result {
     }
 
     // Any new level-0 unit we derived (from a 1-lit shrink) needs
-    // propagating before we return to search. If that itself conflicts,
-    // the formula is UNSAT.
-    if ((try self.propagate()) != null) {
-        try self.proof.empty();
-        return .unsat;
-    }
+    // propagating before we return to search.
+    if (try self.propagateAtRoot()) |r| return r;
 
     return null;
 }

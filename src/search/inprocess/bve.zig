@@ -34,9 +34,10 @@ const Result = solver_mod.Result;
 // -v side) so the .sat branch in main.zig can reconstruct an assignment
 // for every eliminated variable by walking the witness frames in reverse.
 //
-// Preconditions: level == 0 and BCP at fixpoint. Any 1-literal resolvent
-// is asserted as a root-level unit; any empty resolvent triggers `.unsat`
-// immediately after emitting an empty DRAT clause.
+// Precondition: level == 0; the pass propagates to a fixpoint first. Any
+// 1-literal resolvent is asserted as a root-level unit; any empty
+// resolvent triggers `.unsat` immediately after emitting an empty DRAT
+// clause.
 //
 // Memory safety: addClauseToArena may reallocate self.arena. Each
 // original clause's literals are materialized into a scratch buffer
@@ -76,6 +77,7 @@ const Occurrence = union(enum) {
 
 fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
     std.debug.assert(self.assignment.level == 0);
+    if (try self.propagateAtRoot()) |r| return r;
 
     const props_start = self.stats.propagations;
     const budget: u64 = blk: {
@@ -531,10 +533,7 @@ fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
         self.learned_clauses.shrinkRetainingCapacity(j);
     }
 
-    if ((try self.propagate()) != null) {
-        try self.proof.empty();
-        return .unsat;
-    }
+    if (try self.propagateAtRoot()) |r| return r;
 
     self.stats.bves += 1;
     return null;

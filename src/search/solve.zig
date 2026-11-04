@@ -25,10 +25,7 @@ pub fn solve(self: *Solver) !Result {
         try self.proof.empty();
         return .unsat;
     }
-    if ((try self.propagate()) != null) {
-        try self.proof.empty();
-        return .unsat;
-    }
+    if (try self.propagateAtRoot()) |r| return r;
 
     const preprocess_passes = .{ Solver.preprocessSubsume, Solver.equiv, Solver.preprocessSubsume, Solver.preprocessBVE };
     inline for (preprocess_passes) |pass| {

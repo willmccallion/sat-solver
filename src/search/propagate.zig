@@ -6,6 +6,7 @@ const Reason = core.assignment.Reason;
 
 const state = @import("state.zig");
 const Solver = state.Solver;
+const Result = @import("solver.zig").Result;
 
 // Two-watched-literal propagation with a specialized binary-clause fast
 // path. Processes the trail from propagation_head to the end, firing
@@ -156,3 +157,12 @@ pub fn propagate(self: *Solver) !?Conflict {
 }
 
 const std = @import("std");
+
+// Propagates at level 0, where a conflict refutes the formula: logs the
+// empty clause and returns .unsat.
+pub fn propagateAtRoot(self: *Solver) !?Result {
+    std.debug.assert(self.assignment.level == 0);
+    if ((try self.propagate()) == null) return null;
+    try self.proof.empty();
+    return .unsat;
+}

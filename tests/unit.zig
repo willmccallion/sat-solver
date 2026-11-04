@@ -1057,3 +1057,21 @@ test "a clause subsume strengthens to a binary with a level-0 false literal prop
     try testing.expect(solver.stats.strengthened >= 1);
     try testing.expectEqual(assignment_mod.Value.true, solver.assignment.valueOfVar(0));
 }
+
+test "vivify run right after a learned unit keeps the unit's level-0 implications" {
+    // Mirrors solve.zig: the learned unit 1 is asserted at level 0 and
+    // vivify runs before anything propagates it. (-1 -2) then forces -2.
+    var formula = try parseSource("p cnf 4 1\n-1 -2 0\n");
+    defer formula.deinit();
+    var solver = try solver_mod.Solver.init(testing.allocator, &formula);
+    defer solver.deinit();
+    _ = try addLearnedClause(&solver, &.{ 2, 3, 4 }, 2);
+    _ = try solver.propagate();
+    try solver.assignment.assignAtLevel(Literal.fromDimacs(1), Reason.none, 0);
+
+    const r = try solver.vivify();
+
+    try testing.expect(r == null);
+    try testing.expectEqual(assignment_mod.Value.false, solver.assignment.valueOfVar(1));
+    try testing.expectEqual(@as(u32, 0), solver.assignment.vars[1].level);
+}
