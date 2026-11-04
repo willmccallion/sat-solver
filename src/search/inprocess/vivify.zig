@@ -39,7 +39,7 @@ const lbd_cap: u32 = 6;
 // watchers dangling in `watchers[...]` pointing at deleted arena clauses.
 // Propagate does not check `isDeleted`, so we must sweep
 // watcher lists before returning.
-pub fn vivify(self: *Solver) !?Result {
+pub fn vivify(self: *Solver) state.Error!?Result {
     std.debug.assert(self.assignment.level == .root);
     if (try self.propagateAtRoot()) |r| return r;
     self.stats.vivify_passes += 1;

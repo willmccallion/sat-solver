@@ -51,7 +51,7 @@ const max_occ_product: u64 = 10_000;
 // Inprocessing entry point, on a share of the propagations since the last
 // call. Returns `.unsat` if elimination derives an empty clause or a
 // conflicting unit.
-pub fn bve(self: *Solver) !?Result {
+pub fn bve(self: *Solver) state.Error!?Result {
     if (try self.propagateAtRoot()) |r| return r;
     const share = common.propagationBudget(self.stats.propagations, &self.props_at_last_bve, budget_share);
     return eliminateWithin(self, @max(inprocess_floor, share));
@@ -59,7 +59,7 @@ pub fn bve(self: *Solver) !?Result {
 
 // Preprocessing entry point, on the large `preprocess_cap` budget because
 // no search has happened yet.
-pub fn preprocessBVE(self: *Solver) !?Result {
+pub fn preprocessBVE(self: *Solver) state.Error!?Result {
     if (try self.propagateAtRoot()) |r| return r;
     self.props_at_last_bve = self.stats.propagations;
     return eliminateWithin(self, preprocess_cap);

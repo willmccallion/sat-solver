@@ -12,7 +12,7 @@ const Result = solver_mod.Result;
 
 const reduce_mod = @import("inprocess/reduce.zig");
 
-pub fn solve(self: *Solver) !Result {
+pub fn solve(self: *Solver) state.Error!Result {
     if (self.unsat_at_init) {
         try self.proof.empty();
         return .unsat;

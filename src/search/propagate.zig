@@ -19,7 +19,7 @@ const Result = @import("solver.zig").Result;
 // `other` resolves it — no arena touch, no compaction, no inner search
 // loop. Only after binaries are exhausted do we fall through to the
 // long-clause loop with its full two-watched dance.
-pub fn propagate(self: *Solver) !?Conflict {
+pub fn propagate(self: *Solver) std.mem.Allocator.Error!?Conflict {
     // Neither buffer moves during propagate, so both pointers stay in registers.
     const lit_values = self.assignment.lit_values.ptr;
     const arena_ptr = self.arena.base();
@@ -146,7 +146,7 @@ pub fn propagate(self: *Solver) !?Conflict {
 
 // Propagates at level 0, where a conflict refutes the formula: logs the
 // empty clause and returns .unsat.
-pub fn propagateAtRoot(self: *Solver) !?Result {
+pub fn propagateAtRoot(self: *Solver) state.Error!?Result {
     std.debug.assert(self.assignment.level == .root);
     if ((try self.propagate()) == null) return null;
     try self.proof.empty();

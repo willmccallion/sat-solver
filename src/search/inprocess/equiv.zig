@@ -41,7 +41,7 @@ const Result = solver_mod.Result;
 
 pub const schedule: Schedule = .every(10_000, .by_half);
 
-pub fn equiv(self: *Solver) !?Result {
+pub fn equiv(self: *Solver) state.Error!?Result {
     std.debug.assert(self.assignment.level == .root);
     if (try self.propagateAtRoot()) |r| return r;
     if (self.num_vars == 0) return null;

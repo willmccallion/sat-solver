@@ -16,4 +16,5 @@ pub fn interruptRequested() bool {
 }
 
 pub const Solver = state.Solver;
+pub const Error = state.Error;
 pub const Stats = state.Stats;

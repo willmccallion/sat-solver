@@ -33,7 +33,7 @@ const max_probed_vars: usize = 1024;
 // follow-up propagation) derives an empty clause at level 0, otherwise
 // null. Expects self.level == 0, and propagates to a fixed point first,
 // since a probe at level 1 would claim any implication still pending.
-pub fn probe(self: *Solver) !?Result {
+pub fn probe(self: *Solver) state.Error!?Result {
     std.debug.assert(self.assignment.level == .root);
     if (try self.propagateAtRoot()) |r| return r;
     self.stats.probe_passes += 1;

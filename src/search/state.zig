@@ -80,6 +80,11 @@ pub const EquivFrame = struct {
     rep_lit: cnf.Literal,
 };
 
+// What search can fail with: running out of memory, the clause arena
+// outgrowing its 2^31 slots, the BVE witness its 2^32 literals, or a
+// failed write to the DRAT proof.
+pub const Error = clause_mod.ClauseArena.AddError || cnf.ClauseList.AppendError || std.Io.Writer.Error;
+
 // Whether a level-0 unit is consistent with the root assignment.
 pub const RootUnit = enum { consistent, refuted };
 
@@ -193,7 +198,7 @@ pub const Solver = struct {
     pub const reduceDB = reduce_mod.reduceDB;
     pub const compact = reduce_mod.compact;
 
-    pub fn init(allocator: Allocator, formula: *const Formula) !Solver {
+    pub fn init(allocator: Allocator, formula: *const Formula) clause_mod.ClauseArena.AddError!Solver {
         var self: Solver = .{
             .allocator = allocator,
             .num_vars = formula.num_vars,
@@ -391,7 +396,7 @@ pub const Solver = struct {
         return .{ .solver = self };
     }
 
-    pub fn attachWatches(self: *Solver, cref: ClauseRef) !void {
+    pub fn attachWatches(self: *Solver, cref: ClauseRef) Allocator.Error!void {
         const lits = self.arena.literals(cref);
         std.debug.assert(lits.len >= 3);
         const w0 = &self.watchers[lits[0].negate().raw];
@@ -403,7 +408,7 @@ pub const Solver = struct {
     }
 
     // Installs the 2-clause (a ∨ b) into both binary watch lists.
-    pub fn addBinary(self: *Solver, a: Literal, b: Literal) !void {
+    pub fn addBinary(self: *Solver, a: Literal, b: Literal) Allocator.Error!void {
         const w0 = &self.bin_watchers[a.negate().raw];
         const w1 = &self.bin_watchers[b.negate().raw];
         try clause_mod.reserveSlot(BinaryWatch, w0, self.allocator);
@@ -415,7 +420,7 @@ pub const Solver = struct {
     // Installs a clause that holds at level 0: an empty clause refutes the
     // formula, a unit is assigned, a binary joins the binary watch lists
     // and a longer clause the arena. `lbd` only matters for the last.
-    pub fn installClause(self: *Solver, lits: []const Literal, kind: ClauseKind, lbd: u32) !Installed {
+    pub fn installClause(self: *Solver, lits: []const Literal, kind: ClauseKind, lbd: u32) clause_mod.ClauseArena.AddError!Installed {
         switch (lits.len) {
             0 => return .refuted,
             1 => return switch (try self.assertRootUnit(lits[0])) {
@@ -436,7 +441,7 @@ pub const Solver = struct {
     }
 
     // Assigns `lit` at level 0 unless it already holds.
-    pub fn assertRootUnit(self: *Solver, lit: Literal) !RootUnit {
+    pub fn assertRootUnit(self: *Solver, lit: Literal) Allocator.Error!RootUnit {
         switch (self.assignment.valueOfLiteral(lit)) {
             .false => return .refuted,
             .unassigned => try self.assignment.assign(lit, Reason.none),

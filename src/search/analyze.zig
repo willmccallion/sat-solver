@@ -40,7 +40,7 @@ inline fn levelBit(level: Level) u64 {
 // level; under chronological backtracking the trail may be out-of-order
 // and the conflict can fire at a level below self.level, so the caller
 // computes it from the conflict lits.
-pub fn analyze(self: *Solver, conflict: Conflict, conflict_level: Level) !Level {
+pub fn analyze(self: *Solver, conflict: Conflict, conflict_level: Level) std.mem.Allocator.Error!Level {
     self.analyze_learned.clearRetainingCapacity();
     self.analyze_levels.clearRetainingCapacity();
     try self.analyze_learned.append(self.allocator, undefined);

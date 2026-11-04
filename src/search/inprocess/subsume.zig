@@ -59,7 +59,7 @@ const max_revisits_per_clause: u8 = 4;
 
 // Inprocessing entry point, on a share of the propagations since the last
 // call. Returns .unsat if SSR derives an empty clause or a conflicting unit.
-pub fn subsume(self: *Solver) !?Result {
+pub fn subsume(self: *Solver) state.Error!?Result {
     if (try self.propagateAtRoot()) |r| return r;
     const share = common.propagationBudget(self.stats.propagations, &self.props_at_last_subsume, budget_share);
     return subsumeWithin(self, @max(inprocess_floor, share));
@@ -67,14 +67,14 @@ pub fn subsume(self: *Solver) !?Result {
 
 // Preprocessing entry point, on the large `preprocess_cap` budget because
 // no search has happened yet.
-pub fn preprocessSubsume(self: *Solver) !?Result {
+pub fn preprocessSubsume(self: *Solver) state.Error!?Result {
     if (try self.propagateAtRoot()) |r| return r;
     self.props_at_last_subsume = self.stats.propagations;
     return subsumeWithin(self, preprocess_cap);
 }
 
 // Subsumption and SSR stopping once `budget` candidate checks are spent.
-pub fn subsumeWithin(self: *Solver, budget: u64) !?Result {
+pub fn subsumeWithin(self: *Solver, budget: u64) state.Error!?Result {
     std.debug.assert(self.assignment.level == .root);
     self.stats.subsume_passes += 1;
 

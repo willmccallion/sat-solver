@@ -34,7 +34,7 @@ const glue_lbd: u32 = 2;
 // ClauseRefs. BCP never visits them because we also strip their watchers
 // from every watcher list. Arena compaction (see `compact`) reclaims the
 // holes on a separate cadence.
-pub fn reduceDB(self: *Solver) !void {
+pub fn reduceDB(self: *Solver) state.Error!void {
     std.debug.assert(self.assignment.level == .root);
 
     const Candidate = struct { cref: ClauseRef, lbd: u32 };
@@ -74,7 +74,7 @@ pub fn reduceDB(self: *Solver) !void {
 // trail reasons and learned_clauses. Only safe at level 0; solve() calls it
 // after preprocessing and after each level-0 maintenance round once deleted
 // clauses fill half the arena, when no arena slice is in flight.
-pub fn compact(self: *Solver) !void {
+pub fn compact(self: *Solver) std.mem.Allocator.Error!void {
     std.debug.assert(self.assignment.level == .root);
     var relocation = try self.arena.compact(self.allocator);
     defer relocation.deinit(self.allocator);
