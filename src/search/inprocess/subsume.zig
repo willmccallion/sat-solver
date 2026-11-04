@@ -47,12 +47,12 @@ const Result = solver_mod.Result;
 // before any arena mutation and rebuild per-literal occurrence lists
 // incrementally as clauses are strengthened.
 
-pub const preprocess_cap: u64 = 100_000_000;
+const preprocess_cap: u64 = 100_000_000;
 pub const inprocess_initial_interval: u64 = 20_000;
 pub const grow_num: u64 = 3;
 pub const grow_den: u64 = 2;
 const budget_share: common.BudgetShare = .{ .num = 2, .den = 10 };
-pub const inprocess_floor: u64 = 2_000_000;
+const inprocess_floor: u64 = 2_000_000;
 
 // Hard cap on how many times one clause can be revisited through the
 // work queue. Prevents infinite loops where repeated strengthenings keep

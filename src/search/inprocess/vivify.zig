@@ -23,7 +23,7 @@ pub const initial_interval: u64 = 15_000;
 pub const grow_num: u64 = 3;
 pub const grow_den: u64 = 2;
 const budget_share: common.BudgetShare = .{ .num = 2, .den = 10 };
-pub const lbd_cap: u32 = 6;
+const lbd_cap: u32 = 6;
 
 // Returns .unsat if any shrink lands on an empty clause or derives a
 // conflicting level-0 unit; otherwise null. Precondition: level 0. It

@@ -43,14 +43,14 @@ const Result = solver_mod.Result;
 // before the resolution / commit phase, and no arena slice is held
 // across an allocation boundary.
 
-pub const preprocess_cap: u64 = 50_000_000;
+const preprocess_cap: u64 = 50_000_000;
 pub const inprocess_initial_interval: u64 = 40_000;
 pub const grow_num: u64 = 3;
 pub const grow_den: u64 = 2;
 const budget_share: common.BudgetShare = .{ .num = 1, .den = 10 };
-pub const inprocess_floor: u64 = 1_000_000;
-pub const max_resolvent_len: u32 = 16;
-pub const max_occ_product: u64 = 10_000;
+const inprocess_floor: u64 = 1_000_000;
+const max_resolvent_len: u32 = 16;
+const max_occ_product: u64 = 10_000;
 
 // Inprocessing entry point, on a share of the propagations since the last
 // call. Returns `.unsat` if elimination derives an empty clause or a
