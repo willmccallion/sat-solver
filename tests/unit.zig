@@ -883,3 +883,114 @@ test "a learned clause rewritten by equiv keeps a non-zero LBD" {
     try testing.expect(isLiteralSet(solver.clauseLits(rewritten), &.{ 1, 3, 4 }));
     try testing.expectEqual(@as(u32, 2), solver.clauseLbd(rewritten));
 }
+
+fn countLiveClauses(solver: *solver_mod.Solver, dimacs: []const i32, learned: bool) usize {
+    var count: usize = 0;
+    var cref: ClauseRef = 0;
+    while (cref < solver.arena.items.len) {
+        const len = solver.clauseLen(cref);
+        if (!solver.clauseIsDeleted(cref) and solver.clauseIsLearned(cref) == learned and
+            isLiteralSet(solver.clauseLits(cref), dimacs)) count += 1;
+        cref += clause_mod.header_slots + len;
+    }
+    return count;
+}
+
+fn addClauseDimacs(formula: *cnf.Formula, dimacs: []const i32) !void {
+    var lits: [16]Literal = undefined;
+    for (dimacs, 0..) |d, i| lits[i] = Literal.fromDimacs(d);
+    try formula.addClause(lits[0..dimacs.len]);
+}
+
+// Each variable of `dimacs` then occurs 101 times per polarity, so its
+// occurrence product exceeds bve.max_occ_product and BVE never picks it.
+fn addBveShield(formula: *cnf.Formula, dimacs: []const i32) !void {
+    var pos: [16]Literal = undefined;
+    var neg: [16]Literal = undefined;
+    for (dimacs, 0..) |d, i| {
+        pos[i] = Literal.fromDimacs(d);
+        neg[i] = Literal.fromDimacs(-d);
+    }
+    for (0..101) |_| {
+        try formula.addClause(pos[0..dimacs.len]);
+        try formula.addClause(neg[0..dimacs.len]);
+    }
+}
+
+// Variable 1 occurs in the irredundant (1 2 3) and the learned (-1 4 5).
+fn initLearnedPivotSolver(formula: *cnf.Formula) !solver_mod.Solver {
+    try addClauseDimacs(formula, &.{ 1, 2, 3 });
+    try addBveShield(formula, &.{ 2, 3, 4, 5, 6 });
+    var solver = try solver_mod.Solver.init(testing.allocator, formula);
+    errdefer solver.deinit();
+    _ = try addLearnedClause(&solver, &.{ -1, 4, 5 }, 2);
+    _ = try solver.propagate();
+    return solver;
+}
+
+test "bve never installs a resolvent of a learned clause as an irredundant clause" {
+    var formula = cnf.Formula.init(testing.allocator, 6);
+    defer formula.deinit();
+    var solver = try initLearnedPivotSolver(&formula);
+    defer solver.deinit();
+
+    const r = try solver.preprocessBVE();
+
+    try testing.expect(r == null);
+    try testing.expect(hasEliminated(&solver, 0));
+    try testing.expectEqual(@as(usize, 0), countLiveClauses(&solver, &.{ 2, 3, 4, 5 }, false));
+}
+
+test "bve deletes the learned clauses of a variable it eliminates" {
+    var formula = cnf.Formula.init(testing.allocator, 6);
+    defer formula.deinit();
+    var solver = try initLearnedPivotSolver(&formula);
+    defer solver.deinit();
+
+    _ = try solver.preprocessBVE();
+
+    try testing.expect(hasEliminated(&solver, 0));
+    try testing.expectEqual(@as(usize, 0), countLiveClauses(&solver, &.{ -1, 4, 5 }, true));
+    try testing.expectEqual(@as(usize, 0), solver.learned_clauses.items.len);
+}
+
+test "bve witness records only irredundant clauses" {
+    var formula = cnf.Formula.init(testing.allocator, 6);
+    defer formula.deinit();
+    var solver = try initLearnedPivotSolver(&formula);
+    defer solver.deinit();
+
+    _ = try solver.preprocessBVE();
+
+    try testing.expect(hasEliminated(&solver, 0));
+    const lits = solver.bve_witness_lits.items;
+    for (solver.bve_witness_frames.items) |frame| {
+        var cursor = frame.pos_start;
+        while (cursor < frame.end) {
+            const len = lits[cursor].raw;
+            const run = lits[cursor + 1 .. cursor + 1 + len];
+            try testing.expect(!isLiteralSet(run, &.{ -1, 4, 5 }));
+            cursor += 1 + len;
+        }
+    }
+}
+
+test "bve growth bound counts only irredundant clauses" {
+    // Irredundant: 3 clauses with +1, 2 with -1, 6 resolvents > 5, so var 1
+    // stays. The learned (1 -5 -6) only adds tautological resolvents.
+    var formula = cnf.Formula.init(testing.allocator, 7);
+    defer formula.deinit();
+    for ([_][2]i32{ .{ 1, 2 }, .{ 1, 3 }, .{ 1, 4 }, .{ -1, 5 }, .{ -1, 6 } }) |c| {
+        try addClauseDimacs(&formula, &c);
+    }
+    try addBveShield(&formula, &.{ 2, 3, 4, 5, 6, 7 });
+    var solver = try solver_mod.Solver.init(testing.allocator, &formula);
+    defer solver.deinit();
+    _ = try addLearnedClause(&solver, &.{ 1, -5, -6 }, 2);
+    _ = try solver.propagate();
+
+    const r = try solver.preprocessBVE();
+
+    try testing.expect(r == null);
+    try testing.expect(!hasEliminated(&solver, 0));
+}

@@ -13,10 +13,12 @@ const Result = solver_mod.Result;
 
 // Bounded Variable Elimination (BVE) — resolution-based preprocessing /
 // inprocessing. For each variable v, enumerate the resolvents
-// (c_pos ∪ c_neg) \ {+v, -v} over every pair (c_pos, c_neg) with +v ∈
-// c_pos and -v ∈ c_neg; if the set of non-tautological resolvents is no
-// larger than |occ(+v)| + |occ(-v)| + growth_slack, replace the original
-// clauses by those resolvents and mark v eliminated. Variables with too
+// (c_pos ∪ c_neg) \ {+v, -v} over every pair of irredundant clauses
+// (c_pos, c_neg) with +v ∈ c_pos and -v ∈ c_neg; if the set of
+// non-tautological resolvents is no larger than the number of those
+// clauses + growth_slack, replace them by the resolvents, delete the
+// learned clauses on v, and mark v eliminated. Binaries carry no learned
+// flag, so a learned binary counts as irredundant. Variables with too
 // many occurrences, resolvents that grow past `max_resolvent_len`, or
 // occurrences locked as reasons for level-0 units are skipped.
 //
@@ -257,6 +259,9 @@ fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
                         locked = true;
                         break;
                     }
+                    // A learned clause is implied by the irredundant ones, so
+                    // it takes no part in resolution; commit deletes it.
+                    if (self.clauseIsLearned(cref)) continue;
                     const lits = self.clauseLits(cref);
                     const off: u32 = @intCast(pos_lits_buf.items.len);
                     try pos_runs.append(self.allocator, off);
@@ -296,6 +301,9 @@ fn bveImpl(self: *Solver, is_preprocess: bool) !?Result {
                         locked = true;
                         break;
                     }
+                    // A learned clause is implied by the irredundant ones, so
+                    // it takes no part in resolution; commit deletes it.
+                    if (self.clauseIsLearned(cref)) continue;
                     const lits = self.clauseLits(cref);
                     const off: u32 = @intCast(neg_lits_buf.items.len);
                     try neg_runs.append(self.allocator, off);
@@ -550,7 +558,8 @@ fn clauseIsLockedAtLevel0(self: *Solver, cref: ClauseRef) bool {
 //   a. emit proof.addClause for each resolvent (in order)
 //   b. append pos / neg clause literals to the solver's witness stack
 //   c. emit proof.deleteClause for each original clause
-//   d. mark every original clause deleted (arena or bin_watchers)
+//   d. mark every original clause deleted (arena or bin_watchers), and
+//      every learned clause on v, emitting its proof deletion
 //   e. install each resolvent (unit / binary / long)
 //   f. set eliminated bit for v (caller does the stats)
 fn commitElimination(
@@ -631,6 +640,7 @@ fn commitElimination(
         switch (o) {
             .long => |cref| {
                 if (self.clauseIsDeleted(cref)) continue;
+                if (self.clauseIsLearned(cref)) try self.proof.deleteClause(self.clauseLits(cref));
                 self.markDeleted(cref);
                 any_deleted.* = true;
             },
@@ -644,6 +654,7 @@ fn commitElimination(
         switch (o) {
             .long => |cref| {
                 if (self.clauseIsDeleted(cref)) continue;
+                if (self.clauseIsLearned(cref)) try self.proof.deleteClause(self.clauseLits(cref));
                 self.markDeleted(cref);
                 any_deleted.* = true;
             },
