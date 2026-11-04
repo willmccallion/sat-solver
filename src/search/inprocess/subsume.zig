@@ -163,7 +163,7 @@ const Subsumption = struct {
         var qi: usize = 0;
         while (qi < self.queue.items.len) : (qi += 1) {
             if (self.refuted) return;
-            if (self.isOverBudget() or solver_mod.interruptRequested()) {
+            if (self.isOverBudget() or self.solver.isInterrupted()) {
                 @branchHint(.cold);
                 return;
             }
@@ -186,7 +186,7 @@ const Subsumption = struct {
 
         for (binaries.items) |pair| {
             if (self.refuted) return;
-            if (self.isOverBudget() or solver_mod.interruptRequested()) {
+            if (self.isOverBudget() or self.solver.isInterrupted()) {
                 @branchHint(.cold);
                 return;
             }

@@ -32,6 +32,7 @@ const bve_mod = @import("inprocess/bve.zig");
 const equiv_mod = @import("inprocess/equiv.zig");
 
 const io = @import("io");
+const solver_mod = @import("solver.zig");
 
 pub const Stats = struct {
     decisions: u64 = 0,
@@ -214,6 +215,9 @@ pub const Solver = struct {
 
     unsat_at_init: bool,
 
+    // Once set, search and the passes stop and solve returns .unknown.
+    interrupt: *const std.atomic.Value(bool),
+
     stats: Stats,
 
     // Large algorithm bodies live in sibling files as free functions
@@ -264,6 +268,7 @@ pub const Solver = struct {
             .props_at_last_bve = 0,
             .search_mode = .focused,
             .unsat_at_init = false,
+            .interrupt = &solver_mod.interrupted,
             .stats = .{},
         };
         errdefer self.assignment.deinit();
@@ -362,6 +367,10 @@ pub const Solver = struct {
 
     // An active variable is neither assigned nor eliminated, so at level 0
     // it is one the formula still constrains.
+    pub inline fn isInterrupted(self: *const Solver) bool {
+        return self.interrupt.load(.monotonic);
+    }
+
     pub fn varIsActive(self: *const Solver, v: Var) bool {
         return self.assignment.vars[v.index()].value == .unassigned and !self.elimination.eliminated.isSet(v.index());
     }

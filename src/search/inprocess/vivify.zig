@@ -62,7 +62,7 @@ pub fn vivify(self: *Solver) state.Error!?Result {
 
     outer: for (candidates.items) |cref| {
         if (self.stats.propagations - props_start > budget) break;
-        if (solver_mod.interruptRequested()) break;
+        if (self.isInterrupted()) break;
         if (self.arena.isDeleted(cref)) continue;
         if (self.clauseIsLocked(cref)) continue;
 

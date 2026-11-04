@@ -3,17 +3,10 @@ const state = @import("state.zig");
 
 pub const Result = enum { sat, unsat, unknown };
 
-// Global interrupt flag. Set from signal handlers (SIGINT/SIGTERM/SIGXCPU)
-// or the --time-limit thread; polled at the top of every solve() iteration,
-// so solve returns .unknown on its next pass and main falls through to
-// `s UNKNOWN`.
+// The process-wide interrupt flag, which signal handlers (SIGINT, SIGTERM,
+// SIGXCPU) and the --time-limit thread set. A solver obeys it unless its
+// `interrupt` points elsewhere.
 pub var interrupted: std.atomic.Value(bool) = .init(false);
-
-// Long preprocessing and inprocessing loops poll this alongside their
-// budgets, so a SIGTERM or --time-limit is honoured outside search too.
-pub fn interruptRequested() bool {
-    return interrupted.load(.monotonic);
-}
 
 pub const Solver = state.Solver;
 pub const Error = state.Error;

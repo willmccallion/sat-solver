@@ -200,7 +200,7 @@ const Elimination = struct {
     // until the sweep, watchers still point at the clauses it deleted.
     fn run(self: *Elimination) !void {
         while (self.candidates.pop()) |candidate| {
-            if (self.isOverBudget() or solver_mod.interruptRequested()) {
+            if (self.isOverBudget() or self.solver.isInterrupted()) {
                 @branchHint(.cold);
                 return;
             }

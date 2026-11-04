@@ -21,7 +21,7 @@ pub fn solve(self: *Solver) state.Error!Result {
     if (try preprocess(self)) |r| return r;
 
     while (true) {
-        if (solver_mod.interruptRequested()) return .unknown;
+        if (self.isInterrupted()) return .unknown;
         if (try self.propagate()) |conflict| {
             if (try handleConflict(self, conflict)) |r| return r;
         } else {
@@ -37,7 +37,7 @@ fn preprocess(self: *Solver) !?Result {
     const passes = .{ Solver.preprocessSubsume, Solver.equiv, Solver.preprocessSubsume, Solver.preprocessBVE };
     inline for (passes) |pass| {
         if (try pass(self)) |r| return r;
-        if (solver_mod.interruptRequested()) return .unknown;
+        if (self.isInterrupted()) return .unknown;
     }
     if (self.arena.isMostlyHoles()) try self.compact();
     return null;

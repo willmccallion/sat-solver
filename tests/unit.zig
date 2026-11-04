@@ -819,6 +819,42 @@ test "compaction moves live clauses over a hole and keeps their reasons and watc
     try testing.expectEqual(assignment_mod.Value.true, solver.assignment.valueOfVar(.fromIndex(5)));
 }
 
+test "an interrupted solver returns unknown while another solver is unaffected" {
+    const pigeonhole =
+        \\p cnf 6 9
+        \\1 2 0
+        \\3 4 0
+        \\5 6 0
+        \\-1 -3 0
+        \\-1 -5 0
+        \\-3 -5 0
+        \\-2 -4 0
+        \\-2 -6 0
+        \\-4 -6 0
+    ;
+    var interrupted = try TestSolver.init(pigeonhole);
+    defer interrupted.deinit();
+    var flag: std.atomic.Value(bool) = .init(true);
+    interrupted.solver.interrupt = &flag;
+    var other = try TestSolver.init(pigeonhole);
+    defer other.deinit();
+
+    try testing.expectEqual(solver_mod.Result.unknown, try interrupted.solver.solve());
+    try testing.expectEqual(solver_mod.Result.unsat, try other.solver.solve());
+}
+
+test "an interrupted subsume pass stops before its first subsumer" {
+    var t = try TestSolver.init("p cnf 3 2\n1 2 3 0\n1 2 0\n");
+    defer t.deinit();
+    var flag: std.atomic.Value(bool) = .init(true);
+    t.solver.interrupt = &flag;
+
+    const r = try t.solver.preprocessSubsume();
+
+    try testing.expect(r == null);
+    try testing.expectEqual(@as(u64, 0), t.solver.stats.subsumed_clauses);
+}
+
 test "every long clause learned during search has an LBD of at least 2" {
     // A long learned clause holds the UIP at the conflict level plus
     // literals from lower, non-zero levels, so its true LBD is >= 2.

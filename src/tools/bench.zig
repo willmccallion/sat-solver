@@ -12,7 +12,7 @@ const solver_mod = search.solver;
 //
 // Flags:
 //   --timeout-sec N   Per-instance wall-clock cap. A watchdog thread
-//                     flips solver_mod.interrupted after N seconds and
+//                     interrupts the solver after N seconds and
 //                     the instance is scored as .unknown. Default 0 =
 //                     no cap.
 //
@@ -213,20 +213,20 @@ fn solveInstance(
 // set. The watchdog waits on an event set when solve returns, so a short
 // instance does not wait out the whole timeout.
 fn solveWithin(io: std.Io, solver: *solver_mod.Solver, timeout_ns: u64) !solver_mod.Result {
-    solver_mod.interrupted.store(false, .monotonic);
+    var interrupted: std.atomic.Value(bool) = .init(false);
+    solver.interrupt = &interrupted;
     var finished: std.Io.Event = .unset;
     const watchdog: ?std.Thread = if (timeout_ns > 0)
         try std.Thread.spawn(.{}, watchdogFn, .{WatchdogCtx{
             .io = io,
             .deadline = .fromNow(io, .{ .raw = .fromNanoseconds(timeout_ns), .clock = .awake }),
             .finished = &finished,
-            .interrupted = &solver_mod.interrupted,
+            .interrupted = &interrupted,
         }})
     else
         null;
     const result = solver.solve();
-    // Joined before the next instance resets `interrupted`, so a late
-    // watchdog can never interrupt it.
+    // Joined before `interrupted` goes out of scope.
     finished.set(io);
     if (watchdog) |thread| thread.join();
     return result;
