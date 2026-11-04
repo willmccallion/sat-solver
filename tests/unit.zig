@@ -575,6 +575,26 @@ test "subsume: deleted-skip — two calls don't re-process deleted clauses" {
     try testing.expectEqual(subsumed_after_first, solver.stats.subsumed_clauses);
 }
 
+test "subsume stops at its budget partway through one binary's occurrences" {
+    // (1 2) subsumes every (1 2 x y); each long clause's own rarest
+    // literal occurs only there, so the long subsumers spend nothing.
+    const victims = 40;
+    var formula = cnf.Formula.init(testing.allocator, 2 + 2 * victims);
+    defer formula.deinit();
+    try addClauseDimacs(&formula, &.{ 1, 2 });
+    for (0..victims) |i| {
+        const x: i32 = @intCast(3 + 2 * i);
+        try addClauseDimacs(&formula, &.{ 1, 2, x, x + 1 });
+    }
+    var solver = try solver_mod.Solver.init(testing.allocator, &formula);
+    defer solver.deinit();
+
+    const r = try solver.subsumeWithin(10);
+
+    try testing.expect(r == null);
+    try testing.expectEqual(@as(u64, 11), solver.stats.subsumed_clauses);
+}
+
 test "subsume: a level-0 reason clause is never a subsumption target" {
     // The units make (1 2 3 4) the reason for 1; (1 2 3) subsumes it.
     const src =

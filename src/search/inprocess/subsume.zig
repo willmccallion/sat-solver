@@ -73,7 +73,8 @@ pub fn preprocessSubsume(self: *Solver) !?Result {
     return subsumeWithin(self, preprocess_cap);
 }
 
-fn subsumeWithin(self: *Solver, budget: u64) !?Result {
+// Subsumption and SSR stopping once `budget` candidate checks are spent.
+pub fn subsumeWithin(self: *Solver, budget: u64) !?Result {
     std.debug.assert(self.assignment.level == 0);
     self.stats.subsume_passes += 1;
 
@@ -201,6 +202,7 @@ fn subsumeWithin(self: *Solver, budget: u64) !?Result {
                 &queue,
                 &scratch,
                 &op_count,
+                budget,
                 &any_deleted,
                 &unsat_derived,
             );
@@ -321,6 +323,7 @@ fn processSubsumerBinary(
     queue: *std.ArrayList(ClauseRef),
     scratch: *std.ArrayList(Literal),
     op_count: *u64,
+    budget: u64,
     any_deleted: *bool,
     unsat_derived: *bool,
 ) !void {
@@ -337,6 +340,10 @@ fn processSubsumerBinary(
     var i: usize = 0;
     while (i < occ[pivot.raw].items.len) : (i += 1) {
         if (unsat_derived.*) return;
+        if (op_count.* > budget) {
+            @branchHint(.cold);
+            return;
+        }
 
         const d_cref = occ[pivot.raw].items[i];
         if (self.clauseIsDeleted(d_cref)) continue;

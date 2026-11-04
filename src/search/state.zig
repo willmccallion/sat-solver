@@ -206,6 +206,7 @@ pub const Solver = struct {
     pub const vivify = @import("inprocess/vivify.zig").vivify;
     pub const subsume = @import("inprocess/subsume.zig").subsume;
     pub const preprocessSubsume = @import("inprocess/subsume.zig").preprocessSubsume;
+    pub const subsumeWithin = @import("inprocess/subsume.zig").subsumeWithin;
     pub const bve = @import("inprocess/bve.zig").bve;
     pub const preprocessBVE = @import("inprocess/bve.zig").preprocessBVE;
     pub const equiv = @import("inprocess/equiv.zig").equiv;
