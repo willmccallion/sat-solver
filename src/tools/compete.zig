@@ -200,38 +200,11 @@ fn checkCorrectness(gpa: Allocator, io: std.Io) !Check {
     };
 }
 
-// Gzips the trivial_unsat fixture into /tmp and verifies sat returns
-// the same verdict + exit code for both versions.
+// sat must give the same verdict and model for a fixture and its gzipped
+// copy.
 fn checkGzipInput(gpa: Allocator, io: std.Io, sat_path: []const u8) !Check {
-    const plain_path = "tests/fixtures/trivial_unsat.cnf";
-    const gz_path = "/tmp/sat-compete-trivial.cnf.gz";
-
-    // Use the system gzip to create the .gz fixture. If gzip is missing
-    // the check degrades to `.warn` — the feature still works, we just
-    // can't exercise it from here.
-    const cmd = try std.fmt.allocPrint(gpa, "gzip -c {s} > {s}", .{ plain_path, gz_path });
-    defer gpa.free(cmd);
-    const gz_result = std.process.run(gpa, io, .{
-        .argv = &.{ "bash", "-c", cmd },
-        .stdout_limit = .limited(1 << 14),
-        .stderr_limit = .limited(1 << 14),
-    }) catch {
-        return .{
-            .name = "gzip input",
-            .status = .warn,
-            .detail = try gpa.dupe(u8, "could not run `gzip` to build fixture"),
-        };
-    };
-    defer gpa.free(gz_result.stdout);
-    defer gpa.free(gz_result.stderr);
-
-    if (gz_result.term != .exited or gz_result.term.exited != 0) {
-        return .{
-            .name = "gzip input",
-            .status = .warn,
-            .detail = try gpa.dupe(u8, "gzip subprocess failed"),
-        };
-    }
+    const plain_path = "tests/fixtures/trivial_sat.cnf";
+    const gz_path = "tests/fixtures/trivial_sat.cnf.gz";
 
     const plain = std.process.run(gpa, io, .{
         .argv = &.{ sat_path, plain_path },
@@ -257,8 +230,6 @@ fn checkGzipInput(gpa: Allocator, io: std.Io, sat_path: []const u8) !Check {
     defer gpa.free(gz_out.stdout);
     defer gpa.free(gz_out.stderr);
 
-    std.Io.Dir.cwd().deleteFile(io, gz_path) catch {};
-
     const same_exit = std.meta.eql(plain.term, gz_out.term);
     const same_out = std.mem.eql(u8, plain.stdout, gz_out.stdout);
     if (!same_exit or !same_out) {
@@ -269,14 +240,11 @@ fn checkGzipInput(gpa: Allocator, io: std.Io, sat_path: []const u8) !Check {
         };
     }
 
+    var lines = std.mem.splitScalar(u8, plain.stdout, '\n');
     return .{
         .name = "gzip input",
         .status = .pass,
-        .detail = try std.fmt.allocPrint(
-            gpa,
-            "same verdict ({s})",
-            .{std.mem.trim(u8, plain.stdout, " \t\r\n")},
-        ),
+        .detail = try std.fmt.allocPrint(gpa, "same verdict ({s})", .{lines.first()}),
     };
 }
 
@@ -348,8 +316,12 @@ fn checkSignalHandling(gpa: Allocator, io: std.Io, sat_path: []const u8) !Check 
 // is on PATH it also does a full proof-check round-trip.
 fn checkDratOutput(gpa: Allocator, io: std.Io, sat_path: []const u8) !Check {
     const inst = "tests/fixtures/trivial_unsat.cnf";
-    const drat_path = "/tmp/sat-compete.drat";
-    std.Io.Dir.cwd().deleteFile(io, drat_path) catch {};
+    const drat_path = "bench/.cache/sat-compete.drat";
+    try std.Io.Dir.cwd().createDirPath(io, "bench/.cache");
+    std.Io.Dir.cwd().deleteFile(io, drat_path) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
 
     const run = std.process.run(gpa, io, .{
         .argv = &.{ sat_path, "--proof", drat_path, inst },
@@ -486,7 +458,11 @@ fn collectPerf(gpa: Allocator, io: std.Io, bench_path: []const u8, out: *Perf) !
 // the CDCL + reduceDB stack is working.
 fn collectCapacity(gpa: Allocator, io: std.Io, sat_path: []const u8, out: *Capacity) !void {
     const dir_path = "bench/instances/uf250-1065";
-    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return;
+    // An unfetched set leaves `out.available` false, which the report notes.
+    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return err,
+    };
     defer dir.close(io);
 
     const per_inst_limit_s: u32 = 5;
@@ -504,11 +480,11 @@ fn collectCapacity(gpa: Allocator, io: std.Io, sat_path: []const u8, out: *Capac
         const path = try std.fs.path.join(gpa, &.{ dir_path, name });
         defer gpa.free(path);
 
-        const result = std.process.run(gpa, io, .{
+        const result = try std.process.run(gpa, io, .{
             .argv = &.{ sat_path, "--time-limit", limit_arg, path },
             .stdout_limit = .limited(1 << 14),
             .stderr_limit = .limited(1 << 14),
-        }) catch continue;
+        });
         defer gpa.free(result.stdout);
         defer gpa.free(result.stderr);
 
