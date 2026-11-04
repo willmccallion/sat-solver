@@ -65,9 +65,7 @@ pub fn vivify(self: *Solver) solver_mod.Error!?Result {
         if (self.arena.isDeleted(cref)) continue;
         if (self.clauseIsLocked(cref)) continue;
 
-        // Copy lits before any decision-level push. Arena slices are
-        // only safe between allocations; we intentionally don't hold one
-        // across propagate().
+        // A copy, since propagation and installing clauses may move the arena.
         const lits_now = self.arena.literals(cref);
         scratch.clearRetainingCapacity();
         try scratch.ensureTotalCapacity(self.allocator, lits_now.len);

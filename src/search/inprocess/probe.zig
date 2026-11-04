@@ -62,9 +62,7 @@ pub fn probe(self: *Solver) solver_mod.Error!?Result {
 
         const v = candidates.items[probed];
 
-        // Try up to two polarities per variable. After the first succeeds
-        // or fails, the second is attempted only if v is still unassigned
-        // (a cascade from an earlier probe can have fixed it).
+        // Both polarities, unless probing the first already fixed v.
         var attempt: u32 = 0;
         while (attempt < 2) : (attempt += 1) {
             if (self.assignment.vars[v.index()].value != .unassigned) break;

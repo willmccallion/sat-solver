@@ -46,9 +46,7 @@ pub fn backtrack(self: *Solver, target_level: Level) void {
     assignment.trail.shrinkRetainingCapacity(j);
     assignment.trail_lim.shrinkRetainingCapacity(target_level.int());
     assignment.level = target_level;
-    // Re-propagate everything from the compact boundary on. Kept
-    // literals at the current level may still have watcher work to do
-    // against the new trail shape, and the UIP we're about to
-    // chrono-assert will land at exactly this index.
+    // Kept literals past the boundary may still have watches to visit, and
+    // the next asserted literal lands at exactly this index.
     if (assignment.propagation_head > scan_start) assignment.propagation_head = scan_start;
 }

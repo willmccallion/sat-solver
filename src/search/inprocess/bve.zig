@@ -253,9 +253,8 @@ const Elimination = struct {
                     try clauses.append(solver.allocator, solver.arena.literals(cref));
                 },
                 .binary => |other| {
-                    // A binary's mirror entry outlives it once `other`'s
-                    // variable is eliminated; resolving on it would bring
-                    // that variable back.
+                    // Once `other`'s variable is eliminated this mirror entry
+                    // is stale, and resolving on it would bring that back.
                     if (solver.elimination.eliminated.isSet(other.variable().index())) continue;
                     try clauses.append(solver.allocator, &.{ lit, other });
                 },
