@@ -22,7 +22,9 @@ BCP, modern clause learning, and SAT Competition-format I/O.
 - **VSIDS branching** with exponential activity decay and phase saving
 - **Chronological backtracking** when the backjump would skip many levels
 - **Focused / stable mode alternation** with **rephasing** (best, original,
-  inverted and random phases)
+  inverted and random phases). Focused mode uses the Glucose restarts;
+  stable mode turns them off and starts from the phases of the longest
+  trail seen so far. Mode chunks start at 1000 conflicts and double
 - **Preprocessing and level-0 inprocessing**: backward subsumption with
   self-subsuming resolution (in practice mostly between binary clauses; see
   `subsume.zig`), equivalent-literal substitution (SCCs of the binary
@@ -53,6 +55,8 @@ BCP, modern clause learning, and SAT Competition-format I/O.
 zig build                         # debug
 zig build -Doptimize=ReleaseFast  # release
 zig build test                    # unit tests + end-to-end
+zig build unit -Dtest-filter=TEXT # only the tests/unit.zig tests matching TEXT
+zig build run -- formula.cnf      # build, then run the solver
 ```
 
 Requires Zig 0.17. `flake.nix` provides it (with `zls`) as a dev shell, which
@@ -76,6 +80,8 @@ Requires Zig 0.17. `flake.nix` provides it (with `zls`) as a dev shell, which
 # With a wall-clock timeout:
 ./zig-out/bin/sat --time-limit 60 formula.cnf
 ```
+
+`sat --help` lists the options.
 
 Exit codes follow SAT Competition convention: **10** = SATISFIABLE,
 **20** = UNSATISFIABLE, **0** = UNKNOWN (including on interrupt or timeout).
@@ -140,6 +146,16 @@ L1d miss rate         2.86 %
 
 `zig build bench-quick` runs the same harness on smaller uf100 / uuf100
 instances (~4 s) for fast iteration during development.
+`zig build bench-industrial` profiles the crafted DIMACS families (bf, ssa,
+hanoi, parity, aim) with a 30 s cap per instance, and `zig build
+bench-satcomp` profiles the SAT Competition 2025 subset from
+`bench/fetch_satcomp.sh` with a 60 s cap.
+
+`zig build compete` checks submission readiness: the `bench/run.sh`
+sweep, gzipped input, `SIGTERM` handling and DRAT output. It then solves
+10 uf250 instances with a 5 s limit each and takes `perf stat` figures on
+uf100 / uuf100, set beside the SAT Competition 2025 main-track results
+hard-coded in `src/tools/compete.zig`.
 
 Correctness is checked by `bench/run.sh`, which runs the release binary
 against the downloaded SATLIB / DIMACS instances and compares exit codes
@@ -163,7 +179,7 @@ To reproduce:
 ```sh
 bench/build-solvers.sh              # clones + builds CaDiCaL and Kissat
                                     # into bench/solvers/
-                                    # MiniSat: apt install minisat2
+nix shell nixpkgs#minisat           # MiniSat on $PATH
 
 zig build -Doptimize=ReleaseFast    # our solver
 
@@ -171,6 +187,11 @@ bench/compare.py --limit 10         # smoke run, this solver only
 bench/compare.py --solvers sat-solver minisat cadical kissat
                                     # full run (300s CPU / 4 GB per instance)
 ```
+
+A solver not found at its usual install paths is looked up on `$PATH`.
+`--compare-to PATH` merges the rows of an earlier results CSV for solvers
+not named in `--solvers`, so the reference solvers need not be re-run.
+`bench/compare.py --help` lists the other options.
 
 Methodology notes (all SAT Competition standard):
 
@@ -190,6 +211,7 @@ Methodology notes (all SAT Competition standard):
   log-scale y-axis. The curve that stays lower / further right wins.
 
 Results go to `bench/compare-results.csv` and `bench/compare-cactus.png`.
+The plot needs matplotlib; without it the script skips the plot.
 
 Default run (uf200-860 + uuf200-860, 199 instances, 300 s CPU / 4 GB):
 
@@ -244,12 +266,36 @@ The CDCL core lives in `src/search/`. Major subsystems:
   restart decision: bias-corrected fast / slow LBD EMAs (`α = 1/50` and
   `1/10 000`), restart ratio threshold `1.25`, trail-length blocker at
   `1.4 × trail_fast`. Reductions, rephasing, mode switches and every
-  inprocessing pass run at level 0 on their own conflict schedules.
+  inprocessing pass run at level 0 on their own conflict schedules; the
+  return to level 0 they force is not counted as a restart. A backjump of
+  more than 100 levels backtracks one level instead (chronological
+  backtracking, `backtrack.zig`).
+- **`solver.zig`** — the `Solver` struct and its shared operations: VSIDS
+  bump and decay, branching, rephasing and clause installation.
 - **`inprocess/`** — `reduce.zig` (LBD-based reduction, arena compaction),
-  `subsume.zig`, `equiv.zig`, `bve.zig`, `probe.zig` and `vivify.zig`.
-  Each emits DRAT additions before deletions so proofs stay checkable;
-  BVE and equivalence substitution record witnesses that `model.zig`
-  replays to extend a model to the eliminated variables.
+  `subsume.zig`, `equiv.zig`, `bve.zig`, `probe.zig` and `vivify.zig`,
+  with `common.zig` holding level-0 clause normalisation and the
+  propagation budget. Each emits DRAT additions before deletions so proofs
+  stay checkable; BVE and equivalence substitution record witnesses that
+  `model.zig` replays to extend a model to the eliminated variables.
+
+Schedules, in conflicts (a schedule's first run comes after its initial
+interval):
+
+- **Reduction** every 2000, growing by 300 each time, and only when the
+  learned clauses outnumber a limit that starts at max(clause count, 1000)
+  and grows by 11/10 per reduction. It deletes the worse half by LBD of
+  the learned clauses that are neither glue nor locked.
+- **Rephasing** every 1000; **probing** and **equivalent-literal
+  substitution** every 10 000; **vivification** every 15 000;
+  **subsumption** every 20 000; **elimination** every 40 000. Each of these
+  intervals grows by 1.5x after a run.
+- **Probing** tries the 1024 most active variables; **vivification**
+  takes learned clauses of LBD 6 or less; **elimination** skips a variable
+  whose positive and negative occurrence counts multiply to more than
+  10 000.
+- **Arena compaction** runs after preprocessing and after each level-0
+  round once deleted clauses fill half the arena.
 
 `src/core/assignment.zig` holds the trail, decision levels, and the
 literal-indexed `lit_values` table — updated in pairs of adjacent slots so
