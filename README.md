@@ -163,12 +163,14 @@ hard-coded in `src/tools/compete.zig`.
 Correctness is checked by `bench/run.sh`, which runs the release binary
 against the downloaded SATLIB / DIMACS instances and compares exit codes
 with the known verdicts: **5067 / 5067** across uf20, uf50, uf100, uuf50,
-uuf100, and the dimacs-{dubois, pret, bf, ii, hanoi} families.
+uuf100, and the dimacs-{dubois, pret, bf, ii, hanoi} families, last run at
+commit `62183d5` (2026-11-21).
 
 A stricter sweep over all 5826 instances that `bench/fetch.sh` downloads
-(60 s per instance) solves 5816; the other 10 are the par32 instances.
-Every SAT model was checked against the input CNF and every UNSAT DRAT
-proof was accepted by `drat-trim`.
+(60 s per instance) solved 5816 at commit `a6037aa` (2026-10-14); the other
+10 are the par32 instances. Every SAT model was checked against the input
+CNF and every UNSAT DRAT proof was accepted by `drat-trim`. That sweep
+predates later solver changes and has not been re-run since.
 
 ## Comparison against reference solvers
 
@@ -237,9 +239,10 @@ instances Kissat and CaDiCaL are far ahead.
   random 3-SAT results above don't carry over to large structured
   formulas.
 - **Some hard instances stay unsolved.** The 10 par32 instances time out
-  at 60 s. `b19_1` from the SAT Competition 2025 set was not solved within
-  an hour when last tried, in October 2026 before the November changes;
-  it has not been re-run since.
+  at 60 s in the `a6037aa` sweep. `b19_1` from the SAT Competition 2025
+  set was not solved within an hour at around the same commit
+  (2026-10-14); that predates later solver changes and has not been
+  re-run since.
 - **Bounded variable elimination has no memory cap.** An elimination never
   increases the clause count and its resolvents are at most 16 literals,
   but a resolvent can be longer than the clauses it replaces, and
