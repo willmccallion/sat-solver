@@ -120,7 +120,10 @@ Exit code **0** = solved, **1** = no solution, **2** = bad input or no answer.
 -M TopdownL1` + `perf record --call-graph dwarf`, then prints a report
 table with per-instance distribution, hardware counters, Intel Topdown L1
 breakdown, call-graph hotspots, and `perf annotate` output for the hottest
-function. Latest run, on an Intel Core i7-14700K:
+function. It needs the instances from `bench/fetch.sh` and
+`/proc/sys/kernel/perf_event_paranoid` at 1 or lower. The run below was
+taken at commit `a6037aa` (2026-10-14) on an Intel Core i7-14700K and
+predates later solver changes; it has not been re-measured since:
 
 ```
 wall time          234 930 ms  (589 ms / instance)
@@ -213,7 +216,8 @@ Methodology notes (all SAT Competition standard):
 Results go to `bench/compare-results.csv` and `bench/compare-cactus.png`.
 The plot needs matplotlib; without it the script skips the plot.
 
-Default run (uf200-860 + uuf200-860, 199 instances, 300 s CPU / 4 GB):
+Default run (uf200-860 + uuf200-860, 199 instances, 300 s CPU / 4 GB),
+taken at commit `a6037aa` (2026-10-14) and not re-measured since:
 
 ```
 solver            solved  timeouts  errors    avg (solved)         PAR-2
