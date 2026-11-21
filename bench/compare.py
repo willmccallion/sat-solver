@@ -536,8 +536,8 @@ def main() -> int:
     ap.add_argument("--plot", type=Path,
                     default=SCRIPT_DIR / "compare-cactus.png",
                     help="Cactus plot PNG output path")
-    ap.add_argument("--limit", type=int, default=None,
-                    help="Limit instances per directory (for quick testing)")
+    ap.add_argument("--limit", type=int, default=None, metavar="N",
+                    help="Run only the first N instances in total (for quick testing)")
     ap.add_argument("--dry-run", action="store_true",
                     help="Print what would run and exit")
     args = ap.parse_args()
