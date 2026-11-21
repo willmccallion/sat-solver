@@ -13,7 +13,7 @@ BCP, modern clause learning, and SAT Competition-format I/O.
   `valueOfLiteral` call, collapsing the 8-instruction / 3-branch chain that
   dominated earlier profiles
 - **Flat clause arena** — a single `ArrayList(Literal)` backing store with
-  2-slot headers; 3-literal clauses fit on one cache line
+  2-slot headers; a 3-literal clause takes 20 bytes
 - **Glucose-style adaptive restarts** — fast / slow LBD EMAs with Adam-style
   bias correction, plus a trail-length blocker that vetoes restarts when
   the current decision stack is clearly making progress
@@ -27,18 +27,22 @@ BCP, modern clause learning, and SAT Competition-format I/O.
   self-subsuming resolution (in practice mostly between binary clauses; see
   `subsume.zig`), equivalent-literal substitution (SCCs of the binary
   implication graph), bounded variable elimination, failed-literal probing,
-  and vivification of low-LBD learned clauses. Probing and vivification may
-  spend a tenth of the propagations made since their last run; subsumption
-  and elimination cap the clause pairs they examine at a share of that
-  count; equivalent-literal substitution runs in full
+  and vivification of low-LBD learned clauses. Preprocessing runs
+  subsumption, substitution, subsumption again, then elimination; probing
+  and vivification run only during search. Each inprocessing pass is
+  budgeted by the propagations made since its last run: probing may spend
+  a tenth of them and vivification two tenths; subsumption caps the clause
+  pairs it examines at max(2 M, 2/10 of that count) and elimination at
+  max(1 M, 1/10). Preprocessing caps them at 100 M and 50 M.
+  Equivalent-literal substitution runs in full
 - **Arena compaction** to reclaim the holes left by deleted clauses
 - **DRAT proof emission** (`--proof PATH`) for UNSAT verification
 - **Model check against the input** — eliminated variables are
   reconstructed and every SAT model is checked against every clause of the
   original formula before `s SATISFIABLE` is printed; a failure is reported
   as `s UNKNOWN`
-- **Tournament I/O** — streaming DIMACS CNF parsing (no input size cap),
-  transparent `.gz` decompression,
+- **Tournament I/O** — streaming DIMACS CNF parsing (the input is never
+  held in memory whole), transparent `.gz` decompression,
   stdin input, `SIGINT` / `SIGTERM` / `SIGXCPU` + `--time-limit` handling,
   SAT Competition output format (`s SATISFIABLE` / `s UNSATISFIABLE` /
   `s UNKNOWN`, `v`-prefixed models, exit codes 10 / 20 / 0)
@@ -75,6 +79,18 @@ Requires Zig 0.17. `flake.nix` provides it (with `zls`) as a dev shell, which
 
 Exit codes follow SAT Competition convention: **10** = SATISFIABLE,
 **20** = UNSATISFIABLE, **0** = UNKNOWN (including on interrupt or timeout).
+A parse error, a solver error or a failed proof write prints a `c` line
+naming the error, then `s UNKNOWN`, and also exits 0. Exit code **1** means
+the solver never ran or its answer was lost: a bad option, an input or
+proof file that cannot be opened, or a failed write to stdout.
+
+The parser is strict: a missing or repeated `p cnf` header, a bad token, a
+variable above the declared count, an unterminated last clause or a clause
+count that differs from the header is a parse error. It accepts up to
+2^30 variables. The `v` line covers variables up to the highest one a
+clause mentions, so trailing variables that the header declares but no
+clause uses are left out; a variable the search left unassigned is printed
+positive. DRAT proofs are written in the text format.
 
 ## Sudoku
 
@@ -87,7 +103,8 @@ zig build sudoku -- '53..7....6..195....98....6.8...6...34..8.3..17...2...6.6...
 ./zig-out/bin/sat-sudoku < puzzle.txt   # a 9-line grid works too
 ```
 
-Cells are `1`-`9`, with `.` or `0` for blanks; input over 64 KiB is refused.
+Cells are `1`-`9`, with `.` or `0` for blanks; stdin input over 64 KiB is
+refused.
 Exit code **0** = solved, **1** = no solution, **2** = bad input or no answer.
 
 ## Benchmarks
@@ -194,12 +211,18 @@ instances Kissat and CaDiCaL are far ahead.
   random 3-SAT results above don't carry over to large structured
   formulas.
 - **Some hard instances stay unsolved.** The 10 par32 instances time out
-  at 60 s, and `b19_1` from the SAT Competition 2025 set is not solved
-  within an hour.
-- **Bounded variable elimination can blow up memory.** A single
-  inprocessing BVE pass has no bound on the resolvents it adds; on
-  `pj2016_k100` it adds about 450 M arena slots of chained resolvents and
-  peaks at 14 GiB.
+  at 60 s. `b19_1` from the SAT Competition 2025 set was not solved within
+  an hour when last tried, in October 2026 before the November changes;
+  it has not been re-run since.
+- **Bounded variable elimination has no memory cap.** An elimination never
+  increases the clause count and its resolvents are at most 16 literals,
+  but a resolvent can be longer than the clauses it replaces, and
+  preprocessing may resolve up to 50 M clause pairs. In October 2026 one
+  pass on `pj2016_k100` added about 450 M arena slots of resolvents and
+  peaked at 14 GiB. That was before two fixes: BVE now resolves only
+  irredundant clauses (`2e6f529`), and the first inprocessing pass no
+  longer gets the preprocessing budget (`f8c3789`). The instance has not
+  been re-measured since.
 - **One solve per formula.** Search is single-threaded, and there are no
   assumptions or incremental clause additions between solves, so a caller
   such as `sat-sudoku` builds a fresh solver for each formula.
@@ -233,22 +256,27 @@ literal-indexed `lit_values` table — updated in pairs of adjacent slots so
 `valueOfLiteral(lit)` is a single load + compare on the caller side.
 
 `src/tools/profile.zig` is the `zig build bench` orchestrator — it spawns
-the solver under `perf stat` and `perf record`, parses the output, and
-renders the box-drawing report with ANSI-colored verdicts for each metric.
+the solver under `perf stat` and `perf record` and prints the report.
+`src/tools/report.zig` parses the `perf stat` and `sat-bench` output and
+renders the box-drawing tables with ANSI-colored verdicts for each metric;
+`compete.zig` shares it.
 
 ## Layout
 
 ```
 src/
 ├── main.zig         CLI entry point
-├── root.zig         library entry point for unit tests
+├── root.zig         the public `sat` module (used by tests/unit.zig)
 ├── core/            Literal / Formula, clause arena layout, assignment trail
 ├── io/              streaming DIMACS parser, DRAT writer
 ├── heuristics/      VSIDS heap, restart / rephase / mode schedules
-├── search/          CDCL loop, propagate, analyze, backtrack, model extension
-│   └── inprocess/   subsume, equiv, bve, probe, vivify, reduce + compact
+├── search/          Solver, CDCL loop, propagate, analyze, backtrack,
+│   │                model extension
+│   └── inprocess/   subsume, equiv, bve, probe, vivify, reduce + compact,
+│                    common (shared level-0 helpers)
 └── tools/           bench (batch runner), profile (perf), compete (readiness),
-                     sudoku (Sudoku via CNF)
+                     report (perf parsing + tables), instances (instance
+                     listing), sudoku (Sudoku via CNF)
 
 bench/
 ├── fetch.sh         downloads SATLIB + DIMACS instance sets
@@ -262,6 +290,10 @@ tests/
 ├── unit.zig         unit tests
 └── fixtures/        small .cnf files for round-trip tests
 ```
+
+`zig build test` also runs the tests inside `src/heuristics/`,
+`src/tools/report.zig` and `src/tools/sudoku.zig`, and the end-to-end
+CLI and Sudoku cases defined in `build.zig`.
 
 ## License
 
